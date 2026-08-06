@@ -1,0 +1,41 @@
+// Short example program for exercising the grammar.
+
+// Creating quantum variables
+qint<3> a = 0;
+qint<2> b = [];
+qint<2> uneven = [0, 0.5, 0.5, 0];
+qbool flag = true;
+
+// Parameter and parameter array
+param float theta;
+param int gamma[4];
+
+// Gates
+X(a[1]);
+CX(b[0], a[0]);
+RX(b[0], 90);
+
+// Arithmetic
+a += b;
+
+// Quantum condition: its body may contain unitary transformations only
+qif(a == 2) {
+    phase(60);
+}
+
+// Classical condition on a measurement result (dynamic circuit)
+int r = measure(a);
+if(r < 4) {
+    b += 1;
+}
+
+// Loop with an iteration count known at compile time
+qint<3> num = [];
+for(int i = 0; i < 4; i++) {
+    num += gamma[i];
+}
+
+// Procedure
+process add(qint x, qint y) {
+    x += y;
+}

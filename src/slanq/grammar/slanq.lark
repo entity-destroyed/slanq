@@ -1,0 +1,139 @@
+// ---------------------------------------------------------------------------
+// Grammar of the Slanq language (initial version)
+//
+// Note: the grammar is deliberately more permissive than the semantics of the
+// language. For example it accepts the "+" operator syntactically, even though
+// it does not exist for quantum operands in Slanq -- such cases are rejected by
+// semantic analysis (type checking) so that we can report a meaningful error
+// instead of a bare "syntax error".
+// ---------------------------------------------------------------------------
+
+start: statement*
+
+?statement: declaration
+          | process_def
+          | if_stmt
+          | qif_stmt
+          | for_stmt
+          | while_stmt
+          | simple_statement ";"
+
+?simple_statement: assignment
+                 | compound_assignment
+                 | call_expr
+
+// --- Declarations ----------------------------------------------------------
+
+?declaration: qint_decl
+            | qbool_decl
+            | classical_decl
+            | param_array_decl
+            | param_decl
+
+qint_decl:        "qint" "<" INT ">" NAME "=" q_initializer ";"
+qbool_decl:       "qbool" NAME "=" q_initializer ";"
+classical_decl:   CTYPE NAME "=" expr ";"
+param_decl:       "param" CTYPE NAME ";"
+param_array_decl: "param" CTYPE NAME "[" INT "]" ";"
+
+?q_initializer: prob_list
+              | expr
+
+// An empty list means equal superposition; otherwise a probability list.
+prob_list: "[" [NUMBER ("," NUMBER)*] "]"
+
+// --- Assignment ------------------------------------------------------------
+
+assignment:          lvalue "=" expr
+compound_assignment: lvalue AUGOP expr
+
+?lvalue: NAME            -> var
+       | NAME "[" expr "]" -> index
+
+AUGOP: "+=" | "-="
+
+// --- Control structures ----------------------------------------------------
+
+if_stmt:    "if" "(" expr ")" block
+qif_stmt:   "qif" "(" expr ")" block
+while_stmt: "while" "(" expr ")" block
+for_stmt:   "for" "(" for_init ";" expr ";" for_update ")" block
+
+for_init:   CTYPE NAME "=" expr
+?for_update: NAME "++" -> post_increment
+           | NAME "--" -> post_decrement
+           | compound_assignment
+
+
+block: "{" statement* "}"
+
+// --- Procedures ------------------------------------------------------------
+
+process_def: "process" NAME "(" [param_list] ")" block
+param_list:  proc_param ("," proc_param)*
+proc_param:  TYPE NAME
+
+// --- Expressions (increasing precedence) -----------------------------------
+
+?expr: or_expr
+
+?or_expr: and_expr
+        | or_expr "||" and_expr -> logical_or
+
+?and_expr: bitor_expr
+         | and_expr "&&" bitor_expr -> logical_and
+
+?bitor_expr: bitxor_expr
+           | bitor_expr "|" bitxor_expr -> bit_or
+
+?bitxor_expr: bitand_expr
+            | bitxor_expr "^" bitand_expr -> bit_xor
+
+?bitand_expr: equality
+            | bitand_expr "&" equality -> bit_and
+
+?equality: comparison
+         | equality "==" comparison -> eq
+         | equality "!=" comparison -> ne
+
+?comparison: sum
+           | comparison "<="  sum -> le
+           | comparison ">="  sum -> ge
+           | comparison "<"   sum -> lt
+           | comparison ">"   sum -> gt
+
+?sum: product
+    | sum "+" product -> add
+    | sum "-" product -> sub
+
+?product: unary
+        | product "*" unary -> mul
+
+?unary: atom
+      | "~" unary -> bit_not
+      | "!" unary -> logical_not
+
+?atom: NUMBER            -> number
+     | BOOL              -> boolean
+     | call_expr
+     | NAME "[" expr "]" -> index
+     | NAME              -> var
+     | "(" expr ")"
+
+call_expr: NAME "(" [arg_list] ")"
+arg_list:  expr ("," expr)*
+
+// --- Terminals -------------------------------------------------------------
+
+CTYPE: "int" | "float" | "bool"
+TYPE:  "qint" | "qbool" | "int" | "float" | "bool"
+BOOL:  "true" | "false"
+
+NAME:   /[A-Za-z_][A-Za-z0-9_]*/
+NUMBER: /\d+(\.\d+)?/
+INT:    /\d+/
+
+COMMENT: "//" /[^\n]*/
+
+%ignore COMMENT
+%ignore /\s+/

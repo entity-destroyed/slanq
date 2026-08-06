@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "slanq"
+version = "0.1.0"
+description = "Compiler for the Slanq quantum programming language"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Simon Adam Imre" }]
+
+dependencies = [
+    "lark>=1.1",
+    "qiskit>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[project.scripts]
+slanq = "slanq.cli:main"
+
+# Every file under src/slanq is included in the distribution, including the
+# .lark grammar. This is critical: without it the grammar file would be
+# missing from the installed package.
+[tool.hatch.build.targets.wheel]
+packages = ["src/slanq"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = []
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["slanq"]
+warn_unused_ignores = true
+warn_redundant_casts = true
