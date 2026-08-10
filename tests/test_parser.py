@@ -42,6 +42,11 @@ def test_example_program_parses() -> None:
     assert parse_source(source) is not None
 
 
+def test_mvp_a_parses() -> None:
+    source = (EXAMPLES / "mvp_a.slanq").read_text(encoding="utf-8")
+    assert parse_source(source) is not None
+
+
 def test_syntax_error_is_reported() -> None:
     with pytest.raises(SlanqError):
         parse_source("qint<3> a = ;")

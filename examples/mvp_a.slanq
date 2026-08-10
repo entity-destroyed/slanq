@@ -1,0 +1,6 @@
+// MVP walking skeleton (a) - minimal end-to-end example.
+// One qbool, one gate, one measurement.
+
+qbool q = false;
+H(q);
+int result = measure(q);
