@@ -33,8 +33,22 @@ without reinstalling.
 Two equivalent ways to invoke the compiler once installed:
 
 ```
-slanq parse examples/hello.slanq                  # via the console script
-python -m slanq parse examples/hello.slanq        # via the -m entry point
+slanq compile examples/mvp_a.slanq                # via the console script
+python -m slanq compile examples/mvp_a.slanq      # via the -m entry point
+```
+
+`compile` writes the generated Qiskit module to standard output; pass `-o` to
+write it to a file instead. The generated module is runnable on its own:
+
+```
+slanq compile examples/mvp_a.slanq -o circuit.py
+python circuit.py
+```
+
+`parse` prints the parse tree, which is useful when working on the grammar:
+
+```
+slanq parse examples/hello.slanq
 ```
 
 Without arguments both print a usage message and exit with code 2. `slanq --help`
@@ -54,12 +68,21 @@ src/slanq/
 ├── compiler.py       compilation pipeline driver
 ├── diagnostics.py    Diagnostic / DiagnosticBag / SlanqError
 ├── parser.py         Lark-based syntactic analysis
-├── analysis.py       quantum analyses (never mutate the IR)
+├── transformer.py    parse tree -> AST
+├── ast_nodes.py      AST classes
+├── visitor.py        NodeVisitor over the AST
+├── analysis.py       semantic analysis; quantum analyses (never mutate)
+├── lowering.py       AST -> IR
+├── ir.py             intermediate representation
 ├── passes.py         IR-mutating transformations
+├── codegen.py        IR -> Qiskit Python source
 └── grammar/
     ├── __init__.py   grammar loader (via importlib.resources)
     └── slanq.lark    the grammar definition
 ```
+
+The pipeline runs in that order: `parser` → `transformer` → `analysis` →
+`lowering` → (`analysis` / `passes` over the IR) → `codegen`.
 
 **Architectural rule.** `analysis.py` only derives facts about the IR; all IR
 mutation happens in `passes.py`. This split is enforced by convention, not by a

@@ -1,15 +1,9 @@
-"""Tests for the Slanq parser (parser.py)."""
-
 from __future__ import annotations
-
-from pathlib import Path
 
 import pytest
 
 from slanq.diagnostics import SlanqError
 from slanq.parser import parse_source
-
-EXAMPLES = Path(__file__).parent.parent / "examples"
 
 
 @pytest.mark.parametrize(
@@ -37,14 +31,12 @@ def test_parses_language_constructs(source: str) -> None:
     assert parse_source(source) is not None
 
 
-def test_example_program_parses() -> None:
-    source = (EXAMPLES / "hello.slanq").read_text(encoding="utf-8")
-    assert parse_source(source) is not None
+def test_example_program_parses(hello_source: str) -> None:
+    assert parse_source(hello_source) is not None
 
 
-def test_mvp_a_parses() -> None:
-    source = (EXAMPLES / "mvp_a.slanq").read_text(encoding="utf-8")
-    assert parse_source(source) is not None
+def test_mvp_a_parses(mvp_a_source: str) -> None:
+    assert parse_source(mvp_a_source) is not None
 
 
 def test_syntax_error_is_reported() -> None:

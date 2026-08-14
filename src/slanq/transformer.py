@@ -44,14 +44,13 @@ def _span_from_token(token) -> Span:
 
 class SlanqTransformer(Transformer):
     @v_args(meta=True)
-    def start(self, meta: Meta, children: list[Statement | Expression]) -> Program:
-        statements: list[Statement] = []
-        for child in children:
-            if isinstance(child, Expression):
-                statements.append(ExprStatement(span=child.span, expr=child))
-            else:
-                statements.append(child)
-        return Program(span=_span_from_meta(meta), statements=statements)
+    def start(self, meta: Meta, children: list[Statement]) -> Program:
+        return Program(span=_span_from_meta(meta), statements=list(children))
+
+    @v_args(meta=True)
+    def expr_statement(self, meta: Meta, children) -> ExprStatement:
+        (expr,) = children
+        return ExprStatement(span=_span_from_meta(meta), expr=expr)
 
     @v_args(meta=True)
     def qbool_decl(self, meta: Meta, children) -> QuantumDecl:
@@ -75,12 +74,12 @@ class SlanqTransformer(Transformer):
 
     @v_args(meta=True)
     def call_expr(self, meta: Meta, children) -> Call:
-        name_token = children[0]
-        args = children[1] if len(children) > 1 else []
+        # `[arg_list]` always yields a slot, holding None for a no-argument call.
+        name_token, arg_list = children
         return Call(
             span=_span_from_meta(meta),
             callee=Name(span=_span_from_token(name_token), name=str(name_token)),
-            args=args,
+            args=arg_list or [],
         )
 
     def arg_list(self, children) -> list[Expression]:

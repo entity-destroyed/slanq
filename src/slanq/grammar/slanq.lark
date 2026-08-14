@@ -20,7 +20,7 @@ start: statement*
 
 ?simple_statement: assignment
                  | compound_assignment
-                 | call_expr
+                 | call_expr -> expr_statement
 
 // --- Declarations ----------------------------------------------------------
 

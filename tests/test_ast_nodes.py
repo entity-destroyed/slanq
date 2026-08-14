@@ -15,10 +15,6 @@ from slanq.ast_nodes import (
 )
 
 
-def _span(line: int = 1, col: int = 1) -> Span:
-    return Span(start_line=line, start_col=col, end_line=line, end_col=col + 1)
-
-
 def test_span_carries_start_and_end() -> None:
     s = Span(start_line=2, start_col=3, end_line=4, end_col=5)
     assert (s.start_line, s.start_col, s.end_line, s.end_col) == (2, 3, 4, 5)
@@ -30,94 +26,59 @@ def test_types_compare_by_value() -> None:
     assert QBoolType() != IntType()
 
 
-def test_name_defaults_have_no_annotations() -> None:
-    n = Name(span=_span(), name="q")
-    assert n.inferred_type is None
-    assert n.resolved_symbol is None
+def test_name_defaults_have_no_annotations(span: Span) -> None:
+    node = Name(span=span, name="q")
+    assert node.inferred_type is None
+    assert node.resolved_symbol is None
 
 
-def test_name_is_mutable_for_semantic_annotations() -> None:
-    n = Name(span=_span(), name="q")
-    n.inferred_type = QBoolType()
-    assert n.inferred_type == QBoolType()
+def test_name_is_mutable_for_semantic_annotations(span: Span) -> None:
+    node = Name(span=span, name="q")
+    node.inferred_type = QBoolType()
+    assert node.inferred_type == QBoolType()
 
 
-def test_literal_carries_python_value() -> None:
-    lit = Literal(span=_span(), value=False)
-    assert lit.value is False
+def test_literal_carries_python_value(span: Span) -> None:
+    assert Literal(span=span, value=False).value is False
 
 
-def test_program_default_statements_lists_are_independent() -> None:
-    a = Program(span=_span())
-    b = Program(span=_span())
-    a.statements.append(ExprStatement(span=_span(), expr=Name(span=_span(), name="x")))
+def test_program_default_statements_lists_are_independent(span: Span) -> None:
+    a = Program(span=span)
+    b = Program(span=span)
+    a.statements.append(ExprStatement(span=span, expr=Name(span=span, name="x")))
     assert len(a.statements) == 1
     assert len(b.statements) == 0
 
 
-def test_call_with_multiple_args() -> None:
+def test_call_with_multiple_args(span: Span) -> None:
     call = Call(
-        span=_span(),
-        callee=Name(span=_span(), name="CX"),
-        args=[
-            Name(span=_span(), name="a"),
-            Name(span=_span(), name="b"),
-        ],
+        span=span,
+        callee=Name(span=span, name="CX"),
+        args=[Name(span=span, name="a"), Name(span=span, name="b")],
     )
     assert call.callee.name == "CX"
     assert len(call.args) == 2
 
 
-def test_decls_are_declarations() -> None:
-    s = _span()
-    qd = QuantumDecl(
-        span=s,
+def test_decls_share_the_declaration_base(span: Span) -> None:
+    quantum = QuantumDecl(
+        span=span,
         name="q",
         declared_type=QBoolType(),
-        initializer=Literal(span=s, value=False),
+        initializer=Literal(span=span, value=False),
     )
-    cd = ClassicalDecl(
-        span=s,
+    classical = ClassicalDecl(
+        span=span,
         name="r",
         declared_type=IntType(),
-        initializer=Literal(span=s, value=0),
+        initializer=Literal(span=span, value=0),
     )
-    assert isinstance(qd, Declaration)
-    assert isinstance(cd, Declaration)
+    assert isinstance(quantum, Declaration)
+    assert isinstance(classical, Declaration)
 
 
-def test_mvp_a_ast_can_be_hand_built() -> None:
-    s = _span()
-    program = Program(
-        span=s,
-        statements=[
-            QuantumDecl(
-                span=s,
-                name="q",
-                declared_type=QBoolType(),
-                initializer=Literal(span=s, value=False),
-            ),
-            ExprStatement(
-                span=s,
-                expr=Call(
-                    span=s,
-                    callee=Name(span=s, name="H"),
-                    args=[Name(span=s, name="q")],
-                ),
-            ),
-            ClassicalDecl(
-                span=s,
-                name="result",
-                declared_type=IntType(),
-                initializer=Call(
-                    span=s,
-                    callee=Name(span=s, name="measure"),
-                    args=[Name(span=s, name="q")],
-                ),
-            ),
-        ],
-    )
-    assert len(program.statements) == 3
-    decl = program.statements[0]
-    assert isinstance(decl, QuantumDecl)
-    assert decl.name == "q"
+def test_mvp_a_is_representable(mvp_a_ast: Program) -> None:
+    assert len(mvp_a_ast.statements) == 3
+    declaration = mvp_a_ast.statements[0]
+    assert isinstance(declaration, QuantumDecl)
+    assert declaration.name == "q"
