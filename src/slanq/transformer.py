@@ -1,26 +1,50 @@
 from __future__ import annotations
 
-from lark import Transformer, v_args
+from lark import Token, Transformer, v_args
 from lark.tree import Meta
 
 from slanq.ast_nodes import (
+    Assign,
+    AugAssign,
+    BinaryOp,
+    Block,
+    BoolType,
     Call,
     ClassicalDecl,
     Expression,
     ExprStatement,
+    FloatType,
+    For,
+    If,
+    Index,
     IntType,
     Literal,
     Name,
+    ParamArrayDecl,
+    ParamDecl,
+    PostUpdate,
+    ProbList,
+    ProcessDef,
+    ProcParam,
     Program,
     QBoolType,
+    QIf,
+    QIntType,
     QuantumDecl,
     Span,
     Statement,
     Type,
+    UnaryOp,
+    While,
 )
+from slanq.diagnostics import SlanqError
 
-CTYPE_MAP: dict[str, Type] = {
-    "int": IntType(),
+TYPE_BY_NAME: dict[str, type[Type]] = {
+    "int": IntType,
+    "float": FloatType,
+    "bool": BoolType,
+    "qint": QIntType,
+    "qbool": QBoolType,
 }
 
 
@@ -33,7 +57,7 @@ def _span_from_meta(meta: Meta) -> Span:
     )
 
 
-def _span_from_token(token) -> Span:
+def _span_from_token(token: Token) -> Span:
     return Span(
         start_line=token.line,
         start_col=token.column,
@@ -42,17 +66,43 @@ def _span_from_token(token) -> Span:
     )
 
 
+def _name_from_token(token: Token) -> Name:
+    return Name(span=_span_from_token(token), name=str(token))
+
+
+def _type_from_token(token: Token) -> Type:
+    return TYPE_BY_NAME[str(token)]()
+
+
+@v_args(meta=True)
 class SlanqTransformer(Transformer):
-    @v_args(meta=True)
+    def __default__(self, data, children, meta):
+        """Lark would otherwise rebuild the node as a plain Tree, which every
+        later phase silently skips. Failing loudly keeps grammar and transformer
+        from drifting apart."""
+        where = "" if meta.empty else f" at line {meta.line}"
+        raise SlanqError(
+            f"internal error: grammar rule '{data}' has no AST transformation{where}. "
+            "This is a bug in the compiler, not in the source program."
+        )
+
     def start(self, meta: Meta, children: list[Statement]) -> Program:
         return Program(span=_span_from_meta(meta), statements=list(children))
 
-    @v_args(meta=True)
-    def expr_statement(self, meta: Meta, children) -> ExprStatement:
-        (expr,) = children
-        return ExprStatement(span=_span_from_meta(meta), expr=expr)
+    def block(self, meta: Meta, children: list[Statement]) -> Block:
+        return Block(span=_span_from_meta(meta), statements=list(children))
 
-    @v_args(meta=True)
+    # --- declarations ---
+
+    def qint_decl(self, meta: Meta, children) -> QuantumDecl:
+        width_token, name_token, initializer = children
+        return QuantumDecl(
+            span=_span_from_meta(meta),
+            name=str(name_token),
+            declared_type=QIntType(size=int(width_token)),
+            initializer=initializer,
+        )
+
     def qbool_decl(self, meta: Meta, children) -> QuantumDecl:
         name_token, initializer = children
         return QuantumDecl(
@@ -62,45 +112,210 @@ class SlanqTransformer(Transformer):
             initializer=initializer,
         )
 
-    @v_args(meta=True)
     def classical_decl(self, meta: Meta, children) -> ClassicalDecl:
-        ctype_token, name_token, initializer = children
+        type_token, name_token, initializer = children
         return ClassicalDecl(
             span=_span_from_meta(meta),
             name=str(name_token),
-            declared_type=CTYPE_MAP[str(ctype_token)],
+            declared_type=_type_from_token(type_token),
             initializer=initializer,
         )
 
-    @v_args(meta=True)
+    def param_decl(self, meta: Meta, children) -> ParamDecl:
+        type_token, name_token = children
+        return ParamDecl(
+            span=_span_from_meta(meta),
+            name=str(name_token),
+            declared_type=_type_from_token(type_token),
+        )
+
+    def param_array_decl(self, meta: Meta, children) -> ParamArrayDecl:
+        type_token, name_token, size_token = children
+        return ParamArrayDecl(
+            span=_span_from_meta(meta),
+            name=str(name_token),
+            declared_type=_type_from_token(type_token),
+            size=int(size_token),
+        )
+
+    def prob_list(self, meta: Meta, children) -> ProbList:
+        # An empty list yields a single None placeholder rather than no children.
+        return ProbList(
+            span=_span_from_meta(meta),
+            probabilities=[float(token) for token in children if token is not None],
+        )
+
+    # --- procedures ---
+
+    def process_def(self, meta: Meta, children) -> ProcessDef:
+        name_token, params, body = children
+        return ProcessDef(
+            span=_span_from_meta(meta),
+            name=str(name_token),
+            params=params or [],
+            body=body,
+        )
+
+    def param_list(self, meta: Meta, children) -> list[ProcParam]:
+        return list(children)
+
+    def proc_param(self, meta: Meta, children) -> ProcParam:
+        type_token, name_token = children
+        return ProcParam(
+            span=_span_from_meta(meta),
+            name=str(name_token),
+            declared_type=_type_from_token(type_token),
+        )
+
+    # --- statements ---
+
+    def expr_statement(self, meta: Meta, children) -> ExprStatement:
+        (expr,) = children
+        return ExprStatement(span=_span_from_meta(meta), expr=expr)
+
+    def assignment(self, meta: Meta, children) -> Assign:
+        target, value = children
+        return Assign(span=_span_from_meta(meta), target=target, value=value)
+
+    def compound_assignment(self, meta: Meta, children) -> AugAssign:
+        target, op_token, value = children
+        return AugAssign(
+            span=_span_from_meta(meta),
+            target=target,
+            op=str(op_token),
+            value=value,
+        )
+
+    def post_increment(self, meta: Meta, children) -> PostUpdate:
+        (name_token,) = children
+        return PostUpdate(span=_span_from_meta(meta), target=_name_from_token(name_token), op="++")
+
+    def post_decrement(self, meta: Meta, children) -> PostUpdate:
+        (name_token,) = children
+        return PostUpdate(span=_span_from_meta(meta), target=_name_from_token(name_token), op="--")
+
+    def if_stmt(self, meta: Meta, children) -> If:
+        condition, body = children
+        return If(span=_span_from_meta(meta), condition=condition, body=body)
+
+    def qif_stmt(self, meta: Meta, children) -> QIf:
+        condition, body = children
+        return QIf(span=_span_from_meta(meta), condition=condition, body=body)
+
+    def while_stmt(self, meta: Meta, children) -> While:
+        condition, body = children
+        return While(span=_span_from_meta(meta), condition=condition, body=body)
+
+    def for_stmt(self, meta: Meta, children) -> For:
+        init, condition, update, body = children
+        return For(
+            span=_span_from_meta(meta),
+            init=init,
+            condition=condition,
+            update=update,
+            body=body,
+        )
+
+    def for_init(self, meta: Meta, children) -> ClassicalDecl:
+        type_token, name_token, initializer = children
+        return ClassicalDecl(
+            span=_span_from_meta(meta),
+            name=str(name_token),
+            declared_type=_type_from_token(type_token),
+            initializer=initializer,
+        )
+
+    # --- expressions ---
+
     def call_expr(self, meta: Meta, children) -> Call:
         # `[arg_list]` always yields a slot, holding None for a no-argument call.
         name_token, arg_list = children
         return Call(
             span=_span_from_meta(meta),
-            callee=Name(span=_span_from_token(name_token), name=str(name_token)),
+            callee=_name_from_token(name_token),
             args=arg_list or [],
         )
 
-    def arg_list(self, children) -> list[Expression]:
+    def arg_list(self, meta: Meta, children) -> list[Expression]:
         return list(children)
 
-    @v_args(meta=True)
+    def index(self, meta: Meta, children) -> Index:
+        name_token, index = children
+        return Index(
+            span=_span_from_meta(meta),
+            base=_name_from_token(name_token),
+            index=index,
+        )
+
     def var(self, meta: Meta, children) -> Name:
         (name_token,) = children
-        return Name(span=_span_from_meta(meta), name=str(name_token))
+        return _name_from_token(name_token)
 
-    @v_args(meta=True)
     def number(self, meta: Meta, children) -> Literal:
-        (num_token,) = children
-        text = str(num_token)
+        (token,) = children
+        text = str(token)
         value: int | float = float(text) if "." in text else int(text)
         return Literal(span=_span_from_meta(meta), value=value)
 
-    @v_args(meta=True)
     def boolean(self, meta: Meta, children) -> Literal:
-        (bool_token,) = children
-        return Literal(span=_span_from_meta(meta), value=(str(bool_token) == "true"))
+        (token,) = children
+        return Literal(span=_span_from_meta(meta), value=str(token) == "true")
+
+    def _binary(self, meta: Meta, children, op: str) -> BinaryOp:
+        left, right = children
+        return BinaryOp(span=_span_from_meta(meta), op=op, left=left, right=right)
+
+    def _unary(self, meta: Meta, children, op: str) -> UnaryOp:
+        (operand,) = children
+        return UnaryOp(span=_span_from_meta(meta), op=op, operand=operand)
+
+    def logical_or(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, "||")
+
+    def logical_and(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, "&&")
+
+    def bit_or(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, "|")
+
+    def bit_xor(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, "^")
+
+    def bit_and(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, "&")
+
+    def eq(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, "==")
+
+    def ne(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, "!=")
+
+    def le(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, "<=")
+
+    def ge(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, ">=")
+
+    def lt(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, "<")
+
+    def gt(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, ">")
+
+    def add(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, "+")
+
+    def sub(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, "-")
+
+    def mul(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, "*")
+
+    def bit_not(self, meta: Meta, children) -> UnaryOp:
+        return self._unary(meta, children, "~")
+
+    def logical_not(self, meta: Meta, children) -> UnaryOp:
+        return self._unary(meta, children, "!")
 
 
 def transform_to_ast(parse_tree) -> Program:

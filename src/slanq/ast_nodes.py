@@ -24,7 +24,23 @@ class QBoolType(Type):
 
 
 @dataclass(kw_only=True)
+class QIntType(Type):
+    # Unsized in a process parameter list, where `qint` carries no width.
+    size: int | None = None
+
+
+@dataclass(kw_only=True)
 class IntType(Type):
+    pass
+
+
+@dataclass(kw_only=True)
+class FloatType(Type):
+    pass
+
+
+@dataclass(kw_only=True)
+class BoolType(Type):
     pass
 
 
@@ -54,9 +70,19 @@ class Program(Node):
 
 
 @dataclass(kw_only=True)
+class Block(Node):
+    statements: list[Statement] = field(default_factory=list)
+
+
+@dataclass(kw_only=True)
+class ProbList(Node):
+    probabilities: list[float] = field(default_factory=list)
+
+
+@dataclass(kw_only=True)
 class QuantumDecl(Declaration):
     declared_type: Type
-    initializer: Expression
+    initializer: Expression | ProbList
 
 
 @dataclass(kw_only=True)
@@ -66,14 +92,87 @@ class ClassicalDecl(Declaration):
 
 
 @dataclass(kw_only=True)
+class ParamDecl(Declaration):
+    declared_type: Type
+
+
+@dataclass(kw_only=True)
+class ParamArrayDecl(Declaration):
+    declared_type: Type
+    size: int
+
+
+@dataclass(kw_only=True)
+class ProcParam(Node):
+    name: str
+    declared_type: Type
+
+
+@dataclass(kw_only=True)
+class ProcessDef(Declaration):
+    params: list[ProcParam] = field(default_factory=list)
+    body: Block
+
+
+@dataclass(kw_only=True)
 class ExprStatement(Statement):
     expr: Expression
 
 
 @dataclass(kw_only=True)
+class Assign(Statement):
+    target: Expression
+    value: Expression
+
+
+@dataclass(kw_only=True)
+class AugAssign(Statement):
+    target: Expression
+    op: str
+    value: Expression
+
+
+@dataclass(kw_only=True)
+class PostUpdate(Statement):
+    target: Expression
+    op: str
+
+
+@dataclass(kw_only=True)
+class If(Statement):
+    condition: Expression
+    body: Block
+
+
+@dataclass(kw_only=True)
+class QIf(Statement):
+    condition: Expression
+    body: Block
+
+
+@dataclass(kw_only=True)
+class While(Statement):
+    condition: Expression
+    body: Block
+
+
+@dataclass(kw_only=True)
+class For(Statement):
+    init: ClassicalDecl
+    condition: Expression
+    update: Statement
+    body: Block
+
+
+Symbol = Declaration | ProcParam
+
+
+@dataclass(kw_only=True)
 class Name(Expression):
     name: str
-    resolved_symbol: Declaration | None = None
+    # A back-reference, not tree structure: traversal must not follow it, or a
+    # declaration would be revisited once per reference to it.
+    resolved_symbol: Symbol | None = field(default=None, metadata={"annotation": True})
 
 
 @dataclass(kw_only=True)
@@ -82,25 +181,64 @@ class Literal(Expression):
 
 
 @dataclass(kw_only=True)
+class Index(Expression):
+    base: Name
+    index: Expression
+
+
+@dataclass(kw_only=True)
 class Call(Expression):
     callee: Name
     args: list[Expression] = field(default_factory=list)
 
 
+@dataclass(kw_only=True)
+class BinaryOp(Expression):
+    op: str
+    left: Expression
+    right: Expression
+
+
+@dataclass(kw_only=True)
+class UnaryOp(Expression):
+    op: str
+    operand: Expression
+
+
 __all__ = [
+    "Assign",
+    "AugAssign",
+    "BinaryOp",
+    "Block",
+    "BoolType",
     "Call",
     "ClassicalDecl",
     "Declaration",
     "Expression",
     "ExprStatement",
+    "FloatType",
+    "For",
+    "If",
+    "Index",
     "IntType",
     "Literal",
     "Name",
     "Node",
+    "ParamArrayDecl",
+    "ParamDecl",
+    "PostUpdate",
+    "ProbList",
+    "ProcParam",
+    "ProcessDef",
     "Program",
     "QBoolType",
+    "QIf",
+    "QIntType",
     "QuantumDecl",
     "Span",
     "Statement",
+    "Symbol",
     "Type",
+    "UnaryOp",
+    "While",
 ]

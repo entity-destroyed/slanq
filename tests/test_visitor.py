@@ -1,7 +1,20 @@
 from __future__ import annotations
 
-from slanq.ast_nodes import Literal, Program, QuantumDecl, Span
+from slanq.ast_nodes import Literal, Name, Program, QBoolType, QuantumDecl, Span
 from slanq.visitor import NodeVisitor, iter_child_nodes
+
+
+def test_traversal_does_not_follow_resolved_symbol(span: Span) -> None:
+    """resolved_symbol is a back-reference; following it would revisit the
+    declaration once per reference to it."""
+    declaration = QuantumDecl(
+        span=span,
+        name="q",
+        declared_type=QBoolType(),
+        initializer=Literal(span=span, value=False),
+    )
+    reference = Name(span=span, name="q", resolved_symbol=declaration)
+    assert list(iter_child_nodes(reference)) == []
 
 
 def test_iter_child_nodes_yields_direct_children(mvp_a_ast: Program) -> None:

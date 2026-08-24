@@ -5,7 +5,7 @@ from collections.abc import Callable
 import pytest
 
 from slanq.analysis import analyze
-from slanq.ast_nodes import Call, ExprStatement, Name, Program, QuantumDecl
+from slanq.ast_nodes import Call, ExprStatement, If, Name, Program, QuantumDecl
 from slanq.diagnostics import DiagnosticBag
 
 BuildAst = Callable[[str], Program]
@@ -86,3 +86,54 @@ def test_error_carries_source_position(diagnostics_of: DiagnosticsOf) -> None:
     bag = diagnostics_of("H(unknown);")
     assert bag.errors[0].line == 1
     assert bag.errors[0].column is not None
+
+
+def test_for_loop_variable_is_in_scope(diagnostics_of: DiagnosticsOf) -> None:
+    source = "qbool q = false;\nfor(int i = 0; i < 4; i++) { X(q); }\n"
+    assert not diagnostics_of(source).has_errors
+
+
+def test_process_parameters_are_in_scope(diagnostics_of: DiagnosticsOf) -> None:
+    assert not diagnostics_of("process add(qint x, qint y) { x += y; }").has_errors
+
+
+def test_block_scoped_declaration_is_not_visible_outside(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    source = "qbool q = false;\nif(1) { qbool inner = false; }\nH(inner);\n"
+    bag = diagnostics_of(source)
+    assert bag.has_errors
+    assert "inner" in bag.errors[0].message
+
+
+def test_for_loop_variable_is_not_visible_outside(diagnostics_of: DiagnosticsOf) -> None:
+    source = "qbool q = false;\nfor(int i = 0; i < 4; i++) { X(q); }\nH(i);\n"
+    bag = diagnostics_of(source)
+    assert bag.has_errors
+    assert "'i'" in bag.errors[0].message
+
+
+def test_hello_example_resolves_every_name(
+    diagnostics_of: DiagnosticsOf, hello_source: str
+) -> None:
+    """The full-language example must not produce a single undefined-name error."""
+    messages = [d.message for d in diagnostics_of(hello_source).errors]
+    assert not [m for m in messages if "undefined name" in m]
+
+
+def test_inner_scope_shadows_outer(analyzed_ast: AnalyzedAst) -> None:
+    source = "qbool q = false;\nif(1) { qbool q = true; X(q); }\n"
+    ast = analyzed_ast(source)
+
+    outer = ast.statements[0]
+    branch = ast.statements[1]
+    assert isinstance(outer, QuantumDecl)
+    assert isinstance(branch, If)
+
+    inner_decl, gate_stmt = branch.body.statements
+    assert isinstance(gate_stmt, ExprStatement)
+    assert isinstance(gate_stmt.expr, Call)
+    (argument,) = gate_stmt.expr.args
+    assert isinstance(argument, Name)
+    assert argument.resolved_symbol is inner_decl
+    assert argument.resolved_symbol is not outer

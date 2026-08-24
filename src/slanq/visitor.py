@@ -9,6 +9,8 @@ from slanq.ast_nodes import Node
 
 def iter_child_nodes(node: Node) -> Iterator[Node]:
     for f in dataclasses.fields(node):
+        if f.metadata.get("annotation"):
+            continue
         value = getattr(node, f.name)
         if isinstance(value, Node):
             yield value
