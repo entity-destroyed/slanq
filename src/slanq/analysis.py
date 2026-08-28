@@ -3,12 +3,17 @@ from __future__ import annotations
 from slanq.ast_nodes import (
     Block,
     Declaration,
+    Expression,
     For,
+    Index,
+    Literal,
     Name,
     ProcessDef,
     Program,
+    QuantumDecl,
     Span,
     Symbol,
+    qubit_count,
 )
 from slanq.diagnostics import DiagnosticBag
 from slanq.visitor import NodeVisitor
@@ -110,8 +115,69 @@ def _resolve_names(ast: Program, bag: DiagnosticBag, scope: Scope) -> None:
     _NameResolver(scope, bag).visit(ast)
 
 
+class _IndexChecker(NodeVisitor):
+    def __init__(self, bag: DiagnosticBag) -> None:
+        self.bag = bag
+
+    def visit_Index(self, node: Index) -> None:
+        self.generic_visit(node)
+
+        size = _quantum_size_of(node.base)
+        if size is None:
+            # Not a quantum register. todo for classical registers arrays like (`gamma[i]`)
+            return
+
+        index = _integer_literal(node.index)
+        if index is None:
+            self._reject(
+                "a quantum register index must be an integer literal", node.index
+            )
+            return
+
+        if not 0 <= index < size:
+            self._reject(
+                f"index {index} is out of range for '{node.base.name}' of size {size}",
+                node.index,
+            )
+
+    def visit_QuantumDecl(self, node: QuantumDecl) -> None:
+        self.generic_visit(node)
+
+        size = qubit_count(node.declared_type)
+        if size is None or not isinstance(node.initializer, Literal):
+            return
+
+        value = node.initializer.value
+        if not isinstance(value, int):
+            return
+
+        largest = 2**size - 1
+        if not 0 <= value <= largest:
+            self._reject(
+                f"{value} does not fit in '{node.name}', which holds {size} "
+                f"qubit(s) (allowed: 0..{largest})",
+                node.initializer,
+            )
+
+    def _reject(self, message: str, node: Expression) -> None:
+        _error(self.bag, message, node.span)
+
+
+def _quantum_size_of(base: Name) -> int | None:
+    symbol = base.resolved_symbol
+    if not isinstance(symbol, QuantumDecl):
+        return None
+    return qubit_count(symbol.declared_type)
+
+
+def _integer_literal(expression: Expression) -> int | None:
+    if isinstance(expression, Literal) and type(expression.value) is int:
+        return expression.value
+    return None
+
+
 def _check_types(ast: Program, bag: DiagnosticBag) -> None:
-    pass
+    _IndexChecker(bag).visit(ast)
 
 
 def _check_affine(ast: Program, bag: DiagnosticBag) -> None:

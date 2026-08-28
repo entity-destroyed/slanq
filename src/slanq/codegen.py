@@ -63,11 +63,13 @@ def _body_lines(module: IRModule) -> list[str]:
 
 def _op_lines(op: Op) -> list[str]:
     if isinstance(op, InitOp):
-        if not op.value:
-            return []
-        if op.target.size != 1:
-            raise NotImplementedError("multi-qubit constant initialization is not supported yet")
-        return [f"circuit.x({op.target.name}[0])"]
+        # The register is little-endian, so bit b of the value sits on qubit b.
+        # Unlike an explicit index, this needs no mirroring.
+        return [
+            f"circuit.x({op.target.name}[{bit}])"
+            for bit in range(op.target.size)
+            if (int(op.value) >> bit) & 1
+        ]
 
     if isinstance(op, GateOp):
         arguments = [_format_param(value) for value in op.params]
@@ -82,8 +84,14 @@ def _op_lines(op: Op) -> list[str]:
 
 def _operand_source(operand: QubitOperand) -> str:
     if isinstance(operand, QubitBit):
-        return f"{operand.ref.name}[{operand.index}]"
+        return f"{operand.ref.name}[{_qiskit_index(operand)}]"
     return operand.name
+
+
+def _qiskit_index(bit: QubitBit) -> int:
+    """Slanq indexes big-endian -- index 0 is the most significant qubit --
+    while the Qiskit register is little-endian."""
+    return bit.ref.size - 1 - bit.index
 
 
 def _format_param(value: float) -> str:

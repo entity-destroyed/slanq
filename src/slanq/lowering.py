@@ -5,12 +5,13 @@ from slanq.ast_nodes import (
     ClassicalDecl,
     Expression,
     ExprStatement,
+    Index,
     Literal,
     Name,
     Program,
-    QBoolType,
     QuantumDecl,
-    Type,
+    Statement,
+    qubit_count,
 )
 from slanq.diagnostics import DiagnosticBag
 from slanq.ir import (
@@ -27,17 +28,27 @@ from slanq.visitor import NodeVisitor
 
 MEASURE = "measure"
 
+# Statement kinds the lowering does not handle yet. Without this the generic
+# traversal would walk straight past them and the construct would vanish from
+# the circuit without a word.
+UNIMPLEMENTED: dict[str, str] = {
+    "Assign": "assignment",
+    "AugAssign": "compound assignment",
+    "PostUpdate": "increment and decrement",
+    "If": "the if statement",
+    "QIf": "the qif statement",
+    "While": "the while loop",
+    "For": "the for loop",
+    "ProcessDef": "a process definition",
+    "ParamDecl": "a param declaration",
+    "ParamArrayDecl": "a param array declaration",
+}
+
 
 def lower_to_ir(ast: Program, bag: DiagnosticBag) -> IRModule:
     lowerer = _Lowerer(bag)
     lowerer.visit(ast)
     return lowerer.module
-
-
-def _type_size(declared: Type) -> int | None:
-    if isinstance(declared, QBoolType):
-        return 1
-    return None
 
 
 class _Lowerer(NodeVisitor):
@@ -46,14 +57,28 @@ class _Lowerer(NodeVisitor):
         self.module = IRModule()
         self.qubits: dict[str, QubitRef] = {}
 
+    def generic_visit(self, node):
+        if isinstance(node, Statement):
+            self._unimplemented(node)
+            return
+        super().generic_visit(node)
+
     def visit_QuantumDecl(self, node: QuantumDecl) -> None:
-        size = _type_size(node.declared_type)
+        size = qubit_count(node.declared_type)
         if size is None:
-            self._error(f"unsupported quantum type for '{node.name}'", node.span)
+            self._error(
+                f"the type of '{node.name}' is not implemented yet; this is a "
+                "limitation of the compiler, not an error in the program",
+                node.span,
+            )
             return
 
         if not isinstance(node.initializer, Literal):
-            self._error(f"unsupported initializer for '{node.name}'", node.span)
+            self._error(
+                f"this way of initializing '{node.name}' is not implemented yet; "
+                "this is a limitation of the compiler, not an error in the program",
+                node.span,
+            )
             return
 
         ref = QubitRef(name=node.name, size=size)
@@ -120,18 +145,46 @@ class _Lowerer(NodeVisitor):
         return ref
 
     def _operand(self, expression: Expression) -> QubitOperand | None:
+        if isinstance(expression, Index):
+            return self._indexed_operand(expression)
+
         if not isinstance(expression, Name):
             self._error("expected a quantum variable", expression.span)
             return None
 
-        ref = self.qubits.get(expression.name)
+        ref = self._register(expression)
         if ref is None:
-            self._error(f"'{expression.name}' is not a quantum variable", expression.span)
             return None
 
         # A single-qubit register is addressed bit-wise, so `circuit.h(q[0])` is
         # emitted rather than a broadcast over the whole register.
         return QubitBit(ref=ref, index=0) if ref.size == 1 else ref
+
+    def _indexed_operand(self, expression: Index) -> QubitOperand | None:
+        ref = self._register(expression.base)
+        if ref is None:
+            return None
+
+        index = expression.index
+        if not isinstance(index, Literal) or type(index.value) is not int:
+            self._error("a quantum register index must be an integer literal", index.span)
+            return None
+
+        return QubitBit(ref=ref, index=index.value)
+
+    def _register(self, name: Name) -> QubitRef | None:
+        ref = self.qubits.get(name.name)
+        if ref is None:
+            self._error(f"'{name.name}' is not a quantum variable", name.span)
+        return ref
+
+    def _unimplemented(self, node: Statement) -> None:
+        kind = type(node).__name__
+        self._error(
+            f"{UNIMPLEMENTED.get(kind, kind)} is not implemented yet; this is a "
+            "limitation of the compiler, not an error in the program",
+            node.span,
+        )
 
     def _error(self, message: str, span) -> None:
         self.bag.error(message, line=span.start_line, column=span.start_col)

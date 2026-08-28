@@ -137,3 +137,35 @@ def test_inner_scope_shadows_outer(analyzed_ast: AnalyzedAst) -> None:
     assert isinstance(argument, Name)
     assert argument.resolved_symbol is inner_decl
     assert argument.resolved_symbol is not outer
+
+
+def test_index_out_of_range_is_reported(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<2> q = 0; H(q[2]);")
+    assert bag.has_errors
+    assert "out of range" in bag.errors[0].message
+
+
+def test_index_within_range_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
+    assert not diagnostics_of("qint<2> q = 0; H(q[1]);").has_errors
+
+
+def test_non_literal_quantum_index_is_reported(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<2> q = 0; int i = 0; H(q[i]);")
+    assert bag.has_errors
+    assert "integer literal" in bag.errors[0].message
+
+
+def test_classical_array_index_is_not_restricted(diagnostics_of: DiagnosticsOf) -> None:
+    """The literal-only rule applies to qubit registers, not classical arrays."""
+    source = "param int gamma[4]; for(int i = 0; i < 4; i++) { int x = gamma[i]; }"
+    assert not diagnostics_of(source).has_errors
+
+
+def test_initializer_too_large_is_reported(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<2> a = 7;")
+    assert bag.has_errors
+    assert "does not fit" in bag.errors[0].message
+
+
+def test_largest_fitting_initializer_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
+    assert not diagnostics_of("qint<2> a = 3;").has_errors

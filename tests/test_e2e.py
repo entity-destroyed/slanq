@@ -23,10 +23,10 @@ def _build_circuit(source: str) -> QuantumCircuit:
     return namespace["build_circuit"]()
 
 
-def _counts(source: str) -> dict[str, int]:
+def _counts(source: str, register: str = "result") -> dict[str, int]:
     circuit = _build_circuit(source)
     result = StatevectorSampler(seed=SEED).run([circuit], shots=SHOTS).result()
-    return result[0].data.result.get_counts()
+    return getattr(result[0].data, register).get_counts()
 
 
 def test_mvp_a_circuit_shape(mvp_a_source: str) -> None:
@@ -52,3 +52,26 @@ def test_true_initializer_always_measures_one() -> None:
 def test_double_x_returns_to_zero() -> None:
     source = "qbool q = false;\nX(q);\nX(q);\nint result = measure(q);\n"
     assert _counts(source) == {"0": SHOTS}
+
+
+def test_bell_state_outcomes_are_correlated(mvp_b_source: str) -> None:
+    counts = _counts(mvp_b_source)
+    assert set(counts) == {"00", "11"}
+    assert all(SHOTS * 0.3 < value < SHOTS * 0.7 for value in counts.values())
+
+
+def test_qint_constant_survives_the_endianness_split() -> None:
+    """The canary for B1: a mirrored index or bit order would change the value."""
+    counts = _counts("qint<3> a = 5; int result = measure(a);")
+    assert counts == {"101": SHOTS}
+
+
+def test_indexed_gate_targets_the_intended_qubit() -> None:
+    """Slanq a[0] is the most significant qubit, so flipping it gives 4, not 1."""
+    counts = _counts("qint<3> a = 0; X(a[0]); int result = measure(a);")
+    assert counts == {"100": SHOTS}
+
+
+def test_last_index_is_the_least_significant_qubit() -> None:
+    counts = _counts("qint<3> a = 0; X(a[2]); int result = measure(a);")
+    assert counts == {"001": SHOTS}

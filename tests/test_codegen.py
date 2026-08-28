@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from slanq.ast_nodes import Span
 from slanq.codegen import generate_qiskit
 from slanq.ir import ClbitRef, GateOp, InitOp, IRBlock, IRModule, QubitBit, QubitRef
@@ -95,14 +93,40 @@ def test_whole_register_target_is_not_indexed(span: Span) -> None:
     assert "circuit.h(a)" in _generate(module)
 
 
-def test_multi_qubit_constant_initializer_is_rejected(span: Span) -> None:
+def test_multi_qubit_constant_sets_the_right_bits(span: Span) -> None:
+    """5 is 0b101; the register is little-endian, so bits 0 and 2 are flipped."""
     qubit = QubitRef(name="a", size=3)
     module = IRModule(
         qubits=[qubit],
         body=IRBlock(ops=[InitOp(span=span, target=qubit, value=5)]),
     )
-    with pytest.raises(NotImplementedError):
-        _generate(module)
+    source = _generate(module)
+    assert "circuit.x(a[0])" in source
+    assert "circuit.x(a[2])" in source
+    assert "circuit.x(a[1])" not in source
+
+
+def test_index_is_mirrored_for_qiskit(span: Span) -> None:
+    """Slanq's q[0] is the most significant qubit, Qiskit's q[0] the least."""
+    qubit = QubitRef(name="q", size=3)
+    module = IRModule(
+        qubits=[qubit],
+        body=IRBlock(
+            ops=[GateOp(span=span, name="H", targets=[QubitBit(ref=qubit, index=0)])]
+        ),
+    )
+    assert "circuit.h(q[2])" in _generate(module)
+
+
+def test_single_qubit_register_needs_no_mirroring(span: Span) -> None:
+    qubit = QubitRef(name="q", size=1)
+    module = IRModule(
+        qubits=[qubit],
+        body=IRBlock(
+            ops=[GateOp(span=span, name="H", targets=[QubitBit(ref=qubit, index=0)])]
+        ),
+    )
+    assert "circuit.h(q[0])" in _generate(module)
 
 
 def test_generated_module_builds_a_runnable_circuit(mvp_a_ir: IRModule) -> None:

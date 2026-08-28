@@ -29,6 +29,14 @@ class QIntType(Type):
     size: int | None = None
 
 
+def qubit_count(declared: Type) -> int | None:
+    if isinstance(declared, QBoolType):
+        return 1
+    if isinstance(declared, QIntType):
+        return declared.size
+    return None
+
+
 @dataclass(kw_only=True)
 class IntType(Type):
     pass
@@ -241,4 +249,5 @@ __all__ = [
     "Type",
     "UnaryOp",
     "While",
+    "qubit_count",
 ]

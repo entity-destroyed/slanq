@@ -112,3 +112,75 @@ def test_mvp_a_lowers_completely(lower: LowerSource, mvp_a_source: str) -> None:
     ]
     assert len(module.qubits) == 1
     assert len(module.clbits) == 1
+
+
+def test_qint_register_gets_its_declared_size(lower: LowerSource) -> None:
+    module, bag = lower("qint<3> a = 0;")
+    assert not bag.has_errors
+    assert module.qubits[0] == QubitRef(name="a", size=3)
+
+
+def test_index_lowers_with_the_slanq_index(lower: LowerSource) -> None:
+    """The IR stays in the user's index space; codegen does the mirroring."""
+    module, bag = lower("qint<3> a = 0; X(a[1]);")
+    assert not bag.has_errors
+    gate = module.body.ops[1]
+    assert isinstance(gate, GateOp)
+    assert gate.targets == [QubitBit(ref=module.qubits[0], index=1)]
+
+
+def test_two_qubit_gate_keeps_operand_order(lower: LowerSource) -> None:
+    module, bag = lower("qint<2> q = 0; CX(q[0], q[1]);")
+    assert not bag.has_errors
+    gate = module.body.ops[1]
+    assert isinstance(gate, GateOp)
+    register = module.qubits[0]
+    assert gate.targets == [
+        QubitBit(ref=register, index=0),
+        QubitBit(ref=register, index=1),
+    ]
+
+
+def test_multi_qubit_measurement_sizes_the_register(lower: LowerSource) -> None:
+    module, bag = lower("qint<3> a = 0; int r = measure(a);")
+    assert not bag.has_errors
+    assert module.clbits[0] == ClbitRef(name="r", size=3)
+
+
+def test_whole_register_target_is_kept_whole(lower: LowerSource) -> None:
+    """B6: a gate applied to a multi-qubit register broadcasts."""
+    module, bag = lower("qint<3> a = 0; H(a);")
+    assert not bag.has_errors
+    gate = module.body.ops[1]
+    assert isinstance(gate, GateOp)
+    assert gate.targets == [module.qubits[0]]
+
+
+def test_mvp_b_lowers_completely(lower: LowerSource, mvp_b_source: str) -> None:
+    module, bag = lower(mvp_b_source)
+    assert not bag.has_errors
+    assert [type(op).__name__ for op in module.body.ops] == [
+        "InitOp",
+        "GateOp",
+        "GateOp",
+        "MeasurementOp",
+    ]
+
+
+def test_unimplemented_statement_does_not_vanish(lower: LowerSource) -> None:
+    """Before the guard this produced no IR and no diagnostic at all: the
+    generated circuit simply never performed the addition."""
+    _, bag = lower("qint<2> a = 0; qint<2> b = 1; a += b;")
+    assert bag.has_errors
+    assert "not implemented yet" in bag.errors[0].message
+
+
+def test_unimplemented_statement_names_the_construct(lower: LowerSource) -> None:
+    _, bag = lower("qbool q = false; if(1) { X(q); }")
+    assert "if statement" in bag.errors[0].message
+
+
+def test_unimplemented_message_blames_the_compiler(lower: LowerSource) -> None:
+    _, bag = lower("qint<2> b = [];")
+    assert bag.has_errors
+    assert "limitation of the compiler" in bag.errors[0].message

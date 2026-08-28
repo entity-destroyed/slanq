@@ -52,6 +52,11 @@ def mvp_a_source() -> str:
 
 
 @pytest.fixture
+def mvp_b_source() -> str:
+    return (EXAMPLES / "mvp_b.slanq").read_text(encoding="utf-8")
+
+
+@pytest.fixture
 def hello_source() -> str:
     return (EXAMPLES / "hello.slanq").read_text(encoding="utf-8")
 
