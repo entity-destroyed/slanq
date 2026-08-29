@@ -75,3 +75,19 @@ def test_indexed_gate_targets_the_intended_qubit() -> None:
 def test_last_index_is_the_least_significant_qubit() -> None:
     counts = _counts("qint<3> a = 0; X(a[2]); int result = measure(a);")
     assert counts == {"001": SHOTS}
+
+
+def test_pi_rotation_flips_the_qubit() -> None:
+    """RX(PI) is a bit flip up to phase; a half of it would not be deterministic."""
+    source = "qbool q = false;\nRX(PI, q);\nint result = measure(q);\n"
+    assert _counts(source) == {"1": SHOTS}
+
+
+def test_a_computed_angle_reaches_the_circuit_unfolded() -> None:
+    source = "qbool q = false;\nRX(round(2.5) * PI / floor(7 / 2), q);\n"
+    result = compile_source(source, source_name="test.slanq")
+    assert result.qiskit_source is not None
+    assert "_round(2.5) * np.pi / math.floor(7 / 2)" in result.qiskit_source
+
+    counts = _counts(source + "int result = measure(q);\n")
+    assert counts == {"1": SHOTS}

@@ -13,14 +13,14 @@ param int gamma[4];
 // Gates
 X(a[1]);
 CX(b[0], a[0]);
-RX(b[0], 90);
+RX(PI / 2, b[0]);
 
 // Arithmetic
 a += b;
 
 // Quantum condition: its body may contain unitary transformations only
 qif(a == 2) {
-    phase(60);
+    phase(PI / 3);
 }
 
 // Classical condition on a measurement result (dynamic circuit)
@@ -31,7 +31,7 @@ if(r < 4) {
 
 // Loop with an iteration count known at compile time
 qint<3> num = [];
-for(int i = 0; i < 4; i++) {
+for(int i in range(4)) {
     num += gamma[i];
 }
 

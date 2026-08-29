@@ -1,7 +1,14 @@
 from __future__ import annotations
 
-from slanq.ast_nodes import Span
-from slanq.codegen import generate_qiskit
+import math
+
+import numpy
+import pytest
+
+from slanq.ast_nodes import Literal, Span
+from slanq.builtin import _round_half_away, const_value
+from slanq.codegen import _Generator, generate_qiskit
+from slanq.compiler import compile_source
 from slanq.ir import ClbitRef, GateOp, InitOp, IRBlock, IRModule, QubitBit, QubitRef
 
 
@@ -76,12 +83,12 @@ def test_params_precede_targets(span: Span) -> None:
                     span=span,
                     name="RX",
                     targets=[QubitBit(ref=qubit, index=0)],
-                    params=[90.0],
+                    params=[Literal(span=span, value=1.5)],
                 )
             ]
         ),
     )
-    assert "circuit.rx(90.0, q[0])" in _generate(module)
+    assert "circuit.rx(1.5, q[0])" in _generate(module)
 
 
 def test_whole_register_target_is_not_indexed(span: Span) -> None:
@@ -142,3 +149,54 @@ def test_unused_clbit_register_still_declared(span: Span) -> None:
     clbit = ClbitRef(name="result", size=1)
     module = IRModule(qubits=[qubit], clbits=[clbit], body=IRBlock(ops=[]))
     assert 'result = ClassicalRegister(1, "result")' in _generate(module)
+
+
+def _param_source(source: str) -> str:
+    """The Python rendering of a single gate parameter written in Slanq."""
+    result = compile_source(f"qbool q = false;\nRX({source}, q);\n")
+    assert not result.diagnostics.has_errors
+    assert result.qiskit_source is not None
+    return result.qiskit_source
+
+
+def test_pi_is_emitted_symbolically() -> None:
+    source = _param_source("PI / 4")
+    assert "circuit.rx(np.pi / 4, q[0])" in source
+    assert "0.785" not in source
+
+
+def test_numpy_is_imported_only_when_needed() -> None:
+    assert "import numpy as np" in _param_source("PI")
+    assert "import numpy as np" not in _param_source("1.5")
+
+
+def test_round_helper_is_emitted_with_slanq_semantics() -> None:
+    source = _param_source("round(2.5)")
+    assert "circuit.rx(_round(2.5), q[0])" in source
+    assert "def _round(value: float) -> int:" in source
+    assert "import math" in source
+
+
+def test_floor_and_ceil_map_to_math() -> None:
+    source = _param_source("floor(7 / 2) * ceil(1.2)")
+    assert "circuit.rx(math.floor(7 / 2) * math.ceil(1.2), q[0])" in source
+
+
+@pytest.mark.parametrize(
+    "slanq_source",
+    [
+        "PI / 4", "-PI", "2 ** 3 ** 2", "-2 ** 2", "(-2) ** 2", "2 ** -1",
+        "1 - (2 - 3)", "(1 + 2) * 3", "1 + 2 * 3", "-7 % 3", "1 | 2 ^ 3 & 4",
+        "(1 | 2) ^ 3", "~5 + 1", "-(1 + 2)", "100 / (2 * 5)", "1 / 2 / 4",
+        "floor(PI * 2) + round(1.5)", "(1 - 2) ** 3",
+    ],
+)
+def test_rendered_python_has_the_same_value_as_the_slanq_expression(
+    build_ast, slanq_source: str
+) -> None:
+    """The parenthesising is what makes this hold: Slanq and Python agree on
+    precedence only because the grammar was aligned with Python's table."""
+    (declaration,) = build_ast(f"float r = {slanq_source};").statements
+    rendered = _Generator().expression(declaration.initializer)
+    namespace = {"np": numpy, "math": math, "_round": _round_half_away}
+    assert eval(rendered, namespace) == const_value(declaration.initializer)  # noqa: S307

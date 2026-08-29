@@ -6,6 +6,7 @@ import pytest
 
 from slanq.analysis import analyze
 from slanq.ast_nodes import Program
+from slanq.builtin import const_value
 from slanq.diagnostics import DiagnosticBag
 from slanq.ir import ClbitRef, GateOp, InitOp, IRModule, MeasurementOp, QubitBit, QubitRef
 from slanq.lowering import lower_to_ir
@@ -74,7 +75,7 @@ def test_numeric_arguments_become_params(lower: LowerSource) -> None:
 
     gate = module.body.ops[1]
     assert isinstance(gate, GateOp)
-    assert gate.params == [90.0]
+    assert [const_value(param) for param in gate.params] == [90]
     assert gate.targets == [QubitBit(ref=module.qubits[0], index=0)]
 
 

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from slanq.ast_nodes import (
     Block,
+    Call,
     Declaration,
     Expression,
     For,
     Index,
-    Literal,
     Name,
     ProcessDef,
     Program,
@@ -15,18 +15,9 @@ from slanq.ast_nodes import (
     Symbol,
     qubit_count,
 )
+from slanq.builtin import BUILTIN_NAMES, RANGE, ConstEvalError, const_int, const_value
 from slanq.diagnostics import DiagnosticBag
 from slanq.visitor import NodeVisitor
-
-BUILTIN_NAMES: frozenset[str] = frozenset(
-    {
-        "H", "X", "Y", "Z", "S", "T", "Sdg", "Tdg",
-        "RX", "RY", "RZ",
-        "CX", "CY", "CZ", "CH", "SWAP", "CCX",
-        "phase",
-        "measure",
-    }
-)
 
 Scope = dict[str, Symbol]
 
@@ -69,11 +60,10 @@ class _NameResolver(NodeVisitor):
         self.scopes.pop()
 
     def visit_For(self, node: For) -> None:
-        # The loop variable is visible in the condition, the update and the body.
+        # The loop variable is not yet in scope in the range expression itself.
+        self.visit(node.iterable)
         self.scopes.append({})
-        self.visit(node.init)
-        self.visit(node.condition)
-        self.visit(node.update)
+        self._declare(node.binding)
         self.visit(node.body)
         self.scopes.pop()
 
@@ -115,22 +105,49 @@ def _resolve_names(ast: Program, bag: DiagnosticBag, scope: Scope) -> None:
     _NameResolver(scope, bag).visit(ast)
 
 
-class _IndexChecker(NodeVisitor):
+class _Checker(NodeVisitor):
+    """Shared plumbing for the checks that evaluate constant subexpressions."""
+
     def __init__(self, bag: DiagnosticBag) -> None:
         self.bag = bag
+
+    def _value(self, expression: Expression) -> int | float | bool | None:
+        try:
+            return const_value(expression)
+        except ConstEvalError as exc:
+            self._reject(str(exc), expression)
+            return None
+
+    def _int(self, expression: Expression) -> int | None:
+        try:
+            return const_int(expression)
+        except ConstEvalError as exc:
+            self._reject(str(exc), expression)
+            return None
+
+    def _reject(self, message: str, node: Expression) -> None:
+        _error(self.bag, message, node.span)
+
+
+class _IndexChecker(_Checker):
+    def visit_For(self, node: For) -> None:
+        # The body is skipped: the loop itself is not lowered yet, so a loop
+        # variable has no compile-time value and every index in the body would
+        # be reported as non-constant. That message would hide the real one.
+        self.visit(node.iterable)
 
     def visit_Index(self, node: Index) -> None:
         self.generic_visit(node)
 
         size = _quantum_size_of(node.base)
         if size is None:
-            # Not a quantum register. todo for classical registers arrays like (`gamma[i]`)
+            # Not a quantum register; classical arrays (`gamma[i]`) come later.
             return
 
-        index = _integer_literal(node.index)
+        index = self._int(node.index)
         if index is None:
             self._reject(
-                "a quantum register index must be an integer literal", node.index
+                "a quantum register index must be a compile-time integer", node.index
             )
             return
 
@@ -144,10 +161,10 @@ class _IndexChecker(NodeVisitor):
         self.generic_visit(node)
 
         size = qubit_count(node.declared_type)
-        if size is None or not isinstance(node.initializer, Literal):
+        if size is None or not isinstance(node.initializer, Expression):
             return
 
-        value = node.initializer.value
+        value = self._value(node.initializer)
         if not isinstance(value, int):
             return
 
@@ -159,8 +176,26 @@ class _IndexChecker(NodeVisitor):
                 node.initializer,
             )
 
-    def _reject(self, message: str, node: Expression) -> None:
-        _error(self.bag, message, node.span)
+
+class _ForChecker(_Checker):
+    def visit_For(self, node: For) -> None:
+        self.generic_visit(node)
+
+        iterable = node.iterable
+        if not (isinstance(iterable, Call) and iterable.callee.name == RANGE):
+            self._reject(f"a for loop iterates over {RANGE}(...)", iterable)
+            return
+
+        if not 1 <= len(iterable.args) <= 3:
+            self._reject(
+                f"{RANGE}() takes a stop, a start and a stop, or a start, a stop "
+                f"and a step -- got {len(iterable.args)} argument(s)",
+                iterable,
+            )
+            return
+
+        if len(iterable.args) == 3 and self._value(iterable.args[2]) == 0:
+            self._reject("the step of a for loop must not be zero", iterable.args[2])
 
 
 def _quantum_size_of(base: Name) -> int | None:
@@ -170,14 +205,9 @@ def _quantum_size_of(base: Name) -> int | None:
     return qubit_count(symbol.declared_type)
 
 
-def _integer_literal(expression: Expression) -> int | None:
-    if isinstance(expression, Literal) and type(expression.value) is int:
-        return expression.value
-    return None
-
-
 def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _IndexChecker(bag).visit(ast)
+    _ForChecker(bag).visit(ast)
 
 
 def _check_affine(ast: Program, bag: DiagnosticBag) -> None:
@@ -188,4 +218,4 @@ def _error(bag: DiagnosticBag, message: str, span: Span) -> None:
     bag.error(message, line=span.start_line, column=span.start_col)
 
 
-__all__ = ["BUILTIN_NAMES", "analyze"]
+__all__ = ["analyze"]

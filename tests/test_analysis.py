@@ -89,7 +89,7 @@ def test_error_carries_source_position(diagnostics_of: DiagnosticsOf) -> None:
 
 
 def test_for_loop_variable_is_in_scope(diagnostics_of: DiagnosticsOf) -> None:
-    source = "qbool q = false;\nfor(int i = 0; i < 4; i++) { X(q); }\n"
+    source = "qbool q = false;\nfor(int i in range(4)) { X(q); }\n"
     assert not diagnostics_of(source).has_errors
 
 
@@ -107,7 +107,7 @@ def test_block_scoped_declaration_is_not_visible_outside(
 
 
 def test_for_loop_variable_is_not_visible_outside(diagnostics_of: DiagnosticsOf) -> None:
-    source = "qbool q = false;\nfor(int i = 0; i < 4; i++) { X(q); }\nH(i);\n"
+    source = "qbool q = false;\nfor(int i in range(4)) { X(q); }\nH(i);\n"
     bag = diagnostics_of(source)
     assert bag.has_errors
     assert "'i'" in bag.errors[0].message
@@ -149,15 +149,33 @@ def test_index_within_range_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
     assert not diagnostics_of("qint<2> q = 0; H(q[1]);").has_errors
 
 
-def test_non_literal_quantum_index_is_reported(diagnostics_of: DiagnosticsOf) -> None:
+def test_non_constant_quantum_index_is_reported(diagnostics_of: DiagnosticsOf) -> None:
     bag = diagnostics_of("qint<2> q = 0; int i = 0; H(q[i]);")
     assert bag.has_errors
-    assert "integer literal" in bag.errors[0].message
+    assert "compile-time integer" in bag.errors[0].message
+
+
+def test_constant_expression_index_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
+    assert not diagnostics_of("qint<4> q = 0; H(q[1 + 2]);").has_errors
+
+
+def test_constant_expression_index_is_range_checked(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<4> q = 0; H(q[2 * 2]);")
+    assert bag.has_errors
+    assert "out of range" in bag.errors[0].message
+
+
+def test_fractional_index_is_reported(diagnostics_of: DiagnosticsOf) -> None:
+    """`/` yields a float, so `floor()` is needed to get back to an index."""
+    bag = diagnostics_of("qint<4> q = 0; H(q[3 / 2]);")
+    assert bag.has_errors
+    assert "compile-time integer" in bag.errors[0].message
+    assert not diagnostics_of("qint<4> q = 0; H(q[floor(3 / 2)]);").has_errors
 
 
 def test_classical_array_index_is_not_restricted(diagnostics_of: DiagnosticsOf) -> None:
     """The literal-only rule applies to qubit registers, not classical arrays."""
-    source = "param int gamma[4]; for(int i = 0; i < 4; i++) { int x = gamma[i]; }"
+    source = "param int gamma[4]; for(int i in range(4)) { int x = gamma[i]; }"
     assert not diagnostics_of(source).has_errors
 
 
@@ -169,3 +187,34 @@ def test_initializer_too_large_is_reported(diagnostics_of: DiagnosticsOf) -> Non
 
 def test_largest_fitting_initializer_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
     assert not diagnostics_of("qint<2> a = 3;").has_errors
+
+
+def test_for_loop_must_iterate_over_range(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qbool q = false; for(int i in 4) { X(q); }")
+    assert bag.has_errors
+    assert "range(...)" in bag.errors[0].message
+
+
+def test_range_argument_count_is_checked(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qbool q = false; for(int i in range(1, 2, 3, 4)) { X(q); }")
+    assert bag.has_errors
+    assert "range()" in bag.errors[0].message
+
+
+def test_range_step_may_not_be_zero(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qbool q = false; for(int i in range(0, 4, 0)) { X(q); }")
+    assert bag.has_errors
+    assert "must not be zero" in bag.errors[0].message
+
+
+def test_range_forms_are_accepted(diagnostics_of: DiagnosticsOf) -> None:
+    for iterable in ("range(4)", "range(1, 4)", "range(0, 8, 2)"):
+        source = f"qbool q = false; for(int i in {iterable}) {{ X(q); }}"
+        assert not diagnostics_of(source).has_errors, iterable
+
+
+def test_index_inside_a_loop_is_not_reported(diagnostics_of: DiagnosticsOf) -> None:
+    """The loop is not lowered yet, so its variable has no compile-time value.
+    Reporting the index would hide the honest 'for loop is not implemented'."""
+    source = "qint<4> q = 0; for(int i in range(4)) { X(q[i]); }"
+    assert not diagnostics_of(source).has_errors

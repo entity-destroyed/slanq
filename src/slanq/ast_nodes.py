@@ -141,12 +141,6 @@ class AugAssign(Statement):
 
 
 @dataclass(kw_only=True)
-class PostUpdate(Statement):
-    target: Expression
-    op: str
-
-
-@dataclass(kw_only=True)
 class If(Statement):
     condition: Expression
     body: Block
@@ -165,10 +159,14 @@ class While(Statement):
 
 
 @dataclass(kw_only=True)
+class LoopVarDecl(Declaration):
+    declared_type: Type
+
+
+@dataclass(kw_only=True)
 class For(Statement):
-    init: ClassicalDecl
-    condition: Expression
-    update: Statement
+    binding: LoopVarDecl
+    iterable: Expression
     body: Block
 
 
@@ -229,12 +227,12 @@ __all__ = [
     "If",
     "Index",
     "IntType",
+    "LoopVarDecl",
     "Literal",
     "Name",
     "Node",
     "ParamArrayDecl",
     "ParamDecl",
-    "PostUpdate",
     "ProbList",
     "ProcParam",
     "ProcessDef",

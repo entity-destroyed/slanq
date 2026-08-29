@@ -19,10 +19,10 @@ from slanq.ast_nodes import (
     Index,
     IntType,
     Literal,
+    LoopVarDecl,
     Name,
     ParamArrayDecl,
     ParamDecl,
-    PostUpdate,
     ProbList,
     ProcessDef,
     ProcParam,
@@ -186,14 +186,6 @@ class SlanqTransformer(Transformer):
             value=value,
         )
 
-    def post_increment(self, meta: Meta, children) -> PostUpdate:
-        (name_token,) = children
-        return PostUpdate(span=_span_from_meta(meta), target=_name_from_token(name_token), op="++")
-
-    def post_decrement(self, meta: Meta, children) -> PostUpdate:
-        (name_token,) = children
-        return PostUpdate(span=_span_from_meta(meta), target=_name_from_token(name_token), op="--")
-
     def if_stmt(self, meta: Meta, children) -> If:
         condition, body = children
         return If(span=_span_from_meta(meta), condition=condition, body=body)
@@ -207,22 +199,20 @@ class SlanqTransformer(Transformer):
         return While(span=_span_from_meta(meta), condition=condition, body=body)
 
     def for_stmt(self, meta: Meta, children) -> For:
-        init, condition, update, body = children
+        binding, iterable, body = children
         return For(
             span=_span_from_meta(meta),
-            init=init,
-            condition=condition,
-            update=update,
+            binding=binding,
+            iterable=iterable,
             body=body,
         )
 
-    def for_init(self, meta: Meta, children) -> ClassicalDecl:
-        type_token, name_token, initializer = children
-        return ClassicalDecl(
+    def loop_var(self, meta: Meta, children) -> LoopVarDecl:
+        type_token, name_token = children
+        return LoopVarDecl(
             span=_span_from_meta(meta),
             name=str(name_token),
             declared_type=_type_from_token(type_token),
-            initializer=initializer,
         )
 
     # --- expressions ---
@@ -310,6 +300,18 @@ class SlanqTransformer(Transformer):
 
     def mul(self, meta: Meta, children) -> BinaryOp:
         return self._binary(meta, children, "*")
+
+    def div(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, "/")
+
+    def mod(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, "%")
+
+    def pow(self, meta: Meta, children) -> BinaryOp:
+        return self._binary(meta, children, "**")
+
+    def neg(self, meta: Meta, children) -> UnaryOp:
+        return self._unary(meta, children, "-")
 
     def bit_not(self, meta: Meta, children) -> UnaryOp:
         return self._unary(meta, children, "~")

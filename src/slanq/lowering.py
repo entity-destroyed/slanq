@@ -6,13 +6,13 @@ from slanq.ast_nodes import (
     Expression,
     ExprStatement,
     Index,
-    Literal,
     Name,
     Program,
     QuantumDecl,
     Statement,
     qubit_count,
 )
+from slanq.builtin import ConstEvalError, const_int, const_value
 from slanq.diagnostics import DiagnosticBag
 from slanq.ir import (
     ClbitRef,
@@ -34,7 +34,6 @@ MEASURE = "measure"
 UNIMPLEMENTED: dict[str, str] = {
     "Assign": "assignment",
     "AugAssign": "compound assignment",
-    "PostUpdate": "increment and decrement",
     "If": "the if statement",
     "QIf": "the qif statement",
     "While": "the while loop",
@@ -73,7 +72,14 @@ class _Lowerer(NodeVisitor):
             )
             return
 
-        if not isinstance(node.initializer, Literal):
+        value = (
+            self._const_value(node.initializer)
+            if isinstance(node.initializer, Expression)
+            else None
+        )
+        # `isinstance` rather than `type(...) is int`: a qbool is initialized
+        # with a bool, which is what the InitOp carries.
+        if not isinstance(value, int):
             self._error(
                 f"this way of initializing '{node.name}' is not implemented yet; "
                 "this is a limitation of the compiler, not an error in the program",
@@ -84,9 +90,7 @@ class _Lowerer(NodeVisitor):
         ref = QubitRef(name=node.name, size=size)
         self.qubits[node.name] = ref
         self.module.qubits.append(ref)
-        self.module.body.ops.append(
-            InitOp(span=node.span, target=ref, value=node.initializer.value)
-        )
+        self.module.body.ops.append(InitOp(span=node.span, target=ref, value=value))
 
     def visit_ClassicalDecl(self, node: ClassicalDecl) -> None:
         initializer = node.initializer
@@ -115,10 +119,10 @@ class _Lowerer(NodeVisitor):
             return
 
         targets: list[QubitOperand] = []
-        params: list[float] = []
+        params: list[Expression] = []
         for argument in expr.args:
-            if isinstance(argument, Literal):
-                params.append(float(argument.value))
+            if self._const_value(argument) is not None:
+                params.append(argument)
                 continue
             operand = self._operand(argument)
             if operand is None:
@@ -165,18 +169,35 @@ class _Lowerer(NodeVisitor):
         if ref is None:
             return None
 
-        index = expression.index
-        if not isinstance(index, Literal) or type(index.value) is not int:
-            self._error("a quantum register index must be an integer literal", index.span)
+        index = self._const_int(expression.index)
+        if index is None:
+            self._error(
+                "a quantum register index must be a compile-time integer",
+                expression.index.span,
+            )
             return None
 
-        return QubitBit(ref=ref, index=index.value)
+        return QubitBit(ref=ref, index=index)
 
     def _register(self, name: Name) -> QubitRef | None:
         ref = self.qubits.get(name.name)
         if ref is None:
             self._error(f"'{name.name}' is not a quantum variable", name.span)
         return ref
+
+    def _const_value(self, expression: Expression) -> int | float | bool | None:
+        try:
+            return const_value(expression)
+        except ConstEvalError as exc:
+            self._error(str(exc), expression.span)
+            return None
+
+    def _const_int(self, expression: Expression) -> int | None:
+        try:
+            return const_int(expression)
+        except ConstEvalError as exc:
+            self._error(str(exc), expression.span)
+            return None
 
     def _unimplemented(self, node: Statement) -> None:
         kind = type(node).__name__

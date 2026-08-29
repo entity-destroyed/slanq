@@ -57,13 +57,11 @@ AUGOP: "+=" | "-="
 if_stmt:    "if" "(" expr ")" block
 qif_stmt:   "qif" "(" expr ")" block
 while_stmt: "while" "(" expr ")" block
-for_stmt:   "for" "(" for_init ";" expr ";" for_update ")" block
 
-for_init:   CTYPE NAME "=" expr
-?for_update: NAME "++" -> post_increment
-           | NAME "--" -> post_decrement
-           | compound_assignment
-
+// The iterable is an ordinary expression so that an unsupported one can be
+// rejected with a meaningful message; only `range(...)` is accepted today.
+for_stmt:  "for" "(" loop_var "in" expr ")" block
+loop_var:  CTYPE NAME
 
 block: "{" statement* "}"
 
@@ -80,8 +78,18 @@ proc_param:  TYPE NAME
 ?or_expr: and_expr
         | or_expr "||" and_expr -> logical_or
 
-?and_expr: bitor_expr
-         | and_expr "&&" bitor_expr -> logical_and
+?and_expr: comparison
+         | and_expr "&&" comparison -> logical_and
+
+// Non-associative: both operands are one level tighter, so `a < b < c` is a
+// syntax error.
+?comparison: bitor_expr
+           | bitor_expr "==" bitor_expr -> eq
+           | bitor_expr "!=" bitor_expr -> ne
+           | bitor_expr "<=" bitor_expr -> le
+           | bitor_expr ">=" bitor_expr -> ge
+           | bitor_expr "<"  bitor_expr -> lt
+           | bitor_expr ">"  bitor_expr -> gt
 
 ?bitor_expr: bitxor_expr
            | bitor_expr "|" bitxor_expr -> bit_or
@@ -89,29 +97,28 @@ proc_param:  TYPE NAME
 ?bitxor_expr: bitand_expr
             | bitxor_expr "^" bitand_expr -> bit_xor
 
-?bitand_expr: equality
-            | bitand_expr "&" equality -> bit_and
-
-?equality: comparison
-         | equality "==" comparison -> eq
-         | equality "!=" comparison -> ne
-
-?comparison: sum
-           | comparison "<="  sum -> le
-           | comparison ">="  sum -> ge
-           | comparison "<"   sum -> lt
-           | comparison ">"   sum -> gt
+?bitand_expr: sum
+            | bitand_expr "&" sum -> bit_and
 
 ?sum: product
     | sum "+" product -> add
     | sum "-" product -> sub
 
+// Division always yields a float, as in Python; `floor()` converts back to an
+// integer. `//` cannot denote integer division because it starts a comment.
 ?product: unary
         | product "*" unary -> mul
+        | product "/" unary -> div
+        | product "%" unary -> mod
 
-?unary: atom
+// `!` binds tightly. Python's `not` is looser, so the code generator parenthesises it.
+?unary: power
+      | "-" unary -> neg
       | "~" unary -> bit_not
       | "!" unary -> logical_not
+
+?power: atom
+      | atom "**" unary -> pow
 
 ?atom: NUMBER            -> number
      | BOOL              -> boolean

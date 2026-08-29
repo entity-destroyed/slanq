@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from slanq.ast_nodes import Span
+from slanq.ast_nodes import Expression, Span
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -52,7 +52,9 @@ class InitOp(Op):
 class GateOp(Op):
     name: str
     targets: list[QubitOperand] = field(default_factory=list)
-    params: list[float] = field(default_factory=list)
+    # Kept as expressions, not numbers: `RX(PI/4, q)` must reach the generated
+    # file as `np.pi / 4`, since 0.785... is unreadable.
+    params: list[Expression] = field(default_factory=list)
 
 
 @dataclass(kw_only=True, eq=False)

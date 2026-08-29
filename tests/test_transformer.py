@@ -19,11 +19,11 @@ from slanq.ast_nodes import (
     Index,
     IntType,
     Literal,
+    LoopVarDecl,
     Name,
     Node,
     ParamArrayDecl,
     ParamDecl,
-    PostUpdate,
     ProbList,
     ProcessDef,
     Program,
@@ -150,14 +150,13 @@ def test_branches_and_loops(build_ast: BuildAst) -> None:
 
 
 def test_for_loop_parts(build_ast: BuildAst) -> None:
-    (loop,) = build_ast("for(int i = 0; i < 4; i++) { X(q); }").statements
+    (loop,) = build_ast("for(int i in range(4)) { X(q); }").statements
     assert isinstance(loop, For)
-    assert isinstance(loop.init, ClassicalDecl)
-    assert loop.init.name == "i"
-    assert isinstance(loop.condition, BinaryOp)
-    assert loop.condition.op == "<"
-    assert isinstance(loop.update, PostUpdate)
-    assert loop.update.op == "++"
+    assert isinstance(loop.binding, LoopVarDecl)
+    assert loop.binding.name == "i"
+    assert isinstance(loop.binding.declared_type, IntType)
+    assert isinstance(loop.iterable, Call)
+    assert loop.iterable.callee.name == "range"
 
 
 def test_process_definition(build_ast: BuildAst) -> None:
@@ -243,3 +242,21 @@ def test_boolean_true_literal(build_ast: BuildAst) -> None:
     assert isinstance(declaration, QuantumDecl)
     assert isinstance(declaration.initializer, Literal)
     assert declaration.initializer.value is True
+
+
+@pytest.mark.parametrize(
+    ("source", "op"),
+    [("a / b", "/"), ("a % b", "%"), ("a ** b", "**")],
+)
+def test_new_binary_operators_keep_their_symbol(
+    build_ast: BuildAst, source: str, op: str
+) -> None:
+    (declaration,) = build_ast(f"float x = {source};").statements
+    assert isinstance(declaration.initializer, BinaryOp)
+    assert declaration.initializer.op == op
+
+
+def test_unary_minus_becomes_a_unary_op(build_ast: BuildAst) -> None:
+    (declaration,) = build_ast("int x = -a;").statements
+    assert isinstance(declaration.initializer, UnaryOp)
+    assert declaration.initializer.op == "-"
