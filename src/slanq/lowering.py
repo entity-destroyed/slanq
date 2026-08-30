@@ -7,6 +7,7 @@ from slanq.ast_nodes import (
     ExprStatement,
     Index,
     Name,
+    ProbList,
     Program,
     QuantumDecl,
     Statement,
@@ -86,14 +87,8 @@ class _Lowerer(NodeVisitor):
             )
             return
 
-        value = (
-            self._const_value(node.initializer)
-            if isinstance(node.initializer, Expression)
-            else None
-        )
-        # `isinstance` rather than `type(...) is int`: a qbool is initialized
-        # with a bool, which is what the InitOp carries.
-        if not isinstance(value, int):
+        value = self._init_value(node.initializer)
+        if value is None:
             self._error(
                 f"this way of initializing '{node.name}' is not implemented yet; "
                 "this is a limitation of the compiler, not an error in the program",
@@ -226,6 +221,15 @@ class _Lowerer(NodeVisitor):
         if ref is None:
             self._error(f"'{name.name}' is not a quantum variable", name.span)
         return ref
+
+    def _init_value(self, initializer: Expression | ProbList) -> int | bool | list[float] | None:
+        if isinstance(initializer, ProbList):
+            return initializer.probabilities
+
+        value = self._const_value(initializer)
+        # bool is a subclass of int, so this also lets a qbool's True/False
+        # through unchanged (`type(value) is int` would reject it).
+        return value if isinstance(value, int) else None
 
     def _const_value(self, expression: Expression) -> int | float | bool | None:
         try:

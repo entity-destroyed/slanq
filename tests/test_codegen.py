@@ -212,3 +212,37 @@ def test_unknown_gate_name_fails_loudly(span: Span) -> None:
     )
     with pytest.raises(SlanqError):
         _generate(module)
+
+
+def test_empty_probability_list_becomes_hadamards(span: Span) -> None:
+    qubit = QubitRef(name="a", size=2)
+    module = IRModule(qubits=[qubit], body=IRBlock(ops=[InitOp(span=span, target=qubit, value=[])]))
+    source = _generate(module)
+    assert "circuit.h(a[0])" in source
+    assert "circuit.h(a[1])" in source
+    assert "StatePreparation" not in source
+
+
+def test_nonempty_probability_list_becomes_state_preparation(span: Span) -> None:
+    qubit = QubitRef(name="a", size=2)
+    module = IRModule(
+        qubits=[qubit],
+        body=IRBlock(ops=[InitOp(span=span, target=qubit, value=[0.0, 0.0, 0.8, 0.2])]),
+    )
+    source = _generate(module)
+    assert "from qiskit.circuit.library import StatePreparation" in source
+    assert (
+        "circuit.append(StatePreparation([0.0, 0.0, 0.8944271909999159, "
+        "0.4472135954999579]), a)" in source
+    )
+
+
+def test_state_preparation_amplitudes_are_normalized_defensively(span: Span) -> None:
+    """Even a list that is not exactly 1 (rejected upstream by analysis in
+    practice) would not crash the codegen: it always divides by the sum."""
+    qubit = QubitRef(name="a", size=1)
+    module = IRModule(
+        qubits=[qubit], body=IRBlock(ops=[InitOp(span=span, target=qubit, value=[1.0, 1.0])])
+    )
+    source = _generate(module)
+    assert "StatePreparation([0.7071067811865476, 0.7071067811865476])" in source

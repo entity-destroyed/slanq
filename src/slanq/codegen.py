@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from slanq import __version__
 from slanq.ast_nodes import BinaryOp, Call, Expression, Literal, Name, UnaryOp
 from slanq.builtin import BUILTIN_CONSTANTS, BUILTIN_FUNCTIONS
@@ -91,6 +93,7 @@ class _Generator:
         self.needs_numpy = False
         self.needs_math = False
         self.needs_round = False
+        self.needs_state_preparation = False
 
     def import_lines(self, module: IRModule) -> list[str]:
         standard = ["import sys"]
@@ -101,6 +104,8 @@ class _Generator:
         if module.clbits:
             qiskit_names.append("ClassicalRegister")
         third_party = [f"from qiskit import {', '.join(sorted(qiskit_names))}"]
+        if self.needs_state_preparation:
+            third_party.append("from qiskit.circuit.library import StatePreparation")
         if self.needs_numpy:
             third_party.insert(0, "import numpy as np")
 
@@ -125,6 +130,8 @@ class _Generator:
 
     def op_lines(self, op: Op) -> list[str]:
         if isinstance(op, InitOp):
+            if isinstance(op.value, list):
+                return self._state_preparation_lines(op)
             # The register is little-endian, so bit b of the value sits on qubit b.
             # Unlike an explicit index, this needs no mirroring.
             return [
@@ -148,6 +155,22 @@ class _Generator:
             return [f"circuit.measure({_operand_source(op.source)}, {op.target.name})"]
 
         raise NotImplementedError(f"no code generation for {type(op).__name__}")
+
+    def _state_preparation_lines(self, op: InitOp) -> list[str]:
+        assert isinstance(op.value, list)
+        probabilities = op.value
+
+        if not probabilities:
+            return [f"circuit.h({op.target.name}[{bit}])" for bit in range(op.target.size)]
+
+        self.needs_state_preparation = True
+        # Always divides, not just when it visibly deviates: this division IS
+        # the normalization the language promises, and StatePreparation itself
+        # rejects amplitudes whose squares don't sum to 1 within about 1e-6.
+        total = sum(probabilities)
+        amplitudes = [math.sqrt(probability / total) for probability in probabilities]
+        rendered = ", ".join(repr(amplitude) for amplitude in amplitudes)
+        return [f"circuit.append(StatePreparation([{rendered}]), {op.target.name})"]
 
     def expression(self, expression: Expression) -> str:
         if isinstance(expression, Literal):

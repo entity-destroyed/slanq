@@ -10,6 +10,8 @@ from slanq.ast_nodes import (
     For,
     Index,
     Name,
+    Node,
+    ProbList,
     ProcessDef,
     ProcParam,
     Program,
@@ -145,8 +147,11 @@ class _Checker(NodeVisitor):
             self._reject(str(exc), expression)
             return None
 
-    def _reject(self, message: str, node: Expression) -> None:
+    def _reject(self, message: str, node: Node) -> None:
         _error(self.bag, message, node.span)
+
+    def _warn(self, message: str, node: Node) -> None:
+        self.bag.warning(message, line=node.span.start_line, column=node.span.start_col)
 
 
 class _IndexChecker(_Checker):
@@ -193,6 +198,54 @@ class _IndexChecker(_Checker):
             self._reject(
                 f"{value} does not fit in '{node.name}', which holds {size} "
                 f"qubit(s) (allowed: 0..{largest})",
+                node.initializer,
+            )
+
+
+# Below this, a probability list is treated as "meant to sum to 1": floating
+# point noise from ordinary decimal literals is silently normalized away rather than warned about.
+PROBABILITY_SUM_TOLERANCE = 1e-9
+
+
+class _ProbListChecker(_Checker):
+    def visit_QuantumDecl(self, node: QuantumDecl) -> None:
+        self.generic_visit(node)
+
+        if not isinstance(node.initializer, ProbList):
+            return
+
+        probabilities = node.initializer.probabilities
+        if not probabilities:
+            # An empty list means equal superposition; nothing to validate.
+            return
+
+        size = qubit_count(node.declared_type)
+        expected = 2**size
+        if len(probabilities) != expected:
+            self._reject(
+                f"'{node.name}' needs {expected} probabilities (2^{size}), "
+                f"got {len(probabilities)}",
+                node.initializer,
+            )
+            return
+
+        for index, probability in enumerate(probabilities):
+            if not 0 <= probability <= 1:
+                self._reject(
+                    f"the probability {probability} for value {index} of "
+                    f"'{node.name}' is out of range (must be between 0 and 1)",
+                    node.initializer,
+                )
+                return
+
+        total = sum(probabilities)
+        if total <= 0:
+            self._reject(f"the probabilities for '{node.name}' cannot sum to zero",
+                          node.initializer)
+        elif abs(total - 1.0) > PROBABILITY_SUM_TOLERANCE:
+            self._warn(
+                f"the probabilities for '{node.name}' sum to {total}, not 1; "
+                "the compiler will normalize them",
                 node.initializer,
             )
 
@@ -340,6 +393,7 @@ def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _IndexChecker(bag).visit(ast)
     _ForChecker(bag).visit(ast)
     _CallChecker(bag).visit(ast)
+    _ProbListChecker(bag).visit(ast)
 
 
 def _check_affine(ast: Program, bag: DiagnosticBag) -> None:

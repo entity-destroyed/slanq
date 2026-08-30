@@ -182,7 +182,9 @@ def test_unimplemented_statement_names_the_construct(lower: LowerSource) -> None
 
 
 def test_unimplemented_message_blames_the_compiler(lower: LowerSource) -> None:
-    _, bag = lower("qint<2> b = [];")
+    """A quantum variable initialized from another variable: `const_value`
+    never resolves a `Name`, so this stays a limitation, not a crash."""
+    _, bag = lower("int t = 5; qint<2> b = t;")
     assert bag.has_errors
     assert "limitation of the compiler" in bag.errors[0].message
 
@@ -228,3 +230,23 @@ def test_phase_is_reported_as_a_limitation(lower: LowerSource) -> None:
     _, bag = lower("qbool q = false; phase(PI);")
     assert bag.has_errors
     assert "phase gate is not implemented" in bag.errors[0].message
+
+
+def test_empty_probability_list_becomes_an_empty_ir_value(lower: LowerSource) -> None:
+    """`[]` is the equal-superposition marker, kept as an empty list, not
+    resolved into concrete probabilities here -- that is the codegen's job."""
+    module, bag = lower("qint<2> a = [];")
+    assert not bag.has_errors
+    init = module.body.ops[0]
+    assert isinstance(init, InitOp)
+    assert init.value == []
+
+
+def test_probability_list_reaches_the_ir_unnormalized(lower: LowerSource) -> None:
+    """Lowering carries the source values through as-is; normalizing is a
+    rendering concern, left to the codegen."""
+    module, bag = lower("qint<2> a = [0.1, 0.1, 0.1, 0.1];")
+    assert not bag.has_errors
+    init = module.body.ops[0]
+    assert isinstance(init, InitOp)
+    assert init.value == [0.1, 0.1, 0.1, 0.1]

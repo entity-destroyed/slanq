@@ -310,3 +310,51 @@ def test_call_carries_its_return_type(analyzed_ast: AnalyzedAst) -> None:
     declaration = ast.statements[1]
     assert isinstance(declaration, ClassicalDecl)
     assert isinstance(declaration.initializer.inferred_type, IntType)
+
+
+def test_empty_probability_list_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
+    assert not diagnostics_of("qint<2> a = [];").has_errors
+
+
+def test_probability_list_length_must_match_two_to_the_size(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    bag = diagnostics_of("qint<2> a = [0.5, 0.5];")
+    assert bag.has_errors
+    assert "needs 4 probabilities (2^2), got 2" in bag.errors[0].message
+
+
+def test_probability_over_one_is_reported(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<2> a = [1.5, 0.1, 0.5, 0.5];")
+    assert bag.has_errors
+    assert "out of range" in bag.errors[0].message
+
+
+def test_probabilities_summing_to_zero_is_reported(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<2> a = [0, 0, 0, 0];")
+    assert bag.has_errors
+    assert "cannot sum to zero" in bag.errors[0].message
+
+
+def test_probabilities_off_by_a_meaningful_amount_warn(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<2> a = [0.1, 0.1, 0.1, 0.1];")
+    assert not bag.has_errors
+    assert bag.warnings
+    assert "sum to 0.4" in bag.warnings[0].message
+
+
+def test_floating_point_noise_does_not_warn(diagnostics_of: DiagnosticsOf) -> None:
+    """0.15 + 0.15 + 0.35 + 0.35 sums to 0.9999999999999999 in floating point;
+    an obviously-intended list like this stays silent."""
+    bag = diagnostics_of("qint<2> a = [0.15, 0.15, 0.35, 0.35];")
+    assert not bag.has_errors
+    assert not bag.warnings
+
+
+def test_qbool_probability_list_needs_exactly_two_entries(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    assert not diagnostics_of("qbool a = [0.3, 0.7];").has_errors
+    bag = diagnostics_of("qbool a = [0.3, 0.3, 0.4];")
+    assert bag.has_errors
+    assert "needs 2 probabilities" in bag.errors[0].message

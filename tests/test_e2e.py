@@ -100,3 +100,46 @@ def test_ccx_broadcast_computes_a_bitwise_and() -> None:
         "CCX(a, b, c);\nint result = measure(c);\n"
     )
     assert _counts(source) == {"10": SHOTS}
+
+
+def test_empty_probability_list_is_a_cheap_equal_superposition() -> None:
+    """[] is meant as Hadamards on every qubit, not a general StatePreparation."""
+    source = "qint<2> a = [];\nint result = measure(a);\n"
+    result = compile_source(source, source_name="test.slanq")
+    assert result.qiskit_source is not None
+    assert "StatePreparation" not in result.qiskit_source
+
+    counts = _counts(source)
+    assert set(counts) == {"00", "01", "10", "11"}
+    assert all(SHOTS * 0.15 < value < SHOTS * 0.35 for value in counts.values())
+
+
+def test_uneven_probability_list_matches_the_given_distribution() -> None:
+    """Slanq's index i and Qiskit's StatePreparation amplitude index i name the
+    same basis state with no permutation -- the same rule as InitOp and
+    measurement, verified the same way: a canary that would fail if it drifted."""
+    source = "qint<2> b = [0, 0, 0.8, 0.2];\nint result = measure(b);\n"
+    counts = _counts(source)
+    assert set(counts) == {"10", "11"}
+    assert counts["10"] > counts["11"]
+    assert SHOTS * 0.7 < counts["10"] < SHOTS * 0.9
+
+
+def test_probability_list_needing_normalization_still_runs() -> None:
+    """A warning does not stop compilation, and the normalized amplitudes
+    still describe a valid, correctly-proportioned distribution."""
+    source = "qint<2> c = [0.1, 0.1, 0.1, 0.1];\nint result = measure(c);\n"
+    result = compile_source(source, source_name="test.slanq")
+    assert result.diagnostics.warnings
+    assert not result.diagnostics.has_errors
+
+    counts = _counts(source)
+    assert set(counts) == {"00", "01", "10", "11"}
+    assert all(SHOTS * 0.15 < value < SHOTS * 0.35 for value in counts.values())
+
+
+def test_qbool_probability_list() -> None:
+    source = "qbool q = [0.2, 0.8];\nint result = measure(q);\n"
+    counts = _counts(source)
+    assert set(counts) == {"0", "1"}
+    assert counts["1"] > counts["0"]

@@ -45,7 +45,7 @@ class Op:
 @dataclass(kw_only=True, eq=False)
 class InitOp(Op):
     target: QubitRef
-    value: int | bool
+    value: int | bool | list[float]
 
 
 @dataclass(kw_only=True, eq=False)
