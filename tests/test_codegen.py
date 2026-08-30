@@ -9,6 +9,7 @@ from slanq.ast_nodes import Literal, Span
 from slanq.builtin import _round_half_away, const_value
 from slanq.codegen import _Generator, generate_qiskit
 from slanq.compiler import compile_source
+from slanq.diagnostics import SlanqError
 from slanq.ir import ClbitRef, GateOp, InitOp, IRBlock, IRModule, QubitBit, QubitRef
 
 
@@ -200,3 +201,14 @@ def test_rendered_python_has_the_same_value_as_the_slanq_expression(
     rendered = _Generator().expression(declaration.initializer)
     namespace = {"np": numpy, "math": math, "_round": _round_half_away}
     assert eval(rendered, namespace) == const_value(declaration.initializer)  # noqa: S307
+
+
+def test_unknown_gate_name_fails_loudly(span: Span) -> None:
+    """Lower-casing the Slanq name would emit a method Qiskit does not have."""
+    qubit = QubitRef(name="q", size=1)
+    module = IRModule(
+        qubits=[qubit],
+        body=IRBlock(ops=[GateOp(span=span, name="phase", targets=[qubit])]),
+    )
+    with pytest.raises(SlanqError):
+        _generate(module)

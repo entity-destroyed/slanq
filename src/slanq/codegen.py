@@ -27,6 +27,17 @@ ATOM_PRECEDENCE = 99
 
 PYTHON_CONSTANTS: dict[str, str] = {"PI": "np.pi"}
 
+# Lower-casing the Slanq name happens to work for every gate today, but it
+# would silently emit `circuit.phase(...)` -- a method Qiskit does not have --
+# for anything whose Qiskit spelling differs. An explicit table fails loudly
+# instead, the same guard as the transformer's __default__.
+QISKIT_METHODS: dict[str, str] = {
+    "H": "h", "X": "x", "Y": "y", "Z": "z", "S": "s", "T": "t",
+    "Sdg": "sdg", "Tdg": "tdg",
+    "RX": "rx", "RY": "ry", "RZ": "rz",
+    "CX": "cx", "CY": "cy", "CZ": "cz", "CH": "ch", "SWAP": "swap", "CCX": "ccx",
+}
+
 # `round` is not Python's: Slanq rounds a half away from zero, Python to even.
 PYTHON_FUNCTIONS: dict[str, str] = {
     "floor": "math.floor",
@@ -123,9 +134,15 @@ class _Generator:
             ]
 
         if isinstance(op, GateOp):
+            method = QISKIT_METHODS.get(op.name)
+            if method is None:
+                raise SlanqError(
+                    f"internal error: no Qiskit method for the gate '{op.name}'. "
+                    "This is a bug in the compiler, not in the source program."
+                )
             arguments = [self.expression(param) for param in op.params]
             arguments += [_operand_source(target) for target in op.targets]
-            return [f"circuit.{op.name.lower()}({', '.join(arguments)})"]
+            return [f"circuit.{method}({', '.join(arguments)})"]
 
         if isinstance(op, MeasurementOp):
             return [f"circuit.measure({_operand_source(op.source)}, {op.target.name})"]

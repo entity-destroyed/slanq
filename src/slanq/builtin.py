@@ -12,8 +12,22 @@ from __future__ import annotations
 import math
 import operator
 from collections.abc import Callable
+from dataclasses import dataclass
+from enum import Enum
 
-from slanq.ast_nodes import BinaryOp, Call, Expression, Literal, Name, UnaryOp
+from slanq.ast_nodes import (
+    BinaryOp,
+    BuiltinDecl,
+    Call,
+    Expression,
+    FloatType,
+    IntType,
+    Literal,
+    Name,
+    Span,
+    Type,
+    UnaryOp,
+)
 
 BUILTIN_GATES: frozenset[str] = frozenset(
     {
@@ -21,9 +35,43 @@ BUILTIN_GATES: frozenset[str] = frozenset(
         "RX", "RY", "RZ",
         "CX", "CY", "CZ", "CH", "SWAP", "CCX",
         "phase",
-        "measure",
     }
 )
+
+
+class ArgKind(Enum):
+    ANGLE = "angle"
+    # A qubit operand: either a single indexed bit or a whole register.
+    QUBITS = "qubits"
+    # A whole quantum variable; an index is not accepted.
+    QVAR = "qvar"
+
+
+@dataclass(frozen=True, kw_only=True)
+class Signature:
+    args: tuple[ArgKind, ...]
+    returns: Type | None = None
+    # Qiskit broadcasts a register operand itself for one- and two-qubit gates;
+    # for CCX it refuses, so the lowering has to expand the call.
+    qiskit_broadcasts: bool = True
+
+
+def _gates(names: str, *args: ArgKind, **extra) -> dict[str, Signature]:
+    return {name: Signature(args=args, **extra) for name in names.split()}
+
+
+BUILTIN_SIGNATURES: dict[str, Signature] = {
+    **_gates("H X Y Z S T Sdg Tdg", ArgKind.QUBITS),
+    **_gates("RX RY RZ", ArgKind.ANGLE, ArgKind.QUBITS),
+    **_gates("CX CY CZ CH SWAP", ArgKind.QUBITS, ArgKind.QUBITS),
+    "CCX": Signature(
+        args=(ArgKind.QUBITS, ArgKind.QUBITS, ArgKind.QUBITS),
+        qiskit_broadcasts=False,
+    ),
+    "phase": Signature(args=(ArgKind.ANGLE,)),
+    "measure": Signature(args=(ArgKind.QVAR,), returns=IntType()),
+    **_gates("floor ceil round", ArgKind.ANGLE, returns=IntType()),
+}
 
 
 def _round_half_away(value: float) -> int:
@@ -43,8 +91,26 @@ BUILTIN_FUNCTIONS: dict[str, Callable[[float], int]] = {
 RANGE = "range"
 
 BUILTIN_NAMES: frozenset[str] = frozenset(
-    BUILTIN_GATES | BUILTIN_CONSTANTS.keys() | BUILTIN_FUNCTIONS.keys() | {RANGE}
+    BUILTIN_SIGNATURES.keys() | BUILTIN_CONSTANTS.keys() | {RANGE}
 )
+
+# Builtins are not declared in the source, so they share one placeholder span.
+# Every diagnostic about a builtin points at the use site, never at this.
+BUILTIN_SPAN = Span(start_line=0, start_col=0, end_line=0, end_col=0)
+
+BUILTIN_SCOPE: dict[str, BuiltinDecl] = {
+    **{
+        name: BuiltinDecl(span=BUILTIN_SPAN, name=name, signature=signature)
+        for name, signature in BUILTIN_SIGNATURES.items()
+    },
+    **{
+        name: BuiltinDecl(span=BUILTIN_SPAN, name=name, declared_type=FloatType())
+        for name in BUILTIN_CONSTANTS
+    },
+    # No signature: `range` is variadic and is only meaningful as the iterable
+    # of a for loop, which the loop checker handles on its own.
+    RANGE: BuiltinDecl(span=BUILTIN_SPAN, name=RANGE),
+}
 
 BINARY_OPS: dict[str, Callable[[object, object], object]] = {
     "+": operator.add,
@@ -127,13 +193,18 @@ def const_int(expression: Expression) -> int | None:
 
 __all__ = [
     "BINARY_OPS",
+    "BUILTIN_SCOPE",
+    "BUILTIN_SIGNATURES",
+    "BUILTIN_SPAN",
     "BUILTIN_CONSTANTS",
     "BUILTIN_FUNCTIONS",
     "BUILTIN_GATES",
     "BUILTIN_NAMES",
     "RANGE",
     "UNARY_OPS",
+    "ArgKind",
     "ConstEvalError",
+    "Signature",
     "const_int",
     "const_value",
 ]

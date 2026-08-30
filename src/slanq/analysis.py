@@ -2,20 +2,32 @@ from __future__ import annotations
 
 from slanq.ast_nodes import (
     Block,
+    BuiltinDecl,
     Call,
     Declaration,
     Expression,
+    ExprStatement,
     For,
     Index,
     Name,
     ProcessDef,
+    ProcParam,
     Program,
     QuantumDecl,
     Span,
     Symbol,
+    Type,
+    is_quantum,
     qubit_count,
 )
-from slanq.builtin import BUILTIN_NAMES, RANGE, ConstEvalError, const_int, const_value
+from slanq.builtin import (
+    BUILTIN_SCOPE,
+    RANGE,
+    ArgKind,
+    ConstEvalError,
+    const_int,
+    const_value,
+)
 from slanq.diagnostics import DiagnosticBag
 from slanq.visitor import NodeVisitor
 
@@ -36,6 +48,9 @@ def _build_symbol_table(ast: Program, bag: DiagnosticBag) -> Scope:
     for statement in ast.statements:
         if not isinstance(statement, Declaration):
             continue
+        if statement.name in BUILTIN_SCOPE:
+            _error(bag, _shadowing_message(statement.name), statement.span)
+            continue
         if statement.name in scope:
             _error(bag, f"duplicate declaration of '{statement.name}'", statement.span)
             continue
@@ -43,9 +58,13 @@ def _build_symbol_table(ast: Program, bag: DiagnosticBag) -> Scope:
     return scope
 
 
+def _shadowing_message(name: str) -> str:
+    return f"'{name}' is built into the language and cannot be redeclared"
+
+
 class _NameResolver(NodeVisitor):
     def __init__(self, global_scope: Scope, bag: DiagnosticBag) -> None:
-        self.scopes: list[Scope] = [global_scope]
+        self.scopes: list[Scope] = [dict(BUILTIN_SCOPE), global_scope]
         self.bag = bag
 
     def generic_visit(self, node):
@@ -76,8 +95,6 @@ class _NameResolver(NodeVisitor):
         self.scopes.pop()
 
     def visit_Name(self, node: Name) -> None:
-        if node.name in BUILTIN_NAMES:
-            return
         symbol = self._lookup(node.name)
         if symbol is None:
             _error(self.bag, f"undefined name '{node.name}'", node.span)
@@ -88,6 +105,9 @@ class _NameResolver(NodeVisitor):
         current = self.scopes[-1]
         existing = current.get(symbol.name)
         if existing is symbol:
+            return
+        if symbol.name in BUILTIN_SCOPE:
+            _error(self.bag, _shadowing_message(symbol.name), symbol.span)
             return
         if existing is not None:
             _error(self.bag, f"duplicate declaration of '{symbol.name}'", symbol.span)
@@ -198,6 +218,117 @@ class _ForChecker(_Checker):
             self._reject("the step of a for loop must not be zero", iterable.args[2])
 
 
+class _CallChecker(_Checker):
+    """Arity, argument kinds and broadcast shape for calls to builtins."""
+
+    def __init__(self, bag: DiagnosticBag) -> None:
+        super().__init__(bag)
+        self.statement_call: Expression | None = None
+
+    def visit_ExprStatement(self, node: ExprStatement) -> None:
+        previous = self.statement_call
+        self.statement_call = node.expr
+        self.generic_visit(node)
+        self.statement_call = previous
+
+    def visit_For(self, node: For) -> None:
+        # `range(...)` is checked by _ForChecker, but its arguments are ordinary
+        # expressions and may contain calls of their own.
+        iterable = node.iterable
+        if isinstance(iterable, Call) and iterable.callee.name == RANGE:
+            for argument in iterable.args:
+                self.visit(argument)
+        else:
+            self.visit(iterable)
+        self.visit(node.body)
+
+    def visit_Call(self, node: Call) -> None:
+        self.generic_visit(node)
+
+        symbol = node.callee.resolved_symbol
+        if not isinstance(symbol, BuiltinDecl):
+            # A call to a `process`; the lowering reports it as unimplemented.
+            return
+
+        name = node.callee.name
+        signature = symbol.signature
+        if signature is None:
+            self._reject(f"'{name}' is only valid as the iterable of a for loop", node)
+            return
+
+        expected = len(signature.args)
+        if len(node.args) != expected:
+            self._reject(
+                f"'{name}' takes {expected} argument(s), got {len(node.args)}", node
+            )
+            return
+
+        widths = [
+            width
+            for kind, argument in zip(signature.args, node.args, strict=True)
+            if (width := self._check_argument(name, kind, argument)) is not None
+            and kind is ArgKind.QUBITS
+        ]
+        # Qiskit's rule, measured: equal sizes pair up and a single bit spreads
+        # over a register, but two registers of different sizes have no pairing.
+        registers = {width for width in widths if width > 1}
+        if len(registers) > 1:
+            sizes = ", ".join(str(width) for width in sorted(registers))
+            self._reject(f"'{name}' cannot combine operands of sizes {sizes}", node)
+
+        node.inferred_type = signature.returns
+        self._check_position(name, signature, node)
+
+    def _check_argument(
+        self, name: str, kind: ArgKind, argument: Expression
+    ) -> int | None:
+        operand = _quantum_operand(argument)
+
+        if kind is ArgKind.ANGLE:
+            if operand is not None:
+                self._reject(f"'{name}' expects a number here, not a qubit", argument)
+            return None
+
+        if operand is None:
+            self._reject(f"'{name}' expects a quantum variable here", argument)
+            return None
+
+        declared, indexed = operand
+        if kind is ArgKind.QVAR and indexed:
+            self._reject(
+                f"'{name}' takes a whole quantum variable, not a single qubit",
+                argument,
+            )
+            return None
+
+        return 1 if indexed else qubit_count(declared)
+
+    def _check_position(self, name: str, signature, node: Call) -> None:
+        in_statement = node is self.statement_call
+        if in_statement and signature.returns is not None:
+            self._reject(f"the result of '{name}' must be assigned", node)
+        elif not in_statement and signature.returns is None:
+            self._reject(f"'{name}' does not return a value", node)
+
+
+def _quantum_operand(expression: Expression) -> tuple[Type, bool] | None:
+    """The declared type of a qubit operand and whether it is indexed."""
+    if isinstance(expression, Index):
+        declared = _declared_type(expression.base)
+        return (declared, True) if declared is not None else None
+    if isinstance(expression, Name):
+        declared = _declared_type(expression)
+        return (declared, False) if declared is not None else None
+    return None
+
+
+def _declared_type(name: Name) -> Type | None:
+    symbol = name.resolved_symbol
+    if not isinstance(symbol, QuantumDecl | ProcParam):
+        return None
+    return symbol.declared_type if is_quantum(symbol.declared_type) else None
+
+
 def _quantum_size_of(base: Name) -> int | None:
     symbol = base.resolved_symbol
     if not isinstance(symbol, QuantumDecl):
@@ -208,6 +339,7 @@ def _quantum_size_of(base: Name) -> int | None:
 def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _IndexChecker(bag).visit(ast)
     _ForChecker(bag).visit(ast)
+    _CallChecker(bag).visit(ast)
 
 
 def _check_affine(ast: Program, bag: DiagnosticBag) -> None:

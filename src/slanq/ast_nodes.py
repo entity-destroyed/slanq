@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from slanq.builtin import Signature
 
 
 @dataclass(kw_only=True)
@@ -27,6 +31,10 @@ class QBoolType(Type):
 class QIntType(Type):
     # Unsized in a process parameter list, where `qint` carries no width.
     size: int | None = None
+
+
+def is_quantum(declared: Type) -> bool:
+    return isinstance(declared, QBoolType | QIntType)
 
 
 def qubit_count(declared: Type) -> int | None:
@@ -108,6 +116,15 @@ class ParamDecl(Declaration):
 class ParamArrayDecl(Declaration):
     declared_type: Type
     size: int
+
+
+@dataclass(kw_only=True)
+class BuiltinDecl(Declaration):
+    """A gate, function or constant the language provides itself. Not built from
+    source, so it carries a placeholder span."""
+
+    declared_type: Type | None = None
+    signature: Signature | None = None
 
 
 @dataclass(kw_only=True)
@@ -217,6 +234,7 @@ __all__ = [
     "BinaryOp",
     "Block",
     "BoolType",
+    "BuiltinDecl",
     "Call",
     "ClassicalDecl",
     "Declaration",
@@ -247,5 +265,6 @@ __all__ = [
     "Type",
     "UnaryOp",
     "While",
+    "is_quantum",
     "qubit_count",
 ]

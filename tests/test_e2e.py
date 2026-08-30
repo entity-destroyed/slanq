@@ -91,3 +91,12 @@ def test_a_computed_angle_reaches_the_circuit_unfolded() -> None:
 
     counts = _counts(source + "int result = measure(q);\n")
     assert counts == {"1": SHOTS}
+
+
+def test_ccx_broadcast_computes_a_bitwise_and() -> None:
+    """CCX over whole registers is one Toffoli per bit, so c becomes a & b."""
+    source = (
+        "qint<2> a = 3;\nqint<2> b = 2;\nqint<2> c = 0;\n"
+        "CCX(a, b, c);\nint result = measure(c);\n"
+    )
+    assert _counts(source) == {"10": SHOTS}

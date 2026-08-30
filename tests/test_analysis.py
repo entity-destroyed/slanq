@@ -5,7 +5,17 @@ from collections.abc import Callable
 import pytest
 
 from slanq.analysis import analyze
-from slanq.ast_nodes import Call, ExprStatement, If, Name, Program, QuantumDecl
+from slanq.ast_nodes import (
+    BuiltinDecl,
+    Call,
+    ClassicalDecl,
+    ExprStatement,
+    If,
+    IntType,
+    Name,
+    Program,
+    QuantumDecl,
+)
 from slanq.diagnostics import DiagnosticBag
 
 BuildAst = Callable[[str], Program]
@@ -52,13 +62,14 @@ def test_name_resolution_binds_use_to_declaration(analyzed_ast: AnalyzedAst) -> 
     assert argument.resolved_symbol is declaration
 
 
-def test_builtin_callee_has_no_resolved_symbol(analyzed_ast: AnalyzedAst) -> None:
+def test_builtin_callee_resolves_to_a_builtin(analyzed_ast: AnalyzedAst) -> None:
     ast = analyzed_ast("qbool q = false; H(q);")
     statement = ast.statements[1]
     assert isinstance(statement, ExprStatement)
     assert isinstance(statement.expr, Call)
-    assert statement.expr.callee.name == "H"
-    assert statement.expr.callee.resolved_symbol is None
+    symbol = statement.expr.callee.resolved_symbol
+    assert isinstance(symbol, BuiltinDecl)
+    assert symbol.signature is not None
 
 
 def test_undefined_name_reported(diagnostics_of: DiagnosticsOf) -> None:
@@ -71,9 +82,18 @@ def test_builtin_gate_name_is_not_reported(diagnostics_of: DiagnosticsOf) -> Non
     assert not diagnostics_of("qbool q = false; H(q);").has_errors
 
 
-@pytest.mark.parametrize("gate", ["H", "X", "Y", "Z", "S", "T", "Sdg", "Tdg", "SWAP", "CCX"])
-def test_builtin_gates_resolve(diagnostics_of: DiagnosticsOf, gate: str) -> None:
-    assert not diagnostics_of(f"qbool q = false; {gate}(q);").has_errors
+@pytest.mark.parametrize(
+    "call",
+    [
+        "H(q)", "X(q)", "Y(q)", "Z(q)", "S(q)", "T(q)", "Sdg(q)", "Tdg(q)",
+        "RX(PI, q)", "RY(PI, q)", "RZ(PI, q)",
+        "CX(q, r)", "CY(q, r)", "CZ(q, r)", "CH(q, r)", "SWAP(q, r)",
+        "CCX(q, r, s)",
+    ],
+)
+def test_builtin_gates_resolve(diagnostics_of: DiagnosticsOf, call: str) -> None:
+    source = f"qbool q = false; qbool r = false; qbool s = false; {call};"
+    assert not diagnostics_of(source).has_errors
 
 
 def test_duplicate_declaration_reported(diagnostics_of: DiagnosticsOf) -> None:
@@ -218,3 +238,75 @@ def test_index_inside_a_loop_is_not_reported(diagnostics_of: DiagnosticsOf) -> N
     Reporting the index would hide the honest 'for loop is not implemented'."""
     source = "qint<4> q = 0; for(int i in range(4)) { X(q[i]); }"
     assert not diagnostics_of(source).has_errors
+
+
+@pytest.mark.parametrize(
+    ("call", "fragment"),
+    [
+        ("H(q, q)", "takes 1 argument"),
+        ("CX(q)", "takes 2 argument"),
+        ("H()", "takes 1 argument"),
+        ("RX(q)", "takes 2 argument"),
+        ("H(1.5)", "expects a quantum variable"),
+        ("CX(1.5, 2.5)", "expects a quantum variable"),
+        ("RX(q, PI)", "expects a number here"),
+    ],
+)
+def test_gate_misuse_is_reported(
+    diagnostics_of: DiagnosticsOf, call: str, fragment: str
+) -> None:
+    bag = diagnostics_of(f"qbool q = false; {call};")
+    assert bag.has_errors
+    assert fragment in bag.errors[0].message
+
+
+def test_registers_of_different_sizes_are_rejected(diagnostics_of: DiagnosticsOf) -> None:
+    """Qiskit has no pairing for these either; it fails when the circuit is built."""
+    bag = diagnostics_of("qint<2> a = 0; qint<3> b = 0; CX(a, b);")
+    assert bag.has_errors
+    assert "sizes 2, 3" in bag.errors[0].message
+
+
+@pytest.mark.parametrize(
+    "call", ["CX(a, b)", "CX(a[0], b)", "CX(a, b[1])", "CCX(a, b, a)", "H(a)"]
+)
+def test_broadcast_shapes_are_accepted(diagnostics_of: DiagnosticsOf, call: str) -> None:
+    """A single bit spreads over a register; equal sizes pair up."""
+    assert not diagnostics_of(f"qint<2> a = 0; qint<2> b = 0; {call};").has_errors
+
+
+def test_measure_rejects_a_single_qubit(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<2> q = 0; int r = measure(q[0]);")
+    assert bag.has_errors
+    assert "whole quantum variable" in bag.errors[0].message
+
+
+def test_builtin_name_cannot_be_redeclared(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("int H = 3;")
+    assert bag.has_errors
+    assert "built into the language" in bag.errors[0].message
+
+
+def test_gate_used_as_a_value_is_reported(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qbool q = false; int x = H(q);")
+    assert bag.has_errors
+    assert "does not return a value" in bag.errors[0].message
+
+
+def test_measure_result_must_be_used(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qbool q = false; measure(q);")
+    assert bag.has_errors
+    assert "must be assigned" in bag.errors[0].message
+
+
+def test_range_outside_a_loop_is_reported(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("int r = range(4);")
+    assert bag.has_errors
+    assert "iterable of a for loop" in bag.errors[0].message
+
+
+def test_call_carries_its_return_type(analyzed_ast: AnalyzedAst) -> None:
+    ast = analyzed_ast("qbool q = false; int r = measure(q);")
+    declaration = ast.statements[1]
+    assert isinstance(declaration, ClassicalDecl)
+    assert isinstance(declaration.initializer.inferred_type, IntType)

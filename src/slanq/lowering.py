@@ -12,7 +12,14 @@ from slanq.ast_nodes import (
     Statement,
     qubit_count,
 )
-from slanq.builtin import ConstEvalError, const_int, const_value
+from slanq.builtin import (
+    BUILTIN_SIGNATURES,
+    ArgKind,
+    ConstEvalError,
+    Signature,
+    const_int,
+    const_value,
+)
 from slanq.diagnostics import DiagnosticBag
 from slanq.ir import (
     ClbitRef,
@@ -27,6 +34,13 @@ from slanq.ir import (
 from slanq.visitor import NodeVisitor
 
 MEASURE = "measure"
+
+# Builtins the language defines but the compiler cannot build a circuit for yet.
+UNIMPLEMENTED_BUILTINS: dict[str, str] = {
+    # Outside a qif a phase shift is global and changes no measurement, so it
+    # only becomes meaningful once qif exists.
+    "phase": "the phase gate",
+}
 
 # Statement kinds the lowering does not handle yet. Without this the generic
 # traversal would walk straight past them and the construct would vanish from
@@ -114,14 +128,41 @@ class _Lowerer(NodeVisitor):
             self._error("only call expressions are allowed as statements", node.span)
             return
 
-        if expr.callee.name == MEASURE:
-            self._error("the result of measure() must be assigned", node.span)
+        name = expr.callee.name
+        if name in UNIMPLEMENTED_BUILTINS:
+            self._error(
+                f"{UNIMPLEMENTED_BUILTINS[name]} is not implemented yet; this is a "
+                "limitation of the compiler, not an error in the program",
+                node.span,
+            )
             return
 
+        signature = BUILTIN_SIGNATURES.get(name)
+        if signature is None:
+            self._error(
+                "calling a process is not implemented yet; this is a limitation "
+                "of the compiler, not an error in the program",
+                node.span,
+            )
+            return
+
+        # Which argument is an angle and which is a qubit comes from the
+        # signature, not from whether the argument happens to be constant: a
+        # `param float` angle is not constant but is still an angle.
         targets: list[QubitOperand] = []
         params: list[Expression] = []
-        for argument in expr.args:
-            if self._const_value(argument) is not None:
+        for kind, argument in zip(signature.args, expr.args, strict=True):
+            if kind is ArgKind.ANGLE:
+                # A classical variable has no circuit representation yet, so an
+                # angle that is not known at compile time cannot be emitted.
+                if self._const_value(argument) is None:
+                    self._error(
+                        "an angle that is not known at compile time is not "
+                        "implemented yet; this is a limitation of the compiler, "
+                        "not an error in the program",
+                        argument.span,
+                    )
+                    return
                 params.append(argument)
                 continue
             operand = self._operand(argument)
@@ -129,9 +170,10 @@ class _Lowerer(NodeVisitor):
                 return
             targets.append(operand)
 
-        self.module.body.ops.append(
-            GateOp(span=node.span, name=expr.callee.name, targets=targets, params=params)
-        )
+        for row in _broadcast(signature, targets):
+            self.module.body.ops.append(
+                GateOp(span=node.span, name=name, targets=row, params=params)
+            )
 
     def _measure_source(self, call: Call) -> QubitRef | None:
         if len(call.args) != 1:
@@ -209,6 +251,27 @@ class _Lowerer(NodeVisitor):
 
     def _error(self, message: str, span) -> None:
         self.bag.error(message, line=span.start_line, column=span.start_col)
+
+
+def _broadcast(
+    signature: Signature, targets: list[QubitOperand]
+) -> list[list[QubitOperand]]:
+    """One row per emitted gate. Qiskit spreads a register operand itself, so
+    normally a single row is enough; CCX is the exception -- Qiskit refuses it,
+    so the register is unrolled here into one gate per bit."""
+    if signature.qiskit_broadcasts:
+        return [targets]
+
+    width = max(
+        (target.size for target in targets if isinstance(target, QubitRef)), default=1
+    )
+    return [
+        [
+            QubitBit(ref=target, index=index) if isinstance(target, QubitRef) else target
+            for target in targets
+        ]
+        for index in range(width)
+    ]
 
 
 __all__ = ["lower_to_ir"]

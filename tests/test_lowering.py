@@ -70,7 +70,7 @@ def test_measurement_creates_clbit_and_op(lower: LowerSource) -> None:
 
 
 def test_numeric_arguments_become_params(lower: LowerSource) -> None:
-    module, bag = lower("qbool q = false; RX(q, 90);")
+    module, bag = lower("qbool q = false; RX(90, q);")
     assert not bag.has_errors
 
     gate = module.body.ops[1]
@@ -89,7 +89,7 @@ def test_classical_constant_produces_no_ir(lower: LowerSource) -> None:
 def test_bare_measure_statement_is_rejected(lower: LowerSource) -> None:
     _, bag = lower("qbool q = false; measure(q);")
     assert bag.has_errors
-    assert "measure()" in bag.errors[0].message
+    assert "must be assigned" in bag.errors[0].message
 
 
 def test_gate_on_unknown_variable_is_rejected(lower: LowerSource) -> None:
@@ -185,3 +185,46 @@ def test_unimplemented_message_blames_the_compiler(lower: LowerSource) -> None:
     _, bag = lower("qint<2> b = [];")
     assert bag.has_errors
     assert "limitation of the compiler" in bag.errors[0].message
+
+
+def test_ccx_on_registers_becomes_one_gate_per_bit(lower: LowerSource) -> None:
+    """Qiskit refuses a register operand for ccx, so the lowering unrolls it."""
+    module, bag = lower("qint<2> a = 0; qint<2> b = 0; qint<2> c = 0; CCX(a, b, c);")
+    assert not bag.has_errors
+
+    gates = [op for op in module.body.ops if isinstance(op, GateOp)]
+    assert len(gates) == 2
+    assert all(isinstance(target, QubitBit) for gate in gates for target in gate.targets)
+    assert [target.index for target in gates[0].targets] == [0, 0, 0]
+    assert [target.index for target in gates[1].targets] == [1, 1, 1]
+
+
+def test_two_qubit_gate_stays_a_single_op(lower: LowerSource) -> None:
+    """Qiskit spreads a register operand itself, so one op is enough."""
+    module, bag = lower("qint<2> a = 0; qint<2> b = 0; CX(a, b);")
+    assert not bag.has_errors
+    assert len([op for op in module.body.ops if isinstance(op, GateOp)]) == 1
+
+
+def test_angle_position_comes_from_the_signature(lower: LowerSource) -> None:
+    """Not from whether the argument is constant: `q` is constant-free and a
+    qubit, `PI` is neither -- only the signature tells them apart."""
+    module, bag = lower("qbool q = false; RX(PI, q);")
+    assert not bag.has_errors
+
+    gate = module.body.ops[1]
+    assert isinstance(gate, GateOp)
+    assert len(gate.params) == 1
+    assert gate.targets == [QubitBit(ref=module.qubits[0], index=0)]
+
+
+def test_runtime_angle_is_reported_as_a_limitation(lower: LowerSource) -> None:
+    _, bag = lower("qbool q = false; float t = 1.0; RX(t, q);")
+    assert bag.has_errors
+    assert "not known at compile time" in bag.errors[0].message
+
+
+def test_phase_is_reported_as_a_limitation(lower: LowerSource) -> None:
+    _, bag = lower("qbool q = false; phase(PI);")
+    assert bag.has_errors
+    assert "phase gate is not implemented" in bag.errors[0].message

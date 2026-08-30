@@ -5,8 +5,17 @@ from collections.abc import Callable
 
 import pytest
 
-from slanq.ast_nodes import Expression, Program
-from slanq.builtin import BUILTIN_NAMES, ConstEvalError, const_int, const_value
+from slanq.ast_nodes import Expression, IntType, Program
+from slanq.builtin import (
+    BUILTIN_GATES,
+    BUILTIN_NAMES,
+    BUILTIN_SCOPE,
+    BUILTIN_SIGNATURES,
+    ArgKind,
+    ConstEvalError,
+    const_int,
+    const_value,
+)
 
 BuildAst = Callable[[str], Program]
 
@@ -103,3 +112,35 @@ def test_const_int_rejects_a_fraction(expression_of) -> None:
 
 def test_builtin_names_cover_gates_constants_and_functions() -> None:
     assert {"H", "measure", "PI", "floor", "ceil", "round", "range"} <= BUILTIN_NAMES
+
+
+def test_every_gate_has_a_signature() -> None:
+    assert not BUILTIN_GATES - BUILTIN_SIGNATURES.keys()
+
+
+def test_returning_builtins_declare_their_type() -> None:
+    for name in ("measure", "floor", "ceil", "round"):
+        assert isinstance(BUILTIN_SIGNATURES[name].returns, IntType), name
+
+
+def test_gates_return_nothing() -> None:
+    assert all(BUILTIN_SIGNATURES[name].returns is None for name in BUILTIN_GATES)
+
+
+def test_ccx_is_broadcast_by_slanq_not_qiskit() -> None:
+    """Measured: Qiskit refuses a register operand for ccx, so the lowering
+    has to unroll it; every other gate Qiskit spreads on its own."""
+    assert not BUILTIN_SIGNATURES["CCX"].qiskit_broadcasts
+    assert BUILTIN_SIGNATURES["CX"].qiskit_broadcasts
+
+
+def test_measure_takes_a_whole_variable() -> None:
+    assert BUILTIN_SIGNATURES["measure"].args == (ArgKind.QVAR,)
+
+
+def test_rotation_takes_the_angle_first() -> None:
+    assert BUILTIN_SIGNATURES["RX"].args == (ArgKind.ANGLE, ArgKind.QUBITS)
+
+
+def test_builtin_scope_covers_every_builtin_name() -> None:
+    assert BUILTIN_SCOPE.keys() == set(BUILTIN_NAMES)
