@@ -70,3 +70,7 @@ def test_chained_comparison_is_rejected(source: str) -> None:
 def test_double_slash_is_a_comment_not_integer_division() -> None:
     with pytest.raises(SlanqError):
         parse_source("int r = 7 // 2;")
+
+
+def test_mvp_c_parses(mvp_c_source: str) -> None:
+    assert parse_source(mvp_c_source) is not None

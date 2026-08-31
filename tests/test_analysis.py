@@ -358,3 +358,156 @@ def test_qbool_probability_list_needs_exactly_two_entries(
     bag = diagnostics_of("qbool a = [0.3, 0.3, 0.4];")
     assert bag.has_errors
     assert "needs 2 probabilities" in bag.errors[0].message
+
+
+def test_qif_equality_condition_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
+    assert not diagnostics_of(
+        "qint<2> a = 0; qbool out = false; qif(a == 2) { X(out); }"
+    ).has_errors
+
+
+def test_qif_bare_qubit_condition_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
+    assert not diagnostics_of(
+        "qbool flag = false; qbool out = false; qif(flag) { X(out); }"
+    ).has_errors
+    assert not diagnostics_of(
+        "qint<2> a = 0; qbool out = false; qif(a[0]) { X(out); }"
+    ).has_errors
+
+
+def test_qif_and_chain_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
+    source = (
+        "qint<2> a = 0; qbool flag = false; qbool out = false; "
+        "qif(a == 2 && flag) { X(out); }"
+    )
+    assert not diagnostics_of(source).has_errors
+
+
+def test_qif_leaf_and_top_level_negation_are_accepted(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    assert not diagnostics_of(
+        "qbool flag = false; qbool out = false; qif(!flag) { X(out); }"
+    ).has_errors
+    assert not diagnostics_of(
+        "qint<2> a = 0; qbool out = false; qif(!(a == 2)) { X(out); }"
+    ).has_errors
+    assert not diagnostics_of(
+        "qint<2> a = 0; qbool out = false; qif(a[0] && !a[1]) { X(out); }"
+    ).has_errors
+
+
+def test_qif_classical_condition_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of(
+        "int r = 5; qbool out = false; qif(r == 5) { X(out); }"
+    )
+    assert bag.has_errors
+    assert "may only reference quantum variables" in bag.errors[0].message
+
+
+def test_qif_mixed_classical_and_quantum_is_rejected(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    """One unified rule, not two: every clause is checked on its own, so a
+    mix is caught by the exact same check that catches a purely classical one."""
+    bag = diagnostics_of(
+        "int r = 5; qint<2> a = 0; qbool out = false; "
+        "qif(r == 5 && a == 2) { X(out); }"
+    )
+    assert bag.has_errors
+    assert "may only reference quantum variables" in bag.errors[0].message
+
+
+def test_qif_or_is_not_implemented(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of(
+        "qint<2> a = 0; qbool out = false; qif(a == 2 || a == 1) { X(out); }"
+    )
+    assert bag.has_errors
+    assert "'||'" in bag.errors[0].message
+
+
+def test_qif_inequality_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
+    """`!=` is sugar for a negated equality test -- same rules as `!(a==c)`."""
+    assert not diagnostics_of(
+        "qint<2> a = 0; qbool out = false; qif(a != 2) { X(out); }"
+    ).has_errors
+    assert not diagnostics_of(
+        "qint<2> a = 0; qbool out = false; qif(2 != a) { X(out); }"
+    ).has_errors
+
+
+def test_qif_equality_accepts_either_operand_order(diagnostics_of: DiagnosticsOf) -> None:
+    assert not diagnostics_of(
+        "qint<2> a = 0; qbool out = false; qif(2 == a) { X(out); }"
+    ).has_errors
+
+
+def test_qif_deeply_nested_negation_is_not_implemented(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    source = (
+        "qint<2> a = 0; qbool flag = false; qbool out = false; "
+        "qif(flag && !(a[0] && a[1])) { X(out); }"
+    )
+    bag = diagnostics_of(source)
+    assert bag.has_errors
+    assert "deeper nesting" in bag.errors[0].message
+
+
+def test_qif_bare_multi_qubit_register_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
+    """A bare condition must be exactly one qubit; `a` alone isn't sugar for
+    anything well-defined when a is wider than that."""
+    bag = diagnostics_of("qint<2> a = 0; qbool out = false; qif(a) { X(out); }")
+    assert bag.has_errors
+    assert "exactly one" in bag.errors[0].message
+
+
+def test_qif_equality_constant_out_of_range_is_rejected(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    bag = diagnostics_of("qint<2> a = 0; qbool out = false; qif(a == 7) { X(out); }")
+    assert bag.has_errors
+    assert "does not fit" in bag.errors[0].message
+
+
+def test_qif_body_may_not_touch_the_condition_qubits(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    bag = diagnostics_of("qint<2> a = 0; qif(a == 2) { X(a[0]); }")
+    assert bag.has_errors
+    assert "may not modify" in bag.errors[0].message
+
+
+def test_qif_body_may_touch_a_different_variable(diagnostics_of: DiagnosticsOf) -> None:
+    assert not diagnostics_of(
+        "qint<2> a = 0; qbool out = false; qif(a == 2) { X(out); }"
+    ).has_errors
+
+
+def test_qif_negated_wide_equality_combines_with_and(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    """A wide negated clause gets its own ancilla to compute; combining it
+    with other clauses via '&&' does not need OR-like machinery -- only
+    negating a whole compound sub-expression (De Morgan) does."""
+    assert not diagnostics_of(
+        "qint<2> a = 0; qbool flag = false; qbool out = false; "
+        "qif(flag && !(a == 2)) { X(out); }"
+    ).has_errors
+    assert not diagnostics_of(
+        "qint<2> a = 0; qint<2> b = 0; qbool out = false; "
+        "qif(!(a == 2) && !(b == 3)) { X(out); }"
+    ).has_errors
+    assert not diagnostics_of(
+        "qint<2> a = 0; qbool out = false; qif(a != 2) { X(out); }"
+    ).has_errors
+
+
+def test_qif_negated_single_qubit_equality_combines_fine(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    source = (
+        "qint<1> q = 0; qbool flag = false; qbool out = false; "
+        "qif(flag && !(q == 1)) { X(out); }"
+    )
+    assert not diagnostics_of(source).has_errors

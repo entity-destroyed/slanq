@@ -8,7 +8,17 @@ from slanq.analysis import analyze
 from slanq.ast_nodes import Program
 from slanq.builtin import const_value
 from slanq.diagnostics import DiagnosticBag
-from slanq.ir import ClbitRef, GateOp, InitOp, IRModule, MeasurementOp, QubitBit, QubitRef
+from slanq.ir import (
+    ClbitRef,
+    GateOp,
+    InitOp,
+    IRModule,
+    MeasurementOp,
+    PhaseOp,
+    QIfOp,
+    QubitBit,
+    QubitRef,
+)
 from slanq.lowering import lower_to_ir
 
 BuildAst = Callable[[str], Program]
@@ -226,10 +236,13 @@ def test_runtime_angle_is_reported_as_a_limitation(lower: LowerSource) -> None:
     assert "not known at compile time" in bag.errors[0].message
 
 
-def test_phase_is_reported_as_a_limitation(lower: LowerSource) -> None:
-    _, bag = lower("qbool q = false; phase(PI);")
-    assert bag.has_errors
-    assert "phase gate is not implemented" in bag.errors[0].message
+def test_phase_at_top_level_becomes_a_phase_op(lower: LowerSource) -> None:
+    """A global phase is harmless outside a qif too, and meaningful if this
+    circuit is later composed into something larger -- no reason to forbid it."""
+    module, bag = lower("qbool q = false; phase(PI);")
+    assert not bag.has_errors
+    phase_op = module.body.ops[-1]
+    assert isinstance(phase_op, PhaseOp)
 
 
 def test_empty_probability_list_becomes_an_empty_ir_value(lower: LowerSource) -> None:
@@ -250,3 +263,159 @@ def test_probability_list_reaches_the_ir_unnormalized(lower: LowerSource) -> Non
     init = module.body.ops[0]
     assert isinstance(init, InitOp)
     assert init.value == [0.1, 0.1, 0.1, 0.1]
+
+
+def test_qif_equality_condition_lowers_ctrl_state(lower: LowerSource) -> None:
+    module, bag = lower("qint<2> a = 0; qbool out = false; qif(a == 2) { X(out); }")
+    assert not bag.has_errors
+
+    qif = module.body.ops[-1]
+    assert isinstance(qif, QIfOp)
+    assert qif.direct_qubits == [module.qubits[0]]
+    assert qif.ctrl_state == 2
+    assert qif.negated is False
+    assert qif.ancilla is None
+    assert [type(op).__name__ for op in qif.body.ops] == ["GateOp"]
+
+
+def test_qif_and_chain_concatenates_ctrl_state(lower: LowerSource) -> None:
+    """a==2 (bits 0,1) then flag (bit 1) concatenate to a 3-bit ctrl_state:
+    0 | (1<<1) | (1<<2) == 6."""
+    source = (
+        "qint<2> a = 0; qbool flag = false; qbool out = false; "
+        "qif(a == 2 && flag) { X(out); }"
+    )
+    module, bag = lower(source)
+    assert not bag.has_errors
+
+    qif = module.body.ops[-1]
+    assert isinstance(qif, QIfOp)
+    assert qif.ctrl_state == 6
+    assert len(qif.direct_qubits) == 2
+
+
+def test_qif_negated_single_qubit_flips_ctrl_state_without_ancilla(
+    lower: LowerSource,
+) -> None:
+    module, bag = lower("qbool flag = false; qbool out = false; qif(!flag) { X(out); }")
+    assert not bag.has_errors
+
+    qif = module.body.ops[-1]
+    assert isinstance(qif, QIfOp)
+    assert qif.ctrl_state == 0
+    assert qif.negated is False
+    assert qif.ancilla is None
+
+
+def test_qif_negated_multi_qubit_equality_needs_an_ancilla(lower: LowerSource) -> None:
+    module, bag = lower("qint<2> a = 0; qbool out = false; qif(!(a == 2)) { X(out); }")
+    assert not bag.has_errors
+
+    qif = module.body.ops[-1]
+    assert isinstance(qif, QIfOp)
+    assert qif.ctrl_state == 2
+    assert qif.negated is True
+    assert qif.ancilla == QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+
+
+def test_qif_ancilla_name_collision_is_reported(lower: LowerSource) -> None:
+    source = (
+        "qint<2> a = 0; qbool _ancilla_0 = false; qbool out = false; "
+        "qif(!(a == 2)) { X(out); }"
+    )
+    _, bag = lower(source)
+    assert bag.has_errors
+    assert "_ancilla_0" in bag.errors[0].message
+
+
+def test_qif_phase_becomes_a_phase_op(lower: LowerSource) -> None:
+    module, bag = lower(
+        "qint<2> a = 0; qif(a == 2) { phase(1.5); }"
+    )
+    assert not bag.has_errors
+
+    qif = module.body.ops[-1]
+    assert isinstance(qif, QIfOp)
+    (phase_op,) = qif.body.ops
+    assert isinstance(phase_op, PhaseOp)
+    assert const_value(phase_op.angle) == 1.5
+
+
+def test_measure_inside_qif_is_rejected(lower: LowerSource) -> None:
+    """A bare, unassigned measure() is already rejected by analysis before
+    lowering runs -- the same as at the top level. The lowering's own
+    qif-specific "measurement is not one" message is a defensive fallback for
+    a path analysis does not currently let reach it."""
+    _, bag = lower("qint<2> a = 0; qbool out = false; qif(a == 2) { measure(out); }")
+    assert bag.has_errors
+    assert "must be assigned" in bag.errors[0].message
+
+
+def test_unimplemented_statement_inside_qif_body(lower: LowerSource) -> None:
+    _, bag = lower(
+        "qint<2> a = 0; qint<2> b = 0; qif(a == 2) { b += a; }"
+    )
+    assert bag.has_errors
+    assert "compound assignment" in bag.errors[0].message
+    assert "inside a qif body" in bag.errors[0].message
+
+
+
+
+def test_qif_not_equal_is_sugar_for_negated_equality(lower: LowerSource) -> None:
+    """A wide `!=` standing alone goes through the clause-ancilla path, not
+    the top-level one: it computes a==2 into its own ancilla, flips it, and
+    controls the body directly by that ancilla -- no second, top-level
+    ancilla needed. `!(a == 2)` reaches the same result the other way (see
+    test_qif_negated_multi_qubit_equality_needs_an_ancilla)."""
+    module, bag = lower("qint<2> a = 0; qbool out = false; qif(a != 2) { X(out); }")
+    assert not bag.has_errors
+    qif = module.body.ops[-1]
+    assert isinstance(qif, QIfOp)
+    assert qif.negated is False
+    assert qif.ancilla is None
+    (clause_ancilla,) = qif.clause_ancillas
+    assert clause_ancilla.ctrl_state == 2
+    assert qif.direct_qubits == [QubitBit(ref=clause_ancilla.ancilla, index=0)]
+    assert qif.ctrl_state == 1
+
+
+def test_qif_equality_accepts_reversed_operands(lower: LowerSource) -> None:
+    module, bag = lower("qint<2> a = 0; qbool out = false; qif(2 == a) { X(out); }")
+    assert not bag.has_errors
+    qif = module.body.ops[-1]
+    assert isinstance(qif, QIfOp)
+    assert qif.ctrl_state == 2
+    assert qif.negated is False
+
+
+def test_qif_multiple_negated_clauses_each_get_their_own_ancilla(
+    lower: LowerSource,
+) -> None:
+    source = (
+        "qint<2> a = 0; qint<2> b = 0; qbool flag = false; qbool out = false; "
+        "qif(!(a == 2) && !(b == 3) && flag) { X(out); }"
+    )
+    module, bag = lower(source)
+    assert not bag.has_errors
+
+    qif = module.body.ops[-1]
+    assert isinstance(qif, QIfOp)
+    assert len(qif.clause_ancillas) == 2
+    assert qif.clause_ancillas[0].ctrl_state == 2
+    assert qif.clause_ancillas[1].ctrl_state == 3
+    # direct_qubits: both clause ancillas (bit=1 each) plus flag (bit=1).
+    assert qif.ctrl_state == 0b111
+    assert qif.negated is False
+    assert qif.ancilla is None
+
+
+def test_mvp_c_lowers_completely(lower: LowerSource, mvp_c_source: str) -> None:
+    module, bag = lower(mvp_c_source)
+    assert not bag.has_errors
+    assert [type(op).__name__ for op in module.body.ops] == [
+        "InitOp",
+        "InitOp",
+        "QIfOp",
+        "MeasurementOp",
+    ]

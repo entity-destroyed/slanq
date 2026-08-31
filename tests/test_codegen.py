@@ -10,7 +10,18 @@ from slanq.builtin import _round_half_away, const_value
 from slanq.codegen import _Generator, generate_qiskit
 from slanq.compiler import compile_source
 from slanq.diagnostics import SlanqError
-from slanq.ir import ClbitRef, GateOp, InitOp, IRBlock, IRModule, QubitBit, QubitRef
+from slanq.ir import (
+    ClbitRef,
+    GateOp,
+    InitOp,
+    IRBlock,
+    IRModule,
+    PhaseOp,
+    QIfClauseAncilla,
+    QIfOp,
+    QubitBit,
+    QubitRef,
+)
 
 
 def _generate(module: IRModule) -> str:
@@ -246,3 +257,175 @@ def test_state_preparation_amplitudes_are_normalized_defensively(span: Span) -> 
     )
     source = _generate(module)
     assert "StatePreparation([0.7071067811865476, 0.7071067811865476])" in source
+
+
+def test_qif_direct_control_when_not_negated(span: Span) -> None:
+    condition = QubitRef(name="a", size=2)
+    body_target = QubitRef(name="out", size=1)
+    module = IRModule(
+        qubits=[condition, body_target],
+        body=IRBlock(
+            ops=[
+                QIfOp(
+                    span=span,
+                    direct_qubits=[condition],
+                    ctrl_state=2,
+                    clause_ancillas=[],
+                    negated=False,
+                    ancilla=None,
+                    body=IRBlock(
+                        ops=[GateOp(span=span, name="X", targets=[body_target])]
+                    ),
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert '_qif_body_1 = QuantumCircuit(out, name="qif_body")' in source
+    assert "_qif_body_1.x(out)" in source
+    assert (
+        "circuit.append(_qif_body_1.to_gate().control(2, ctrl_state=2, "
+        "annotated=False), [*a, *out])" in source
+    )
+    assert "add_register" not in source
+    assert "XGate" not in source
+
+
+def test_qif_negated_uses_an_ancilla(span: Span) -> None:
+    condition = QubitRef(name="a", size=2)
+    body_target = QubitRef(name="out", size=1)
+    ancilla = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    module = IRModule(
+        qubits=[condition, body_target],
+        body=IRBlock(
+            ops=[
+                QIfOp(
+                    span=span,
+                    direct_qubits=[condition],
+                    ctrl_state=2,
+                    clause_ancillas=[],
+                    negated=True,
+                    ancilla=ancilla,
+                    body=IRBlock(
+                        ops=[GateOp(span=span, name="X", targets=[body_target])]
+                    ),
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert "from qiskit.circuit.library import XGate" in source
+    assert '_ancilla_0 = QuantumRegister(1, "_ancilla_0")' in source
+    assert "circuit.add_register(_ancilla_0)" in source
+    assert (
+        "circuit.append(XGate().control(2, ctrl_state=2, annotated=False), "
+        "[*a, _ancilla_0[0]])" in source
+    )
+    assert "circuit.x(_ancilla_0[0])" in source
+    assert (
+        "circuit.append(_qif_body_1.to_gate().control(1, annotated=False), "
+        "[_ancilla_0[0], *out])" in source
+    )
+
+
+def test_qif_phase_only_body_needs_no_local_registers(span: Span) -> None:
+    condition = QubitRef(name="a", size=2)
+    module = IRModule(
+        qubits=[condition],
+        body=IRBlock(
+            ops=[
+                QIfOp(
+                    span=span,
+                    direct_qubits=[condition],
+                    ctrl_state=2,
+                    clause_ancillas=[],
+                    negated=False,
+                    ancilla=None,
+                    body=IRBlock(
+                        ops=[PhaseOp(span=span, angle=Literal(span=span, value=1.5))]
+                    ),
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert '_qif_body_1 = QuantumCircuit(name="qif_body")' in source
+    assert "_qif_body_1.global_phase += 1.5" in source
+
+
+def test_qif_indexed_condition_qubit_mirrors(span: Span) -> None:
+    """A QubitBit condition entry is an explicit index and must mirror, unlike
+    a QubitRef entry which is a whole-register value test and must not."""
+    condition = QubitRef(name="a", size=3)
+    body_target = QubitRef(name="out", size=1)
+    module = IRModule(
+        qubits=[condition, body_target],
+        body=IRBlock(
+            ops=[
+                QIfOp(
+                    span=span,
+                    direct_qubits=[QubitBit(ref=condition, index=0)],
+                    ctrl_state=1,
+                    clause_ancillas=[],
+                    negated=False,
+                    ancilla=None,
+                    body=IRBlock(
+                        ops=[GateOp(span=span, name="X", targets=[body_target])]
+                    ),
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    # Slanq index 0 on a size-3 register mirrors to Qiskit position 2.
+    assert "[a[2], *out]" in source
+
+
+def test_qif_multiple_clause_ancillas_compute_and_uncompute_in_order(
+    span: Span,
+) -> None:
+    a = QubitRef(name="a", size=2)
+    b = QubitRef(name="b", size=2)
+    flag = QubitRef(name="flag", size=1)
+    body_target = QubitRef(name="out", size=1)
+    ancilla_a = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    ancilla_b = QubitRef(name="_ancilla_1", size=1, origin="ancilla")
+
+    module = IRModule(
+        qubits=[a, b, flag, body_target],
+        body=IRBlock(
+            ops=[
+                QIfOp(
+                    span=span,
+                    direct_qubits=[
+                        QubitBit(ref=ancilla_a, index=0),
+                        QubitBit(ref=ancilla_b, index=0),
+                        QubitBit(ref=flag, index=0),
+                    ],
+                    ctrl_state=0b111,
+                    clause_ancillas=[
+                        QIfClauseAncilla(qubits=[a], ctrl_state=2, ancilla=ancilla_a),
+                        QIfClauseAncilla(qubits=[b], ctrl_state=3, ancilla=ancilla_b),
+                    ],
+                    negated=False,
+                    ancilla=None,
+                    body=IRBlock(
+                        ops=[GateOp(span=span, name="X", targets=[body_target])]
+                    ),
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+
+    compute_a = source.index("ctrl_state=2")
+    compute_b = source.index("ctrl_state=3")
+    final = source.index("ctrl_state=7")
+    uncompute_b = source.index("ctrl_state=3", compute_b + 1)
+    uncompute_a = source.index("ctrl_state=2", compute_a + 1)
+
+    # Computed a, then b, then the final combination, then uncomputed in the
+    # reverse order: b first, then a -- proper LIFO nesting.
+    assert compute_a < compute_b < final < uncompute_b < uncompute_a
+    assert "circuit.add_register(_ancilla_0)" in source
+    assert "circuit.add_register(_ancilla_1)" in source

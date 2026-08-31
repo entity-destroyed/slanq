@@ -9,11 +9,15 @@ from slanq.diagnostics import SlanqError
 from slanq.ir import (
     GateOp,
     InitOp,
+    IRBlock,
     IRModule,
     MeasurementOp,
     Op,
+    PhaseOp,
+    QIfOp,
     QubitBit,
     QubitOperand,
+    QubitRef,
 )
 
 INDENT = " " * 4
@@ -94,6 +98,8 @@ class _Generator:
         self.needs_math = False
         self.needs_round = False
         self.needs_state_preparation = False
+        self.needs_xgate = False
+        self._qif_counter = 0
 
     def import_lines(self, module: IRModule) -> list[str]:
         standard = ["import sys"]
@@ -104,8 +110,17 @@ class _Generator:
         if module.clbits:
             qiskit_names.append("ClassicalRegister")
         third_party = [f"from qiskit import {', '.join(sorted(qiskit_names))}"]
+
+        library_names = []
         if self.needs_state_preparation:
-            third_party.append("from qiskit.circuit.library import StatePreparation")
+            library_names.append("StatePreparation")
+        if self.needs_xgate:
+            library_names.append("XGate")
+        if library_names:
+            third_party.append(
+                f"from qiskit.circuit.library import {', '.join(sorted(library_names))}"
+            )
+
         if self.needs_numpy:
             third_party.insert(0, "import numpy as np")
 
@@ -128,14 +143,14 @@ class _Generator:
         lines.append("return circuit")
         return lines
 
-    def op_lines(self, op: Op) -> list[str]:
+    def op_lines(self, op: Op, circuit_var: str = "circuit") -> list[str]:
         if isinstance(op, InitOp):
             if isinstance(op.value, list):
-                return self._state_preparation_lines(op)
+                return self._state_preparation_lines(op, circuit_var)
             # The register is little-endian, so bit b of the value sits on qubit b.
             # Unlike an explicit index, this needs no mirroring.
             return [
-                f"circuit.x({op.target.name}[{bit}])"
+                f"{circuit_var}.x({op.target.name}[{bit}])"
                 for bit in range(op.target.size)
                 if (int(op.value) >> bit) & 1
             ]
@@ -149,28 +164,124 @@ class _Generator:
                 )
             arguments = [self.expression(param) for param in op.params]
             arguments += [_operand_source(target) for target in op.targets]
-            return [f"circuit.{method}({', '.join(arguments)})"]
+            return [f"{circuit_var}.{method}({', '.join(arguments)})"]
 
         if isinstance(op, MeasurementOp):
-            return [f"circuit.measure({_operand_source(op.source)}, {op.target.name})"]
+            return [
+                f"{circuit_var}.measure({_operand_source(op.source)}, {op.target.name})"
+            ]
+
+        if isinstance(op, PhaseOp):
+            return [f"{circuit_var}.global_phase += {self.expression(op.angle)}"]
+
+        if isinstance(op, QIfOp):
+            return self._qif_lines(op, circuit_var)
 
         raise NotImplementedError(f"no code generation for {type(op).__name__}")
 
-    def _state_preparation_lines(self, op: InitOp) -> list[str]:
+    def _state_preparation_lines(self, op: InitOp, circuit_var: str) -> list[str]:
         assert isinstance(op.value, list)
         probabilities = op.value
 
         if not probabilities:
-            return [f"circuit.h({op.target.name}[{bit}])" for bit in range(op.target.size)]
+            return [
+                f"{circuit_var}.h({op.target.name}[{bit}])"
+                for bit in range(op.target.size)
+            ]
 
         self.needs_state_preparation = True
-        # Always divides, not just when it visibly deviates: this division IS
-        # the normalization the language promises, and StatePreparation itself
-        # rejects amplitudes whose squares don't sum to 1 within about 1e-6.
         total = sum(probabilities)
         amplitudes = [math.sqrt(probability / total) for probability in probabilities]
         rendered = ", ".join(repr(amplitude) for amplitude in amplitudes)
-        return [f"circuit.append(StatePreparation([{rendered}]), {op.target.name})"]
+        return [f"{circuit_var}.append(StatePreparation([{rendered}]), {op.target.name})"]
+
+    def _qif_lines(self, op: QIfOp, circuit_var: str) -> list[str]:
+        self._qif_counter += 1
+        body_var = f"_qif_body_{self._qif_counter}"
+
+        touched = _touched_registers(op.body)
+        constructor_args = [ref.name for ref in touched] + ['name="qif_body"']
+        lines = [f'{body_var} = QuantumCircuit({", ".join(constructor_args)})']
+        for sub_op in op.body.ops:
+            lines += self.op_lines(sub_op, body_var)
+        body_sources = [f"*{ref.name}" for ref in touched]
+
+        # Each wide-negated clause needs its own ancilla, computed before
+        # everything else and uncomputed after everything else -- proper
+        # last-in-first-out nesting, like any compute/uncompute pair.
+        clause_computes: list[tuple[str, str]] = []
+        for clause_ancilla in op.clause_ancillas:
+            self.needs_xgate = True
+            name = clause_ancilla.ancilla.name
+            lines.append(f'{name} = QuantumRegister(1, "{name}")')
+            lines.append(f"{circuit_var}.add_register({name})")
+
+            clause_sources = [
+                f"*{q.name}" if isinstance(q, QubitRef) else _operand_source(q)
+                for q in clause_ancilla.qubits
+            ]
+            clause_controls = sum(
+                q.size if isinstance(q, QubitRef) else 1 for q in clause_ancilla.qubits
+            )
+            compute = (
+                f"XGate().control({clause_controls}, "
+                f"ctrl_state={clause_ancilla.ctrl_state}, annotated=False)"
+            )
+            compute_qubits = ", ".join([*clause_sources, f"{name}[0]"])
+            lines.append(f"{circuit_var}.append({compute}, [{compute_qubits}])")
+            lines.append(f"{circuit_var}.x({name}[0])")
+            clause_computes.append((compute, compute_qubits))
+
+        condition_sources = [
+            f"*{entry.name}" if isinstance(entry, QubitRef) else _operand_source(entry)
+            for entry in op.direct_qubits
+        ]
+        total_controls = sum(
+            entry.size if isinstance(entry, QubitRef) else 1
+            for entry in op.direct_qubits
+        )
+
+        if not op.negated:
+            controlled = (
+                f"{body_var}.to_gate().control({total_controls}, "
+                f"ctrl_state={op.ctrl_state}, annotated=False)"
+            )
+            qubits = ", ".join([*condition_sources, *body_sources])
+            lines.append(f"{circuit_var}.append({controlled}, [{qubits}])")
+        else:
+            # Negated, spanning more than one qubit: compute the positive
+            # match into a fresh ancilla, flip it, run the body controlled by
+            # just that one ancilla, flip back, and uncompute.
+            self.needs_xgate = True
+            assert op.ancilla is not None
+            ancilla = op.ancilla.name
+            lines.append(f'{ancilla} = QuantumRegister(1, "{ancilla}")')
+            lines.append(f"{circuit_var}.add_register({ancilla})")
+
+            compute = (
+                f"XGate().control({total_controls}, ctrl_state={op.ctrl_state}, "
+                "annotated=False)"
+            )
+            compute_qubits = ", ".join([*condition_sources, f"{ancilla}[0]"])
+            lines.append(f"{circuit_var}.append({compute}, [{compute_qubits}])")
+            lines.append(f"{circuit_var}.x({ancilla}[0])")
+
+            controlled_body = f"{body_var}.to_gate().control(1, annotated=False)"
+            body_qubits = ", ".join([f"{ancilla}[0]", *body_sources])
+            lines.append(f"{circuit_var}.append({controlled_body}, [{body_qubits}])")
+
+            lines.append(f"{circuit_var}.x({ancilla}[0])")
+            lines.append(f"{circuit_var}.append({compute}, [{compute_qubits}])")
+
+        # Uncompute the clause ancillas in reverse order.
+        for clause_ancilla, (compute, compute_qubits) in zip(
+            reversed(op.clause_ancillas), reversed(clause_computes), strict=True
+        ):
+            name = clause_ancilla.ancilla.name
+            lines.append(f"{circuit_var}.x({name}[0])")
+            lines.append(f"{circuit_var}.append({compute}, [{compute_qubits}])")
+
+        return lines
 
     def expression(self, expression: Expression) -> str:
         if isinstance(expression, Literal):
@@ -233,6 +344,18 @@ def _qiskit_index(bit: QubitBit) -> int:
     """Slanq indexes big-endian -- index 0 is the most significant qubit --
     while the Qiskit register is little-endian."""
     return bit.ref.size - 1 - bit.index
+
+
+def _touched_registers(body: IRBlock) -> list[QubitRef]:
+    """The distinct outer registers a qif body's gates target, in the order
+    first referenced -- becomes both the local sub-circuit's own registers
+    and, unpacked, the tail of the qubit list passed to circuit.append()."""
+    seen: dict[QubitRef, None] = {}
+    for op in body.ops:
+        if isinstance(op, GateOp):
+            for target in op.targets:
+                seen[target if isinstance(target, QubitRef) else target.ref] = None
+    return list(seen)
 
 
 __all__ = ["generate_qiskit"]

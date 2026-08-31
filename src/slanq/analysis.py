@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from slanq.ast_nodes import (
+    BinaryOp,
     Block,
     BuiltinDecl,
     Call,
@@ -15,10 +16,12 @@ from slanq.ast_nodes import (
     ProcessDef,
     ProcParam,
     Program,
+    QIf,
     QuantumDecl,
     Span,
     Symbol,
     Type,
+    UnaryOp,
     is_quantum,
     qubit_count,
 )
@@ -31,7 +34,7 @@ from slanq.builtin import (
     const_value,
 )
 from slanq.diagnostics import DiagnosticBag
-from slanq.visitor import NodeVisitor
+from slanq.visitor import NodeVisitor, iter_child_nodes
 
 Scope = dict[str, Symbol]
 
@@ -364,6 +367,198 @@ class _CallChecker(_Checker):
             self._reject(f"'{name}' does not return a value", node)
 
 
+# Comparisons other than "==" need a different circuit shape than a single
+# ctrl_state pattern (an inequality has no single matching bit-pattern) and
+# are deferred; listed explicitly so they get a clear message, not a generic one.
+_UNSUPPORTED_QIF_COMPARISONS = frozenset({"<", ">", "<=", ">="})
+
+
+class _QIfConditionChecker(_Checker):
+    """A qif condition is not a general boolean expression that happens to
+    need a quantum ingredient -- it is exclusively a description of a
+    ctrl_state pattern over physical qubits. A classical value has no such
+    pattern, so every clause, individually, must resolve to a quantum
+    variable; that single rule covers both a purely classical condition and
+    one that mixes classical and quantum clauses -- there is no second rule."""
+
+    def visit_QIf(self, node: QIf) -> None:
+        self.generic_visit(node)
+
+        condition = node.condition
+        if isinstance(condition, UnaryOp) and condition.op == "!":
+            self._check_and_chain(condition.operand)
+        else:
+            self._check_and_chain(condition)
+
+        self._check_no_overlap(node)
+
+    def _check_and_chain(self, condition: Expression) -> None:
+        if isinstance(condition, BinaryOp) and condition.op == "&&":
+            self._check_and_chain(condition.left)
+            self._check_clause(condition.right)
+            return
+        if isinstance(condition, BinaryOp) and condition.op == "||":
+            self._reject("'||' in a qif condition is not implemented yet", condition)
+            return
+        self._check_clause(condition)
+
+    def _check_clause(self, clause: Expression) -> None:
+        # `!=` is sugar for a negated equality test -- same rules as `!(a==c)`.
+        if isinstance(clause, BinaryOp) and clause.op == "!=":
+            self._check_equality_clause(clause)
+            return
+
+        if isinstance(clause, UnaryOp) and clause.op == "!":
+            inner = clause.operand
+            if isinstance(inner, BinaryOp) and inner.op in ("&&", "||"):
+                self._reject(
+                    "a negated compound condition may only appear at the very "
+                    "top of a qif condition; deeper nesting is not implemented yet",
+                    clause,
+                )
+                return
+            self._check_clause_shape(inner)
+            return
+        self._check_clause_shape(clause)
+
+    def _check_clause_shape(self, clause: Expression) -> None:
+        if isinstance(clause, Name):
+            self._require_single_qubit(clause)
+            return
+        if isinstance(clause, Index):
+            self._require_quantum(clause.base)
+            return
+        if isinstance(clause, BinaryOp) and clause.op in ("==", "!="):
+            self._check_equality_clause(clause)
+            return
+        if isinstance(clause, BinaryOp) and clause.op in _UNSUPPORTED_QIF_COMPARISONS:
+            self._reject(
+                f"'{clause.op}' in a qif condition is not implemented yet", clause
+            )
+            return
+        self._reject("this qif condition shape is not implemented yet", clause)
+
+    def _check_equality_clause(self, clause: BinaryOp) -> None:
+        name, literal = _split_equality(clause)
+        if name is None:
+            self._reject(
+                "a qif equality test must compare a quantum variable to a "
+                "constant",
+                clause,
+            )
+            return
+
+        declared = self._require_quantum(name)
+        if declared is None:
+            return
+
+        size = qubit_count(declared)
+        if size is None:
+            # An unsized qint parameter; the lowering reports this on its own.
+            return
+
+        value = self._value(literal)
+        if not isinstance(value, int):  # also accepts bool -- true/false fit in 1 qubit
+            self._reject(
+                "a qif equality test must compare against a compile-time constant",
+                literal,
+            )
+            return
+
+        largest = 2**size - 1
+        if not 0 <= int(value) <= largest:
+            self._reject(
+                f"{int(value)} does not fit in '{name.name}', which holds {size} "
+                f"qubit(s) (allowed: 0..{largest})",
+                literal,
+            )
+
+    def _require_quantum(self, name: Name) -> Type | None:
+        declared = _declared_type(name)
+        if declared is None:
+            self._reject(
+                f"a qif condition may only reference quantum variables; "
+                f"'{name.name}' is not one -- use if for a classical condition",
+                name,
+            )
+        return declared
+
+    def _require_single_qubit(self, name: Name) -> Type | None:
+        declared = self._require_quantum(name)
+        if declared is None:
+            return None
+        size = qubit_count(declared)
+        if size is not None and size != 1:
+            self._reject(
+                f"'{name.name}' has {size} qubits; a bare qif condition needs "
+                "exactly one -- index a specific bit, or compare the whole "
+                "register with ==",
+                name,
+            )
+            return None
+        return declared
+
+    def _check_no_overlap(self, node: QIf) -> None:
+        condition_bits = self._collect_bits(node.condition)
+
+        body_bits: set[tuple[str, int]] = set()
+        for statement in node.body.statements:
+            if isinstance(statement, ExprStatement) and isinstance(statement.expr, Call):
+                for argument in statement.expr.args:
+                    body_bits |= self._collect_bits(argument)
+
+        overlap = condition_bits & body_bits
+        if overlap:
+            names = ", ".join(sorted({name for name, _ in overlap}))
+            self._reject(
+                f"a qif body may not modify a qubit its own condition tests "
+                f"(here: {names})",
+                node.body,
+            )
+
+    def _collect_bits(self, expression: Expression) -> set[tuple[str, int]]:
+        if isinstance(expression, Name | Index):
+            return self._touched_bits(expression) or set()
+        bits: set[tuple[str, int]] = set()
+        for child in iter_child_nodes(expression):
+            bits |= self._collect_bits(child)
+        return bits
+
+    def _touched_bits(self, expression: Expression) -> set[tuple[str, int]] | None:
+        if isinstance(expression, Index):
+            declared = _declared_type(expression.base)
+            if declared is None:
+                return None
+            try:
+                index = const_int(expression.index)
+            except ConstEvalError:
+                return None
+            if index is None:
+                return None
+            return {(expression.base.name, index)}
+
+        if isinstance(expression, Name):
+            declared = _declared_type(expression)
+            if declared is None:
+                return None
+            size = qubit_count(declared)
+            if size is None:
+                return None
+            return {(expression.name, bit) for bit in range(size)}
+
+        return None
+
+
+def _split_equality(clause: BinaryOp) -> tuple[Name | None, Expression]:
+    """The quantum-variable side and the constant side of `==`/`!=`, in
+    whichever order the programmer wrote them (`a == 2` or `2 == a`)."""
+    if isinstance(clause.left, Name):
+        return clause.left, clause.right
+    if isinstance(clause.right, Name):
+        return clause.right, clause.left
+    return None, clause.right
+
+
 def _quantum_operand(expression: Expression) -> tuple[Type, bool] | None:
     """The declared type of a qubit operand and whether it is indexed."""
     if isinstance(expression, Index):
@@ -394,6 +589,7 @@ def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _ForChecker(bag).visit(ast)
     _CallChecker(bag).visit(ast)
     _ProbListChecker(bag).visit(ast)
+    _QIfConditionChecker(bag).visit(ast)
 
 
 def _check_affine(ast: Program, bag: DiagnosticBag) -> None:

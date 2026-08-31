@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
+import pytest
 from qiskit import QuantumCircuit
 from qiskit.primitives import StatevectorSampler
+from qiskit.quantum_info import Statevector
 
 from slanq.compiler import compile_source
 
@@ -117,7 +120,7 @@ def test_empty_probability_list_is_a_cheap_equal_superposition() -> None:
 def test_uneven_probability_list_matches_the_given_distribution() -> None:
     """Slanq's index i and Qiskit's StatePreparation amplitude index i name the
     same basis state with no permutation -- the same rule as InitOp and
-    measurement, verified the same way: a canary that would fail if it drifted."""
+    measurement. Would fail if that mapping ever needed a mirror."""
     source = "qint<2> b = [0, 0, 0.8, 0.2];\nint result = measure(b);\n"
     counts = _counts(source)
     assert set(counts) == {"10", "11"}
@@ -143,3 +146,142 @@ def test_qbool_probability_list() -> None:
     counts = _counts(source)
     assert set(counts) == {"0", "1"}
     assert counts["1"] > counts["0"]
+
+
+def test_qif_equality_condition_fires_only_on_match() -> None:
+    for a_value, expected in [(0, "0"), (1, "0"), (2, "1"), (3, "0")]:
+        source = (
+            f"qint<2> a = {a_value};\nqbool out = false;\n"
+            "qif(a == 2) { X(out); }\nint result = measure(out);\n"
+        )
+        assert _counts(source) == {expected: SHOTS}
+
+
+def test_qif_negated_condition_fires_on_mismatch() -> None:
+    for a_value, expected in [(0, "1"), (1, "1"), (2, "0"), (3, "1")]:
+        source = (
+            f"qint<2> a = {a_value};\nqbool out = false;\n"
+            "qif(!(a == 2)) { X(out); }\nint result = measure(out);\n"
+        )
+        assert _counts(source) == {expected: SHOTS}
+
+
+def test_qif_and_chain_across_two_registers() -> None:
+    source = (
+        "qint<2> a = 2;\nqbool flag = true;\nqbool out = false;\n"
+        "qif(a == 2 && flag) { X(out); }\nint result = measure(out);\n"
+    )
+    assert _counts(source) == {"1": SHOTS}
+
+    source_false = (
+        "qint<2> a = 2;\nqbool flag = false;\nqbool out = false;\n"
+        "qif(a == 2 && flag) { X(out); }\nint result = measure(out);\n"
+    )
+    assert _counts(source_false) == {"0": SHOTS}
+
+
+def test_qif_two_qubit_gate_in_body_respects_endianness() -> None:
+    """CX(a[0], b[0]) inside a qif body must mirror exactly as it would at the
+    top level -- this is the canary for the sub-circuit reusing the same
+    operand renderer as the outer one."""
+    source = (
+        "qint<2> a = 2;\nqint<2> b = 0;\nqbool ctrl = true;\n"
+        "qif(ctrl) { CX(a[0], b[0]); }\nint result = measure(b);\n"
+    )
+    # a=2 is '10' MSB-first, so a[0] (Slanq MSB) is 1: the control fires.
+    assert _counts(source) == {"10": SHOTS}
+
+
+def test_qif_phase_shifts_only_the_matching_branch() -> None:
+    """Counts cannot see a relative phase, so this reads the statevector
+    directly instead."""
+    source = "qint<2> a = [];\nqif(a == 2) { phase(1.5707963267948966); }\n"
+    circuit = _build_circuit(source)
+    statevector = Statevector.from_instruction(circuit)
+
+    for index, amplitude in enumerate(statevector.data):
+        if abs(amplitude) < 1e-9:
+            continue
+        assert abs(amplitude) == pytest.approx(0.5)
+        expected_phase = np.pi / 2 if index == 2 else 0.0
+        assert np.angle(amplitude) == pytest.approx(expected_phase, abs=1e-9)
+
+
+def test_qif_negated_phase_leaves_the_ancilla_clean() -> None:
+    source = "qint<2> a = [];\nqif(!(a == 2)) { phase(1.5707963267948966); }\n"
+    circuit = _build_circuit(source)
+    statevector = Statevector.from_instruction(circuit)
+
+    seen_a_values = set()
+    for index, amplitude in enumerate(statevector.data):
+        if abs(amplitude) < 1e-9:
+            continue
+        ancilla_bit = index >> 2
+        assert ancilla_bit == 0, "the ancilla must return to |0> on every branch"
+        a_value = index & 0b11
+        seen_a_values.add(a_value)
+        expected_phase = 0.0 if a_value == 2 else np.pi / 2
+        assert np.angle(amplitude) == pytest.approx(expected_phase, abs=1e-9)
+    assert seen_a_values == {0, 1, 2, 3}
+
+
+def test_qif_not_equal_matches_the_negated_condition() -> None:
+    for a_value, expected in [(0, "1"), (1, "1"), (2, "0"), (3, "1")]:
+        source = (
+            f"qint<2> a = {a_value};\nqbool out = false;\n"
+            "qif(a != 2) { X(out); }\nint result = measure(out);\n"
+        )
+        assert _counts(source) == {expected: SHOTS}
+
+
+def test_qif_equality_accepts_reversed_operands() -> None:
+    source = (
+        "qint<2> a = 2;\nqbool out = false;\n"
+        "qif(2 == a) { X(out); }\nint result = measure(out);\n"
+    )
+    assert _counts(source) == {"1": SHOTS}
+
+
+def test_qif_multiple_negated_clauses_combine_via_and() -> None:
+    for a_value, b_value, flag, expected in [
+        (2, 3, "true", "0"),
+        (1, 1, "true", "1"),
+        (1, 1, "false", "0"),
+    ]:
+        source = (
+            f"qint<2> a = {a_value};\nqint<2> b = {b_value};\nqbool flag = {flag};\n"
+            "qbool out = false;\n"
+            "qif(!(a == 2) && !(b == 3) && flag) { X(out); }\n"
+            "int result = measure(out);\n"
+        )
+        assert _counts(source) == {expected: SHOTS}
+
+
+def test_phase_outside_qif_sets_the_global_phase() -> None:
+    """No relative-phase claim to verify here -- just that it compiles and
+    the circuit carries the requested global phase."""
+    source = "qbool q = false;\nphase(1.0);\n"
+    circuit = _build_circuit(source)
+    assert circuit.global_phase == pytest.approx(1.0)
+
+
+def test_mvp_c_matches_the_condition(mvp_c_source: str) -> None:
+    """qif(a == 2) flips out on exactly one of the four equally-likely
+    branches of an equal superposition -- ~25% '1'."""
+    counts = _counts(mvp_c_source)
+    assert set(counts) == {"0", "1"}
+    assert SHOTS * 0.15 < counts["1"] < SHOTS * 0.35
+
+
+def test_qif_top_level_negation_composes_with_a_clause_ancilla() -> None:
+    """!(a==2 && !(b==3)) == (a!=2) || (b==3) -- De Morgan gives OR-shaped
+    conditions for free here, even without general `||` support: the
+    top-level ancilla is computed from a pattern that already includes
+    another clause's own ancilla."""
+    for a_value, b_value in [(2, 0), (2, 3), (1, 1)]:
+        expected = (a_value != 2) or (b_value == 3)
+        source = (
+            f"qint<2> a = {a_value};\nqint<2> b = {b_value};\nqbool out = false;\n"
+            "qif(!(a == 2 && !(b == 3))) { X(out); }\nint result = measure(out);\n"
+        )
+        assert _counts(source) == {"1" if expected else "0": SHOTS}
