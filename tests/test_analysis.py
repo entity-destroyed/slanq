@@ -267,12 +267,39 @@ def test_registers_of_different_sizes_are_rejected(diagnostics_of: DiagnosticsOf
     assert "sizes 2, 3" in bag.errors[0].message
 
 
-@pytest.mark.parametrize(
-    "call", ["CX(a, b)", "CX(a[0], b)", "CX(a, b[1])", "CCX(a, b, a)", "H(a)"]
-)
+@pytest.mark.parametrize("call", ["CX(a, b)", "CX(a[0], b)", "CX(a, b[1])", "H(a)"])
 def test_broadcast_shapes_are_accepted(diagnostics_of: DiagnosticsOf, call: str) -> None:
     """A single bit spreads over a register; equal sizes pair up."""
     assert not diagnostics_of(f"qint<2> a = 0; qint<2> b = 0; {call};").has_errors
+
+
+def test_three_distinct_registers_of_equal_size_are_accepted(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    """Equal-size registers pair up bitwise even across three arguments, as long
+    as they are distinct registers."""
+    source = "qint<2> a = 0; qint<2> b = 0; qint<2> c = 0; CCX(a, b, c);"
+    assert not diagnostics_of(source).has_errors
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "CX(a, a)",
+        "CX(a[0], a[0])",
+        "CCX(a, b, a)",
+        "CCX(a[0], b[0], a[0])",
+        "SWAP(a[0], a[0])",
+    ],
+)
+def test_aliased_qubit_arguments_are_rejected(
+    diagnostics_of: DiagnosticsOf, call: str
+) -> None:
+    """Qiskit raises 'duplicate bit arguments' at circuit-build time if the same
+    physical qubit is passed twice into one gate call; caught here instead."""
+    bag = diagnostics_of(f"qint<2> a = 0; qint<2> b = 0; {call};")
+    assert bag.has_errors
+    assert "same qubit" in bag.errors[0].message
 
 
 def test_measure_rejects_a_single_qubit(diagnostics_of: DiagnosticsOf) -> None:

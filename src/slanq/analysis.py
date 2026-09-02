@@ -431,12 +431,14 @@ class _CallChecker(_Checker):
             )
             return
 
-        widths = [
-            width
-            for kind, argument in zip(signature.args, node.args, strict=True)
-            if (width := self._check_argument(name, kind, argument)) is not None
-            and kind is ArgKind.QUBITS
-        ]
+        widths: list[int] = []
+        qubit_args: list[Expression] = []
+        for kind, argument in zip(signature.args, node.args, strict=True):
+            width = self._check_argument(name, kind, argument)
+            if width is not None and kind is ArgKind.QUBITS:
+                widths.append(width)
+                qubit_args.append(argument)
+
         # Qiskit's rule, measured: equal sizes pair up and a single bit spreads
         # over a register, but two registers of different sizes have no pairing.
         registers = {width for width in widths if width > 1}
@@ -444,8 +446,27 @@ class _CallChecker(_Checker):
             sizes = ", ".join(str(width) for width in sorted(registers))
             self._reject(f"'{name}' cannot combine operands of sizes {sizes}", node)
 
+        self._check_no_aliasing(name, qubit_args, node)
+
         node.inferred_type = signature.returns
         self._check_position(name, signature, node)
+
+    def _check_no_aliasing(
+        self, name: str, qubit_args: list[Expression], node: Call
+    ) -> None:
+        seen: set[tuple[str, int]] = set()
+        aliased: set[tuple[str, int]] = set()
+        for argument in qubit_args:
+            bits = _touched_bits(argument) or set()
+            aliased |= seen & bits
+            seen |= bits
+        if aliased:
+            names = ", ".join(sorted({bit_name for bit_name, _ in aliased}))
+            self._reject(
+                f"'{name}' cannot use the same qubit(s) in more than one argument "
+                f"(here: {names})",
+                node,
+            )
 
     def _check_argument(
         self, name: str, kind: ArgKind, argument: Expression
@@ -611,13 +632,13 @@ class _QIfConditionChecker(_Checker):
         return declared
 
     def _check_no_overlap(self, node: QIf) -> None:
-        condition_bits = self._collect_bits(node.condition)
+        condition_bits = _collect_bits(node.condition)
 
         body_bits: set[tuple[str, int]] = set()
         for statement in node.body.statements:
             if isinstance(statement, ExprStatement) and isinstance(statement.expr, Call):
                 for argument in statement.expr.args:
-                    body_bits |= self._collect_bits(argument)
+                    body_bits |= _collect_bits(argument)
 
         overlap = condition_bits & body_bits
         if overlap:
@@ -628,37 +649,42 @@ class _QIfConditionChecker(_Checker):
                 node.body,
             )
 
-    def _collect_bits(self, expression: Expression) -> set[tuple[str, int]]:
-        if isinstance(expression, Name | Index):
-            return self._touched_bits(expression) or set()
-        bits: set[tuple[str, int]] = set()
-        for child in iter_child_nodes(expression):
-            bits |= self._collect_bits(child)
-        return bits
 
-    def _touched_bits(self, expression: Expression) -> set[tuple[str, int]] | None:
-        if isinstance(expression, Index):
-            declared = _declared_type(expression.base)
-            if declared is None:
-                return None
-            try:
-                index = const_int(expression.index)
-            except ConstEvalError:
-                return None
-            if index is None:
-                return None
-            return {(expression.base.name, index)}
+def _collect_bits(expression: Expression) -> set[tuple[str, int]]:
+    if isinstance(expression, Name | Index):
+        return _touched_bits(expression) or set()
+    bits: set[tuple[str, int]] = set()
+    for child in iter_child_nodes(expression):
+        bits |= _collect_bits(child)
+    return bits
 
-        if isinstance(expression, Name):
-            declared = _declared_type(expression)
-            if declared is None:
-                return None
-            size = qubit_count(declared)
-            if size is None:
-                return None
-            return {(expression.name, bit) for bit in range(size)}
 
-        return None
+def _touched_bits(expression: Expression) -> set[tuple[str, int]] | None:
+    """The physical (variable, bit-index) pairs an expression refers to, used to
+    detect the same qubit being touched twice (a qif body vs. its condition, or
+    two arguments of the same gate call)."""
+    if isinstance(expression, Index):
+        declared = _declared_type(expression.base)
+        if declared is None:
+            return None
+        try:
+            index = const_int(expression.index)
+        except ConstEvalError:
+            return None
+        if index is None:
+            return None
+        return {(expression.base.name, index)}
+
+    if isinstance(expression, Name):
+        declared = _declared_type(expression)
+        if declared is None:
+            return None
+        size = qubit_count(declared)
+        if size is None:
+            return None
+        return {(expression.name, bit) for bit in range(size)}
+
+    return None
 
 
 def _split_equality(clause: BinaryOp) -> tuple[Name | None, Expression]:
