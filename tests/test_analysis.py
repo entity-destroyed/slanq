@@ -511,3 +511,109 @@ def test_qif_negated_single_qubit_equality_combines_fine(
         "qif(flag && !(q == 1)) { X(out); }"
     )
     assert not diagnostics_of(source).has_errors
+
+
+def test_augassign_quantum_addend_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
+    assert not diagnostics_of("qint<2> a = 0; qint<2> b = 0; a += b;").has_errors
+    assert not diagnostics_of("qint<3> a = 0; qint<2> b = 0; a += b;").has_errors
+    assert not diagnostics_of("qint<2> a = 0; qint<3> b = 0; a -= b;").has_errors
+
+
+def test_augassign_constant_addend_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
+    assert not diagnostics_of("qint<2> a = 0; a += 3;").has_errors
+
+
+def test_augassign_indexed_target_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<2> a = 0; qbool b = false; a[0] += b;")
+    assert bag.has_errors
+    assert "not a single qubit" in bag.errors[0].message
+
+
+def test_augassign_classical_target_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("int x = 0; x += 1;")
+    assert bag.has_errors
+    assert "is not a quantum variable" in bag.errors[0].message
+
+
+def test_augassign_param_addend_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<2> a = 0; param int gamma; a += gamma;")
+    assert bag.has_errors
+    assert "runtime parameter" in bag.errors[0].message
+
+
+def test_augassign_param_array_addend_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<2> a = 0; param int gamma[2]; a += gamma[0];")
+    assert bag.has_errors
+    assert "runtime parameter" in bag.errors[0].message
+
+
+def test_augassign_multiply_of_two_quantum_variables_is_accepted(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    source = "qint<2> a = 0; qint<2> b = 0; qint<2> c = 0; a += b * c;"
+    assert not diagnostics_of(source).has_errors
+
+
+def test_augassign_multiply_with_a_classical_operand_is_rejected(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    bag = diagnostics_of("qint<2> a = 0; qint<2> b = 0; int x = 0; a += b * x;")
+    assert bag.has_errors
+    assert "'x' is not a quantum variable" in bag.errors[0].message
+
+
+def test_augassign_unsupported_shape_is_reported(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<2> a = 0; a += 1.5;")
+    assert bag.has_errors
+    assert "not implemented yet" in bag.errors[0].message
+
+
+def test_augassign_self_addend_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<2> a = 0; a += a;")
+    assert bag.has_errors
+    assert "cannot appear on both sides" in bag.errors[0].message
+
+
+def test_augassign_self_subtract_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<2> a = 0; a -= a;")
+    assert bag.has_errors
+    assert "cannot appear on both sides" in bag.errors[0].message
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "qint<2> a = 0; qint<2> b = 0; a += a * b;",
+        "qint<2> a = 0; qint<2> b = 0; a += b * a;",
+        "qint<2> a = 0; qint<2> b = 0; b += a * b;",
+    ],
+)
+def test_augassign_multiply_aliasing_the_target_is_rejected(
+    diagnostics_of: DiagnosticsOf, source: str
+) -> None:
+    bag = diagnostics_of(source)
+    assert bag.has_errors
+    assert "cannot appear on both sides" in bag.errors[0].message
+
+
+def test_augassign_multiply_with_a_non_name_operand_is_rejected(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    bag = diagnostics_of("qint<2> a = 0; qint<2> b = 0; a += b * 2;")
+    assert bag.has_errors
+    assert "must multiply two whole quantum variables" in bag.errors[0].message
+
+
+def test_quantum_decl_multiply_initializer_is_accepted(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    source = "qint<2> a = 0; qint<2> b = 0; qint<4> c = a * b;"
+    assert not diagnostics_of(source).has_errors
+
+
+def test_quantum_decl_multiply_with_a_classical_operand_is_rejected(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    bag = diagnostics_of("qint<2> a = 0; int x = 0; qint<4> c = a * x;")
+    assert bag.has_errors
+    assert "'x' is not a quantum variable" in bag.errors[0].message

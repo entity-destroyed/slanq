@@ -273,6 +273,108 @@ def test_mvp_c_matches_the_condition(mvp_c_source: str) -> None:
     assert SHOTS * 0.15 < counts["1"] < SHOTS * 0.35
 
 
+def test_quantum_addition_equal_width() -> None:
+    source = "qint<2> a = 1;\nqint<2> b = 2;\na += b;\nint result = measure(a);\n"
+    assert _counts(source) == {"11": SHOTS}
+
+
+def test_quantum_addition_wraps_modulo_the_target_width() -> None:
+    source = "qint<2> a = 3;\nqint<2> b = 2;\na += b;\nint result = measure(a);\n"
+    assert _counts(source) == {"01": SHOTS}
+
+
+def test_quantum_addition_wider_target_pads_the_narrower_addend() -> None:
+    """The padding ancilla must come back clean regardless of the target's
+    higher bits, verified here by running the full compiled circuit."""
+    source = "qint<3> a = 5;\nqint<2> b = 3;\na += b;\nint result = measure(a);\n"
+    assert _counts(source) == {"000": SHOTS}
+
+
+def test_quantum_addition_narrower_target_uses_the_addends_low_bits() -> None:
+    source = "qint<2> a = 1;\nqint<3> b = 7;\na += b;\nint result = measure(a);\n"
+    assert _counts(source) == {"00": SHOTS}
+
+
+def test_quantum_subtraction() -> None:
+    source = "qint<2> a = 3;\nqint<2> b = 1;\na -= b;\nint result = measure(a);\n"
+    assert _counts(source) == {"10": SHOTS}
+
+
+def test_quantum_addition_with_a_compile_time_constant() -> None:
+    source = "qint<2> a = 1;\na += 3;\nint result = measure(a);\n"
+    assert _counts(source) == {"00": SHOTS}
+
+
+def test_quantum_addition_constant_wraps_silently_on_overflow() -> None:
+    """The decision is a silent mod 2^n, the same rule as a too-wide addend."""
+    source = "qint<2> a = 1;\na += 6;\nint result = measure(a);\n"
+    assert _counts(source) == {"11": SHOTS}
+
+
+def test_quantum_multiplication_declaration() -> None:
+    source = "qint<2> a = 3;\nqint<2> b = 2;\nqint<4> c = a * b;\nint result = measure(c);\n"
+    assert _counts(source) == {"0110": SHOTS}
+
+
+def test_quantum_multiplication_is_truncated_to_the_declared_width() -> None:
+    source = "qint<2> a = 3;\nqint<2> b = 3;\nqint<2> c = a * b;\nint result = measure(c);\n"
+    assert _counts(source) == {"01": SHOTS}
+
+
+def test_multiply_accumulate_leaves_the_temp_register_clean() -> None:
+    """d += a * b must uncompute its own temporary product -- checked here on
+    the statevector, since counts alone cannot see a leftover ancilla."""
+    source = "qint<2> a = 2;\nqint<2> b = 3;\nqint<3> d = 1;\nd += a * b;\n"
+    circuit = _build_circuit(source)
+    statevector = Statevector.from_instruction(circuit)
+
+    (index,) = [i for i, amp in enumerate(statevector.data) if abs(amp) > 1e-9]
+    a_bits = index & 0b11
+    b_bits = (index >> 2) & 0b11
+    d_bits = (index >> 4) & 0b111
+    remainder = index >> 7
+    assert a_bits == 2
+    assert b_bits == 3
+    assert d_bits == (1 + 2 * 3) % 8
+    assert remainder == 0, "every ancilla (multiplier temp and both helpers) must be |0>"
+
+
+def test_param_scalar_angle_binds_at_runtime() -> None:
+    source = "param float theta;\nqbool q = false;\nRX(theta, q);\n"
+    namespace: dict[str, Any] = {}
+    result = compile_source(source, source_name="test.slanq")
+    exec(result.qiskit_source, namespace)  # noqa: S102
+    bound = namespace["build_bound_circuit"](theta=np.pi)
+    statevector = Statevector.from_instruction(bound)
+    assert abs(statevector.data[0]) == pytest.approx(0.0, abs=1e-9)
+    assert abs(statevector.data[1]) == pytest.approx(1.0)
+
+
+def test_param_array_indexed_angle_binds_at_runtime() -> None:
+    source = "param int gamma[2];\nqbool q = false;\nRX(gamma[1], q);\n"
+    result = compile_source(source, source_name="test.slanq")
+    assert not result.diagnostics.has_errors
+    namespace: dict[str, Any] = {}
+    exec(result.qiskit_source, namespace)  # noqa: S102
+    bound = namespace["build_bound_circuit"](gamma=[0, 3])
+    statevector = Statevector.from_instruction(bound)
+    expected = Statevector.from_instruction(
+        namespace["build_circuit"]().assign_parameters({"gamma_1": 3})
+    )
+    assert statevector.equiv(expected)
+
+
+def test_hello_example_leaves_only_the_param_arithmetic_limitation(
+    hello_source: str,
+) -> None:
+    """Classical arithmetic and params eliminate every limitation from
+    hello.slanq except adding a runtime param to a quantum variable."""
+    result = compile_source(hello_source, source_name="hello.slanq")
+    messages = [d.message for d in result.diagnostics.errors]
+    assert len(messages) == 1
+    assert "runtime parameter" in messages[0]
+
+
 def test_qif_top_level_negation_composes_with_a_clause_ancilla() -> None:
     """!(a==2 && !(b==3)) == (a!=2) || (b==3) -- De Morgan gives OR-shaped
     conditions for free here, even without general `||` support: the

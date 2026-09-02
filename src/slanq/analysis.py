@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from slanq.ast_nodes import (
+    AugAssign,
     BinaryOp,
     Block,
     BuiltinDecl,
@@ -12,6 +13,8 @@ from slanq.ast_nodes import (
     Index,
     Name,
     Node,
+    ParamArrayDecl,
+    ParamDecl,
     ProbList,
     ProcessDef,
     ProcParam,
@@ -272,6 +275,115 @@ class _ForChecker(_Checker):
 
         if len(iterable.args) == 3 and self._value(iterable.args[2]) == 0:
             self._reject("the step of a for loop must not be zero", iterable.args[2])
+
+
+class _ArithmeticChecker(_Checker):
+    """`+=`/`-=` and a quantum-times-quantum initializer are not general
+    assignment -- both describe a fixed circuit shape over physical qubits,
+    checked here the same way a qif condition is checked, not as ordinary
+    expression typing."""
+
+    def visit_AugAssign(self, node: AugAssign) -> None:
+        self.generic_visit(node)
+
+        target = node.target
+        if not isinstance(target, Name):
+            self._reject(
+                "arithmetic assignment targets a whole quantum variable, "
+                "not a single qubit",
+                target,
+            )
+            return
+
+        if self._require_quantum(target) is not None:
+            self._check_value_shape(node.value, target)
+
+    def visit_QuantumDecl(self, node: QuantumDecl) -> None:
+        self.generic_visit(node)
+
+        initializer = node.initializer
+        if isinstance(initializer, BinaryOp) and initializer.op == "*":
+            # A fresh declaration can never alias an operand by name, so
+            # there is no self-reference to check here, unlike AugAssign.
+            self._check_multiply_operands(initializer)
+
+    def _check_value_shape(self, value: Expression, target: Name) -> None:
+        if isinstance(value, Name):
+            if isinstance(value.resolved_symbol, ParamDecl):
+                self._reject_param_addend(value)
+            elif self._require_quantum(value) is not None:
+                self._reject_self_reference(target, (value,))
+            return
+
+        if isinstance(value, Index) and isinstance(
+            value.base.resolved_symbol, ParamArrayDecl
+        ):
+            self._reject_param_addend(value)
+            return
+
+        if isinstance(value, BinaryOp) and value.op == "*":
+            operands = self._check_multiply_operands(value)
+            if operands is not None:
+                self._reject_self_reference(target, operands)
+            return
+
+        if self._int(value) is None:
+            self._reject(
+                "this arithmetic assignment shape is not implemented yet; "
+                "only adding/subtracting a quantum variable, a compile-time "
+                "constant, or the product of two quantum variables is "
+                "supported",
+                value,
+            )
+
+    def _reject_param_addend(self, value: Expression) -> None:
+        self._reject(
+            "adding a runtime parameter to a quantum variable is not "
+            "implemented yet; only a compile-time constant, another quantum "
+            "variable, or the product of two quantum variables is "
+            "supported here",
+            value,
+        )
+
+    def _reject_self_reference(self, target: Name, operands: tuple[Name, ...]) -> None:
+        # The adder/multiplier needs the addend to hold its original value
+        # for the whole operation (an uncompute step, where there is one,
+        # re-reads it) -- if the target is also an operand, its value has
+        # already changed underneath that assumption.
+        for operand in operands:
+            if operand.name == target.name:
+                self._reject(
+                    f"'{target.name}' cannot appear on both sides of an "
+                    "arithmetic assignment -- it is being changed, so it "
+                    "cannot also be read as an unchanged operand",
+                    operand,
+                )
+                return
+
+    def _check_multiply_operands(self, value: BinaryOp) -> tuple[Name, Name] | None:
+        operands: list[Name] = []
+        for operand in (value.left, value.right):
+            if not isinstance(operand, Name):
+                self._reject(
+                    "the product on the right of an arithmetic assignment "
+                    "must multiply two whole quantum variables",
+                    operand,
+                )
+                return None
+            if self._require_quantum(operand) is None:
+                return None
+            operands.append(operand)
+        return operands[0], operands[1]
+
+    def _require_quantum(self, name: Name) -> Type | None:
+        declared = _declared_type(name)
+        if declared is None:
+            self._reject(
+                f"'{name.name}' is not a quantum variable; arithmetic "
+                "assignment applies only to quantum variables",
+                name,
+            )
+        return declared
 
 
 class _CallChecker(_Checker):
@@ -590,6 +702,7 @@ def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _CallChecker(bag).visit(ast)
     _ProbListChecker(bag).visit(ast)
     _QIfConditionChecker(bag).visit(ast)
+    _ArithmeticChecker(bag).visit(ast)
 
 
 def _check_affine(ast: Program, bag: DiagnosticBag) -> None:

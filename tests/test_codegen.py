@@ -5,22 +5,27 @@ import math
 import numpy
 import pytest
 
+from slanq.analysis import analyze
 from slanq.ast_nodes import Literal, Span
 from slanq.builtin import _round_half_away, const_value
 from slanq.codegen import _Generator, generate_qiskit
 from slanq.compiler import compile_source
-from slanq.diagnostics import SlanqError
+from slanq.diagnostics import DiagnosticBag, SlanqError
 from slanq.ir import (
+    ArithmeticOp,
     ClbitRef,
     GateOp,
     InitOp,
     IRBlock,
     IRModule,
+    MultiplyOp,
+    ParamInfo,
     PhaseOp,
     QIfClauseAncilla,
     QIfOp,
     QubitBit,
     QubitRef,
+    QubitSlice,
 )
 
 
@@ -429,3 +434,240 @@ def test_qif_multiple_clause_ancillas_compute_and_uncompute_in_order(
     assert compute_a < compute_b < final < uncompute_b < uncompute_a
     assert "circuit.add_register(_ancilla_0)" in source
     assert "circuit.add_register(_ancilla_1)" in source
+
+
+def test_arithmetic_op_renders_the_adder_call(span: Span) -> None:
+    a = QubitRef(name="a", size=2)
+    b = QubitRef(name="b", size=2)
+    helper = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    module = IRModule(
+        qubits=[a, b],
+        body=IRBlock(
+            ops=[
+                ArithmeticOp(
+                    span=span,
+                    target=a,
+                    addend=[b],
+                    helper=helper,
+                    subtract=False,
+                    encode_constant=None,
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert "from qiskit.circuit.library import CDKMRippleCarryAdder" in source
+    assert '_ancilla_0 = QuantumRegister(1, "_ancilla_0")' in source
+    assert "circuit.add_register(_ancilla_0)" in source
+    assert (
+        "circuit.append(CDKMRippleCarryAdder(2, kind='fixed'), "
+        "[*b, *a, _ancilla_0[0]])" in source
+    )
+
+
+def test_arithmetic_op_subtract_uses_inverse(span: Span) -> None:
+    a = QubitRef(name="a", size=2)
+    b = QubitRef(name="b", size=2)
+    helper = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    module = IRModule(
+        qubits=[a, b],
+        body=IRBlock(
+            ops=[
+                ArithmeticOp(
+                    span=span,
+                    target=a,
+                    addend=[b],
+                    helper=helper,
+                    subtract=True,
+                    encode_constant=None,
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert (
+        "circuit.append(CDKMRippleCarryAdder(2, kind='fixed').inverse(), "
+        "[*b, *a, _ancilla_0[0]])" in source
+    )
+
+
+def test_arithmetic_op_declares_a_padding_ancilla(span: Span) -> None:
+    a = QubitRef(name="a", size=3)
+    b = QubitRef(name="b", size=2)
+    padding = QubitRef(name="_ancilla_1", size=1, origin="ancilla")
+    helper = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    module = IRModule(
+        qubits=[a, b],
+        body=IRBlock(
+            ops=[
+                ArithmeticOp(
+                    span=span,
+                    target=a,
+                    addend=[b, padding],
+                    helper=helper,
+                    subtract=False,
+                    encode_constant=None,
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert '_ancilla_1 = QuantumRegister(1, "_ancilla_1")' in source
+    assert "circuit.add_register(_ancilla_1)" in source
+    assert (
+        "circuit.append(CDKMRippleCarryAdder(3, kind='fixed'), "
+        "[*b, *_ancilla_1, *a, _ancilla_0[0]])" in source
+    )
+
+
+def test_arithmetic_op_wider_addend_is_sliced(span: Span) -> None:
+    a = QubitRef(name="a", size=2)
+    b = QubitRef(name="b", size=3)
+    helper = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    module = IRModule(
+        qubits=[a, b],
+        body=IRBlock(
+            ops=[
+                ArithmeticOp(
+                    span=span,
+                    target=a,
+                    addend=[QubitSlice(ref=b, size=2)],
+                    helper=helper,
+                    subtract=False,
+                    encode_constant=None,
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert (
+        "circuit.append(CDKMRippleCarryAdder(2, kind='fixed'), "
+        "[*b[0:2], *a, _ancilla_0[0]])" in source
+    )
+
+
+def test_arithmetic_op_encodes_and_decodes_a_constant(span: Span) -> None:
+    a = QubitRef(name="a", size=2)
+    ancilla = QubitRef(name="_ancilla_1", size=2, origin="ancilla")
+    helper = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    module = IRModule(
+        qubits=[a],
+        body=IRBlock(
+            ops=[
+                ArithmeticOp(
+                    span=span,
+                    target=a,
+                    addend=[ancilla],
+                    helper=helper,
+                    subtract=False,
+                    encode_constant=3,
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    encode = source.index("circuit.x(_ancilla_1[0])")
+    encode_bit1 = source.index("circuit.x(_ancilla_1[1])")
+    adder_call = source.index("circuit.append(CDKMRippleCarryAdder")
+    decode = source.index("circuit.x(_ancilla_1[0])", encode + 1)
+    # Both bits of 3 (0b11) are encoded before the adder call, and the same
+    # two X gates decode the ancilla back to |0> afterward.
+    assert encode < encode_bit1 < adder_call < decode
+
+
+def test_multiply_op_renders_the_multiplier_call(span: Span) -> None:
+    a = QubitRef(name="a", size=2)
+    b = QubitRef(name="b", size=2)
+    c = QubitRef(name="c", size=4)
+    helper = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    module = IRModule(
+        qubits=[a, b, c],
+        body=IRBlock(
+            ops=[
+                MultiplyOp(
+                    span=span, left=[a], right=[b], product=c, helper=helper,
+                    inverse=False,
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert "from qiskit.circuit.library import HRSCumulativeMultiplier" in source
+    assert '_ancilla_0 = QuantumRegister(1, "_ancilla_0")' in source
+    assert (
+        "circuit.append(HRSCumulativeMultiplier(2, num_result_qubits=4), "
+        "[*a, *b, *c, _ancilla_0[0]])" in source
+    )
+
+
+def test_multiply_op_inverse_does_not_redeclare_registers(span: Span) -> None:
+    a = QubitRef(name="a", size=2)
+    b = QubitRef(name="b", size=2)
+    temp = QubitRef(name="_ancilla_1", size=4, origin="ancilla")
+    helper = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    module = IRModule(
+        qubits=[a, b],
+        body=IRBlock(
+            ops=[
+                MultiplyOp(
+                    span=span, left=[a], right=[b], product=temp, helper=helper,
+                    inverse=True,
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert "add_register" not in source
+    assert (
+        "circuit.append(HRSCumulativeMultiplier(2, num_result_qubits=4).inverse(), "
+        "[*a, *b, *_ancilla_1, _ancilla_0[0]])" in source
+    )
+
+
+def test_param_object_lines_for_scalar_and_array() -> None:
+    module = IRModule(
+        params=[
+            ParamInfo(name="theta", kind="scalar", size=None, type_name="float"),
+            ParamInfo(name="gamma", kind="array", size=3, type_name="int"),
+        ]
+    )
+    source = _generate(module)
+    assert "from qiskit.circuit import Parameter" in source
+    assert 'theta = Parameter("theta")' in source
+    assert 'gamma = [Parameter(f"gamma_{i}") for i in range(3)]' in source
+
+
+def test_bound_circuit_binds_only_used_parameters() -> None:
+    module = IRModule(
+        params=[
+            ParamInfo(name="theta", kind="scalar", size=None, type_name="float"),
+            ParamInfo(name="gamma", kind="array", size=2, type_name="int"),
+        ]
+    )
+    source = _generate(module)
+    assert "def build_bound_circuit(theta: float, gamma: list[int]) -> QuantumCircuit:" in source
+    assert '"theta": theta' in source
+    assert '"gamma_0": gamma[0]' in source
+    assert '"gamma_1": gamma[1]' in source
+    assert "used = {parameter.name for parameter in circuit.parameters}" in source
+
+    namespace: dict[str, object] = {}
+    exec(source, namespace)  # noqa: S102
+    bound = namespace["build_bound_circuit"](theta=1.0, gamma=[1, 2])
+    assert bound.num_qubits == 0
+
+
+def test_expression_renders_a_param_leaf(build_ast) -> None:
+    ast = build_ast("param float theta;\nfloat r = theta * 2;")
+    analyze(ast, DiagnosticBag())
+    (_, use) = ast.statements
+    rendered = _Generator().expression(use.initializer)
+    assert rendered == "theta * 2"
+
+
+def test_expression_renders_a_param_array_leaf(build_ast) -> None:
+    ast = build_ast("param int gamma[4];\nfloat r = gamma[2];")
+    analyze(ast, DiagnosticBag())
+    (_, use) = ast.statements
+    rendered = _Generator().expression(use.initializer)
+    assert rendered == "gamma[2]"

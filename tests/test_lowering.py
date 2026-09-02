@@ -9,15 +9,18 @@ from slanq.ast_nodes import Program
 from slanq.builtin import const_value
 from slanq.diagnostics import DiagnosticBag
 from slanq.ir import (
+    ArithmeticOp,
     ClbitRef,
     GateOp,
     InitOp,
     IRModule,
     MeasurementOp,
+    MultiplyOp,
     PhaseOp,
     QIfOp,
     QubitBit,
     QubitRef,
+    QubitSlice,
 )
 from slanq.lowering import lower_to_ir
 
@@ -180,8 +183,8 @@ def test_mvp_b_lowers_completely(lower: LowerSource, mvp_b_source: str) -> None:
 
 def test_unimplemented_statement_does_not_vanish(lower: LowerSource) -> None:
     """Before the guard this produced no IR and no diagnostic at all: the
-    generated circuit simply never performed the addition."""
-    _, bag = lower("qint<2> a = 0; qint<2> b = 1; a += b;")
+    generated circuit simply never performed the assignment."""
+    _, bag = lower("qbool q = false; q = true;")
     assert bag.has_errors
     assert "not implemented yet" in bag.errors[0].message
 
@@ -419,3 +422,184 @@ def test_mvp_c_lowers_completely(lower: LowerSource, mvp_c_source: str) -> None:
         "QIfOp",
         "MeasurementOp",
     ]
+
+
+def test_augassign_equal_width_needs_no_padding(lower: LowerSource) -> None:
+    module, bag = lower("qint<2> a = 0; qint<2> b = 0; a += b;")
+    assert not bag.has_errors
+
+    arithmetic = module.body.ops[-1]
+    assert isinstance(arithmetic, ArithmeticOp)
+    assert arithmetic.target == module.qubits[0]
+    assert arithmetic.addend == [module.qubits[1]]
+    assert arithmetic.subtract is False
+    assert arithmetic.encode_constant is None
+    assert arithmetic.helper == QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+
+
+def test_augassign_subtract_sets_the_flag(lower: LowerSource) -> None:
+    module, bag = lower("qint<2> a = 0; qint<2> b = 0; a -= b;")
+    assert not bag.has_errors
+    arithmetic = module.body.ops[-1]
+    assert isinstance(arithmetic, ArithmeticOp)
+    assert arithmetic.subtract is True
+
+
+def test_augassign_narrower_addend_gets_a_padding_ancilla(lower: LowerSource) -> None:
+    module, bag = lower("qint<3> a = 0; qint<2> b = 0; a += b;")
+    assert not bag.has_errors
+
+    arithmetic = module.body.ops[-1]
+    assert isinstance(arithmetic, ArithmeticOp)
+    # _ancilla_0 is the adder's own helper, allocated before the padding.
+    assert arithmetic.addend == [
+        module.qubits[1],
+        QubitRef(name="_ancilla_1", size=1, origin="ancilla"),
+    ]
+
+
+def test_augassign_wider_addend_is_sliced_to_the_target_width(
+    lower: LowerSource,
+) -> None:
+    module, bag = lower("qint<2> a = 0; qint<3> b = 0; a += b;")
+    assert not bag.has_errors
+
+    arithmetic = module.body.ops[-1]
+    assert isinstance(arithmetic, ArithmeticOp)
+    assert arithmetic.addend == [QubitSlice(ref=module.qubits[1], size=2)]
+
+
+def test_augassign_constant_addend_encodes_into_a_fresh_ancilla(
+    lower: LowerSource,
+) -> None:
+    module, bag = lower("qint<2> a = 0; a += 3;")
+    assert not bag.has_errors
+
+    arithmetic = module.body.ops[-1]
+    assert isinstance(arithmetic, ArithmeticOp)
+    assert arithmetic.encode_constant == 3
+    (ancilla,) = arithmetic.addend
+    # _ancilla_0 is the adder's own helper, allocated before the encoding ancilla.
+    assert ancilla == QubitRef(name="_ancilla_1", size=2, origin="ancilla")
+
+
+def test_augassign_constant_addend_wraps_modulo_the_target_width(
+    lower: LowerSource,
+) -> None:
+    module, bag = lower("qint<2> a = 0; a += 6;")
+    assert not bag.has_errors
+    arithmetic = module.body.ops[-1]
+    assert isinstance(arithmetic, ArithmeticOp)
+    assert arithmetic.encode_constant == 2
+
+
+def test_quantum_decl_multiply_becomes_a_multiply_op(lower: LowerSource) -> None:
+    module, bag = lower("qint<2> a = 0; qint<2> b = 0; qint<4> c = a * b;")
+    assert not bag.has_errors
+
+    multiply = module.body.ops[-1]
+    assert isinstance(multiply, MultiplyOp)
+    assert multiply.left == [module.qubits[0]]
+    assert multiply.right == [module.qubits[1]]
+    assert multiply.product == QubitRef(name="c", size=4)
+    assert multiply.inverse is False
+    assert module.qubits[-1] == QubitRef(name="c", size=4)
+
+
+def test_quantum_decl_multiply_pads_the_narrower_operand(lower: LowerSource) -> None:
+    module, bag = lower("qint<3> a = 0; qint<2> b = 0; qint<6> c = a * b;")
+    assert not bag.has_errors
+
+    multiply = module.body.ops[-1]
+    assert isinstance(multiply, MultiplyOp)
+    assert multiply.left == [module.qubits[0]]
+    assert multiply.right == [
+        module.qubits[1],
+        QubitRef(name="_ancilla_0", size=1, origin="ancilla"),
+    ]
+
+
+def test_multiply_accumulate_uses_a_temp_and_uncomputes_it(
+    lower: LowerSource,
+) -> None:
+    """`d += a * b` must compute the product into a temp register, add it,
+    then run the multiplier again to uncompute the temp -- `a`/`b` are never
+    touched, so the same multiplier call cleanly reverses it."""
+    module, bag = lower("qint<2> a = 0; qint<2> b = 0; qint<3> d = 0; d += a * b;")
+    assert not bag.has_errors
+
+    ops = module.body.ops[-3:]
+    assert [type(op).__name__ for op in ops] == ["MultiplyOp", "ArithmeticOp", "MultiplyOp"]
+    forward, arithmetic, backward = ops
+    assert isinstance(forward, MultiplyOp)
+    assert isinstance(arithmetic, ArithmeticOp)
+    assert isinstance(backward, MultiplyOp)
+
+    assert forward.inverse is False
+    assert backward.inverse is True
+    assert forward.product == backward.product
+    assert forward.helper == backward.helper
+    assert arithmetic.target == module.qubits[2]
+
+
+def test_param_decl_registers_a_scalar_param(lower: LowerSource) -> None:
+    module, bag = lower("param float theta;")
+    assert not bag.has_errors
+    (param,) = module.params
+    assert param.name == "theta"
+    assert param.kind == "scalar"
+    assert param.size is None
+    assert param.type_name == "float"
+
+
+def test_param_array_decl_registers_its_size(lower: LowerSource) -> None:
+    module, bag = lower("param int gamma[4];")
+    assert not bag.has_errors
+    (param,) = module.params
+    assert param.kind == "array"
+    assert param.size == 4
+    assert param.type_name == "int"
+
+
+def test_param_scalar_angle_is_accepted(lower: LowerSource) -> None:
+    module, bag = lower("param float theta; qbool q = false; RX(theta, q);")
+    assert not bag.has_errors
+    gate = module.body.ops[-1]
+    assert isinstance(gate, GateOp)
+    assert len(gate.params) == 1
+
+
+def test_param_expression_angle_is_accepted(lower: LowerSource) -> None:
+    module, bag = lower(
+        "param float theta; qbool q = false; RX(theta * 2 + PI / 4, q);"
+    )
+    assert not bag.has_errors
+    gate = module.body.ops[-1]
+    assert isinstance(gate, GateOp)
+    assert len(gate.params) == 1
+
+
+def test_param_array_indexed_angle_is_accepted(lower: LowerSource) -> None:
+    module, bag = lower("param int gamma[4]; qbool q = false; RX(gamma[2], q);")
+    assert not bag.has_errors
+    gate = module.body.ops[-1]
+    assert isinstance(gate, GateOp)
+    assert len(gate.params) == 1
+
+
+def test_param_with_an_unsupported_operator_is_reported(lower: LowerSource) -> None:
+    _, bag = lower("param int gamma; qbool q = false; RX(gamma % 2, q);")
+    assert bag.has_errors
+    assert "not known at compile time" in bag.errors[0].message
+
+
+def test_param_decl_inside_qif_body_is_a_top_level_only_error(
+    lower: LowerSource,
+) -> None:
+    """A `param` is a whole-circuit, build-time object -- unlike AugAssign or
+    a quantum declaration, no future qif-body work would ever make this
+    legal, so it gets its own message, not '...not implemented yet'."""
+    _, bag = lower("qint<2> a = 0; qif(a == 2) { param float x; }")
+    assert bag.has_errors
+    assert "only allowed at the top level of a program" in bag.errors[0].message
+    assert "not implemented" not in bag.errors[0].message

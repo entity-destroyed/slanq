@@ -1,23 +1,34 @@
 from __future__ import annotations
 
+from typing import Literal as TypingLiteral
+
 from slanq.ast_nodes import (
+    AugAssign,
     BinaryOp,
+    BoolType,
     Call,
     ClassicalDecl,
     Declaration,
     Expression,
     ExprStatement,
+    FloatType,
     Index,
+    IntType,
+    Literal,
     Name,
+    ParamArrayDecl,
+    ParamDecl,
     ProbList,
     Program,
     QIf,
     QuantumDecl,
     Statement,
+    Type,
     UnaryOp,
     qubit_count,
 )
 from slanq.builtin import (
+    BUILTIN_CONSTANTS,
     BUILTIN_SIGNATURES,
     ArgKind,
     ConstEvalError,
@@ -27,21 +38,31 @@ from slanq.builtin import (
 )
 from slanq.diagnostics import DiagnosticBag
 from slanq.ir import (
+    ArithmeticOp,
     ClbitRef,
     GateOp,
     InitOp,
     IRBlock,
     IRModule,
     MeasurementOp,
+    MultiplyOp,
     Op,
+    ParamInfo,
     PhaseOp,
     QIfClauseAncilla,
     QIfOp,
     QubitBit,
     QubitOperand,
     QubitRef,
+    QubitSlice,
 )
 from slanq.visitor import NodeVisitor
+
+_PARAM_TYPE_NAMES: dict[type[Type], TypingLiteral["int", "float", "bool"]] = {
+    IntType: "int",
+    FloatType: "float",
+    BoolType: "bool",
+}
 
 MEASURE = "measure"
 PHASE = "phase"
@@ -51,22 +72,30 @@ PHASE = "phase"
 # the circuit without a word.
 UNIMPLEMENTED: dict[str, str] = {
     "Assign": "assignment",
-    "AugAssign": "compound assignment",
     "If": "the if statement",
-    "QIf": "the qif statement",
     "While": "the while loop",
     "For": "the for loop",
     "ProcessDef": "a process definition",
-    "ParamDecl": "a param declaration",
-    "ParamArrayDecl": "a param array declaration",
 }
 
-# Additional phrases for statements that a qif body specifically forbids, even
-# though they lower fine at the top level -- distinct from UNIMPLEMENTED,
-# which is for things not lowered anywhere yet.
+# Additional phrases for statements that lower fine at the top level but a
+# qif body specifically forbids -- distinct from UNIMPLEMENTED, which is for
+# things not lowered anywhere yet. Everything named here is something a qif
+# body could plausibly support with more implementation work later (a
+# per-branch ancilla, a controlled adder, ...).
 QIF_BODY_ONLY_UNIMPLEMENTED: dict[str, str] = {
     "ClassicalDecl": "a classical declaration",
     "QuantumDecl": "a quantum declaration",
+    "AugAssign": "a compound assignment",
+}
+
+# Not a qif-specific restriction at all, and not "yet": a `param` is a
+# whole-circuit, build-time object, so it can never mean anything nested
+# inside a body, qif or otherwise -- there is no future qif-body work that
+# would change this.
+TOP_LEVEL_ONLY: dict[str, str] = {
+    "ParamDecl": "a param declaration",
+    "ParamArrayDecl": "a param array declaration",
 }
 
 
@@ -110,6 +139,11 @@ class _Lowerer(NodeVisitor):
             )
             return
 
+        initializer = node.initializer
+        if isinstance(initializer, BinaryOp) and initializer.op == "*":
+            self._lower_multiply_decl(node, size, initializer)
+            return
+
         value = self._init_value(node.initializer)
         if value is None:
             self._error(
@@ -144,6 +178,77 @@ class _Lowerer(NodeVisitor):
         ops = self._lower_gate_statement(node, in_qif=False)
         if ops is not None:
             self.module.body.ops.extend(ops)
+
+    def visit_ParamDecl(self, node: ParamDecl) -> None:
+        self.module.params.append(
+            ParamInfo(
+                name=node.name,
+                kind="scalar",
+                size=None,
+                type_name=_PARAM_TYPE_NAMES[type(node.declared_type)],
+            )
+        )
+
+    def visit_ParamArrayDecl(self, node: ParamArrayDecl) -> None:
+        self.module.params.append(
+            ParamInfo(
+                name=node.name,
+                kind="array",
+                size=node.size,
+                type_name=_PARAM_TYPE_NAMES[type(node.declared_type)],
+            )
+        )
+
+    def visit_AugAssign(self, node: AugAssign) -> None:
+        assert isinstance(node.target, Name)
+        target = self._register(node.target)
+        if target is None:
+            return
+        subtract = node.op == "-="
+
+        value = node.value
+        if isinstance(value, BinaryOp) and value.op == "*":
+            self._lower_multiply_augassign(node.span, target, value, subtract)
+            return
+
+        helper = self._fresh_ancilla(node.span)
+        if helper is None:
+            return
+
+        if isinstance(value, Name):
+            addend_ref = self._register(value)
+            if addend_ref is None:
+                return
+            addend = self._pad_to_width(addend_ref, target.size, node.span)
+            if addend is None:
+                return
+            self.module.body.ops.append(
+                ArithmeticOp(
+                    span=node.span,
+                    target=target,
+                    addend=addend,
+                    helper=helper,
+                    subtract=subtract,
+                    encode_constant=None,
+                )
+            )
+            return
+
+        constant = self._const_int(value)
+        assert constant is not None
+        ancilla = self._fresh_ancilla(node.span, size=target.size)
+        if ancilla is None:
+            return
+        self.module.body.ops.append(
+            ArithmeticOp(
+                span=node.span,
+                target=target,
+                addend=[ancilla],
+                helper=helper,
+                subtract=subtract,
+                encode_constant=constant % (1 << target.size),
+            )
+        )
 
     def visit_QIf(self, node: QIf) -> None:
         condition = self._lower_qif_condition(node.condition)
@@ -218,15 +323,7 @@ class _Lowerer(NodeVisitor):
         params: list[Expression] = []
         for kind, argument in zip(signature.args, expr.args, strict=True):
             if kind is ArgKind.ANGLE:
-                # A classical variable has no circuit representation yet, so an
-                # angle that is not known at compile time cannot be emitted.
-                if self._const_value(argument) is None:
-                    self._error(
-                        "an angle that is not known at compile time is not "
-                        "implemented yet; this is a limitation of the compiler, "
-                        "not an error in the program",
-                        argument.span,
-                    )
+                if not self._is_renderable_angle(argument):
                     return None
                 params.append(argument)
                 continue
@@ -242,18 +339,38 @@ class _Lowerer(NodeVisitor):
 
     def _lower_phase(self, expr: Call, span) -> list[Op] | None:
         (angle,) = expr.args
-        if self._const_value(angle) is None:
+        if not self._is_renderable_angle(angle):
+            return None
+        return [PhaseOp(span=span, angle=angle)]
+
+    def _is_renderable_angle(self, expression: Expression) -> bool:
+        """Whether `expression` can reach the generated file as an angle --
+        either it has a compile-time value, or it is a `param` expression
+        that codegen can print as a `Parameter`-valued Python expression."""
+        try:
+            value = const_value(expression)
+        except ConstEvalError as exc:
+            self._error(str(exc), expression.span)
+            return False
+        if value is None and not _is_param_expression(expression):
             self._error(
                 "an angle that is not known at compile time is not "
                 "implemented yet; this is a limitation of the compiler, not "
                 "an error in the program",
-                angle.span,
+                expression.span,
             )
-            return None
-        return [PhaseOp(span=span, angle=angle)]
+            return False
+        return True
 
     def _qif_body_unimplemented(self, statement: Statement) -> None:
         kind = type(statement).__name__
+        if kind in TOP_LEVEL_ONLY:
+            self._error(
+                f"{TOP_LEVEL_ONLY[kind]} is only allowed at the top level of "
+                "a program, not inside a qif body",
+                statement.span,
+            )
+            return
         phrase = UNIMPLEMENTED.get(kind) or QIF_BODY_ONLY_UNIMPLEMENTED.get(kind, kind)
         self._error(
             f"{phrase} is not implemented inside a qif body yet; this is a "
@@ -361,18 +478,136 @@ class _Lowerer(NodeVisitor):
             QIfClauseAncilla(qubits=[ref], ctrl_state=constant, ancilla=ancilla),
         )
 
-    def _fresh_ancilla(self, span) -> QubitRef | None:
+    def _fresh_ancilla(self, span, size: int = 1) -> QubitRef | None:
         name = f"_ancilla_{self._ancilla_counter}"
         self._ancilla_counter += 1
         if name in self._declared_names:
             self._error(
                 f"internal name '{name}' collides with a declaration in this "
-                "program; rename it to compile this qif",
+                "program; rename it to compile this",
                 span,
             )
             return None
         self._declared_names.add(name)
-        return QubitRef(name=name, size=1, origin="ancilla")
+        return QubitRef(name=name, size=size, origin="ancilla")
+
+    def _pad_to_width(
+        self, ref: QubitRef, width: int, span
+    ) -> list[QubitOperand] | None:
+        """`ref`'s bits, concatenated with a fresh 0-ancilla if it is
+        narrower than `width`, or sliced to its low bits if it is wider --
+        the CDKM/HRS adder and multiplier both preserve their `a`/`b`
+        inputs exactly, so a 0-ancilla among them needs no uncompute."""
+        if ref.size == width:
+            return [ref]
+        if ref.size > width:
+            return [QubitSlice(ref=ref, size=width)]
+        padding = self._fresh_ancilla(span, size=width - ref.size)
+        if padding is None:
+            return None
+        return [ref, padding]
+
+    def _lower_multiply_operands(
+        self, span, left: Expression, right: Expression
+    ) -> tuple[list[QubitOperand], list[QubitOperand]] | None:
+        assert isinstance(left, Name)
+        assert isinstance(right, Name)
+        left_ref = self._register(left)
+        right_ref = self._register(right)
+        if left_ref is None or right_ref is None:
+            return None
+
+        width = max(left_ref.size, right_ref.size)
+        left_operand = self._pad_to_width(left_ref, width, span)
+        right_operand = self._pad_to_width(right_ref, width, span)
+        if left_operand is None or right_operand is None:
+            return None
+        return left_operand, right_operand
+
+    def _lower_multiply_decl(
+        self, node: QuantumDecl, size: int, initializer: BinaryOp
+    ) -> None:
+        operands = self._lower_multiply_operands(
+            node.span, initializer.left, initializer.right
+        )
+        if operands is None:
+            return
+        left, right = operands
+        helper = self._fresh_ancilla(node.span)
+        if helper is None:
+            return
+
+        ref = QubitRef(name=node.name, size=size)
+        self.qubits[node.name] = ref
+        self.module.qubits.append(ref)
+        self.module.body.ops.append(
+            MultiplyOp(
+                span=node.span,
+                left=left,
+                right=right,
+                product=ref,
+                helper=helper,
+                inverse=False,
+            )
+        )
+
+    def _lower_multiply_augassign(
+        self, span, target: QubitRef, value: BinaryOp, subtract: bool
+    ) -> None:
+        operands = self._lower_multiply_operands(span, value.left, value.right)
+        if operands is None:
+            return
+        left, right = operands
+        width = sum(_operand_width(operand) for operand in left)
+
+        # Sized 2*width so the product is never truncated before the '+='
+        # below applies target's own, possibly narrower, width rule to it.
+        temp = self._fresh_ancilla(span, size=2 * width)
+        if temp is None:
+            return
+        multiply_helper = self._fresh_ancilla(span)
+        if multiply_helper is None:
+            return
+        self.module.body.ops.append(
+            MultiplyOp(
+                span=span,
+                left=left,
+                right=right,
+                product=temp,
+                helper=multiply_helper,
+                inverse=False,
+            )
+        )
+
+        add_helper = self._fresh_ancilla(span)
+        if add_helper is None:
+            return
+        addend = self._pad_to_width(temp, target.size, span)
+        if addend is None:
+            return
+        self.module.body.ops.append(
+            ArithmeticOp(
+                span=span,
+                target=target,
+                addend=addend,
+                helper=add_helper,
+                subtract=subtract,
+                encode_constant=None,
+            )
+        )
+
+        # a and b (`left`/`right`) are untouched by the multiplier, so running
+        # it again as its own inverse cleanly zeroes the temporary product.
+        self.module.body.ops.append(
+            MultiplyOp(
+                span=span,
+                left=left,
+                right=right,
+                product=temp,
+                helper=multiply_helper,
+                inverse=True,
+            )
+        )
 
     def _measure_source(self, call: Call) -> QubitRef | None:
         if len(call.args) != 1:
@@ -488,6 +723,44 @@ def _flatten_and_chain(condition: Expression) -> list[Expression]:
     if isinstance(condition, BinaryOp) and condition.op == "&&":
         return [*_flatten_and_chain(condition.left), condition.right]
     return [condition]
+
+
+def _operand_width(operand: QubitOperand) -> int:
+    return 1 if isinstance(operand, QubitBit) else operand.size
+
+
+# Qiskit's ParameterExpression only overloads +, -, *, /, ** and unary -; `%`,
+# the bitwise operators and float()/int() conversions all raise TypeError on
+# it, so an expression involving a param cannot use them, unlike a fully
+# constant one.
+_PARAM_EXPRESSION_BINARY_OPS = frozenset({"+", "-", "*", "/", "**"})
+
+
+def _is_param_expression(expression: Expression) -> bool:
+    """Whether `expression` can reach the generated file as a `Parameter`-
+    valued Python expression even though it has no compile-time value."""
+    if isinstance(expression, Literal):
+        return True
+    if isinstance(expression, Name):
+        return expression.name in BUILTIN_CONSTANTS or isinstance(
+            expression.resolved_symbol, ParamDecl
+        )
+    if isinstance(expression, Index):
+        if not isinstance(expression.base.resolved_symbol, ParamArrayDecl):
+            return False
+        try:
+            return const_int(expression.index) is not None
+        except ConstEvalError:
+            return False
+    if isinstance(expression, UnaryOp):
+        return expression.op == "-" and _is_param_expression(expression.operand)
+    if isinstance(expression, BinaryOp):
+        return (
+            expression.op in _PARAM_EXPRESSION_BINARY_OPS
+            and _is_param_expression(expression.left)
+            and _is_param_expression(expression.right)
+        )
+    return False
 
 
 __all__ = ["lower_to_ir"]

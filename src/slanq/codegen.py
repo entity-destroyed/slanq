@@ -3,21 +3,35 @@ from __future__ import annotations
 import math
 
 from slanq import __version__
-from slanq.ast_nodes import BinaryOp, Call, Expression, Literal, Name, UnaryOp
-from slanq.builtin import BUILTIN_CONSTANTS, BUILTIN_FUNCTIONS
+from slanq.ast_nodes import (
+    BinaryOp,
+    Call,
+    Expression,
+    Index,
+    Literal,
+    Name,
+    ParamArrayDecl,
+    ParamDecl,
+    UnaryOp,
+)
+from slanq.builtin import BUILTIN_CONSTANTS, BUILTIN_FUNCTIONS, const_int
 from slanq.diagnostics import SlanqError
 from slanq.ir import (
+    ArithmeticOp,
     GateOp,
     InitOp,
     IRBlock,
     IRModule,
     MeasurementOp,
+    MultiplyOp,
     Op,
+    ParamInfo,
     PhaseOp,
     QIfOp,
     QubitBit,
     QubitOperand,
     QubitRef,
+    QubitSlice,
 )
 
 INDENT = " " * 4
@@ -70,12 +84,16 @@ def generate_qiskit(module: IRModule, *, source_name: str) -> str:
     lines += generator.import_lines(module)
     if generator.needs_round:
         lines += ["", ""] + ROUND_HELPER
+    if module.params:
+        lines += ["", ""] + _param_object_lines(module)
     lines += [
         "",
         "",
         "def build_circuit() -> QuantumCircuit:",
     ]
     lines += [INDENT + line for line in body]
+    if module.params:
+        lines += ["", ""] + _bound_circuit_lines(module)
     lines += [
         "",
         "",
@@ -89,6 +107,53 @@ def generate_qiskit(module: IRModule, *, source_name: str) -> str:
     return "\n".join(lines)
 
 
+def _array_size(param: ParamInfo) -> int:
+    assert param.size is not None
+    return param.size
+
+
+def _param_object_lines(module: IRModule) -> list[str]:
+    lines = []
+    for param in module.params:
+        if param.kind == "scalar":
+            lines.append(f'{param.name} = Parameter("{param.name}")')
+        else:
+            lines.append(
+                f'{param.name} = [Parameter(f"{param.name}_{{i}}") '
+                f"for i in range({_array_size(param)})]"
+            )
+    return lines
+
+
+def _bound_circuit_lines(module: IRModule) -> list[str]:
+    """A convenience wrapper around `build_circuit()`: it binds every
+    declared `param` by name, skipping any that turned out unused -- Qiskit
+    refuses to bind a name absent from the circuit."""
+    parameters = ", ".join(
+        f"{param.name}: {param.type_name}"
+        if param.kind == "scalar"
+        else f"{param.name}: list[{param.type_name}]"
+        for param in module.params
+    )
+    bindings = ", ".join(
+        f'"{param.name}": {param.name}'
+        if param.kind == "scalar"
+        else ", ".join(
+            f'"{param.name}_{i}": {param.name}[{i}]' for i in range(_array_size(param))
+        )
+        for param in module.params
+    )
+    return [
+        f"def build_bound_circuit({parameters}) -> QuantumCircuit:",
+        INDENT + "circuit = build_circuit()",
+        INDENT + f"bindings = {{{bindings}}}",
+        INDENT + "used = {parameter.name for parameter in circuit.parameters}",
+        INDENT + "return circuit.assign_parameters(",
+        INDENT * 2 + "{name: value for name, value in bindings.items() if name in used}",
+        INDENT + ")",
+    ]
+
+
 class _Generator:
     """Renders one module. The imports depend on what the body turned out to
     need, so the body is rendered first and the header assembled afterwards."""
@@ -99,6 +164,8 @@ class _Generator:
         self.needs_round = False
         self.needs_state_preparation = False
         self.needs_xgate = False
+        self.needs_cdkm_adder = False
+        self.needs_hrs_multiplier = False
         self._qif_counter = 0
 
     def import_lines(self, module: IRModule) -> list[str]:
@@ -110,12 +177,18 @@ class _Generator:
         if module.clbits:
             qiskit_names.append("ClassicalRegister")
         third_party = [f"from qiskit import {', '.join(sorted(qiskit_names))}"]
+        if module.params:
+            third_party.append("from qiskit.circuit import Parameter")
 
         library_names = []
         if self.needs_state_preparation:
             library_names.append("StatePreparation")
         if self.needs_xgate:
             library_names.append("XGate")
+        if self.needs_cdkm_adder:
+            library_names.append("CDKMRippleCarryAdder")
+        if self.needs_hrs_multiplier:
+            library_names.append("HRSCumulativeMultiplier")
         if library_names:
             third_party.append(
                 f"from qiskit.circuit.library import {', '.join(sorted(library_names))}"
@@ -177,7 +250,86 @@ class _Generator:
         if isinstance(op, QIfOp):
             return self._qif_lines(op, circuit_var)
 
+        if isinstance(op, ArithmeticOp):
+            return self._arithmetic_lines(op, circuit_var)
+
+        if isinstance(op, MultiplyOp):
+            return self._multiply_lines(op, circuit_var)
+
         raise NotImplementedError(f"no code generation for {type(op).__name__}")
+
+    def _declare_ancilla(self, ref: QubitRef, circuit_var: str) -> list[str]:
+        return [
+            f'{ref.name} = QuantumRegister({ref.size}, "{ref.name}")',
+            f"{circuit_var}.add_register({ref.name})",
+        ]
+
+    def _arithmetic_lines(self, op: ArithmeticOp, circuit_var: str) -> list[str]:
+        lines = self._declare_ancilla(op.helper, circuit_var)
+
+        constant_ancilla: QubitRef | None = None
+        encode_bits: list[int] = []
+        if op.encode_constant is not None:
+            (addend_ancilla,) = op.addend
+            assert isinstance(addend_ancilla, QubitRef)
+            constant_ancilla = addend_ancilla
+            lines += self._declare_ancilla(constant_ancilla, circuit_var)
+            encode_bits = [
+                bit
+                for bit in range(constant_ancilla.size)
+                if (op.encode_constant >> bit) & 1
+            ]
+            for bit in encode_bits:
+                lines.append(f"{circuit_var}.x({constant_ancilla.name}[{bit}])")
+        else:
+            for operand in op.addend:
+                if isinstance(operand, QubitRef) and operand.origin == "ancilla":
+                    lines += self._declare_ancilla(operand, circuit_var)
+
+        self.needs_cdkm_adder = True
+        adder = f"CDKMRippleCarryAdder({op.target.size}, kind='fixed')"
+        gate = f"{adder}.inverse()" if op.subtract else adder
+        qubits = ", ".join(
+            [
+                *(_spread_source(operand) for operand in op.addend),
+                _spread_source(op.target),
+                f"{op.helper.name}[0]",
+            ]
+        )
+        lines.append(f"{circuit_var}.append({gate}, [{qubits}])")
+
+        if constant_ancilla is not None:
+            for bit in encode_bits:
+                lines.append(f"{circuit_var}.x({constant_ancilla.name}[{bit}])")
+
+        return lines
+
+    def _multiply_lines(self, op: MultiplyOp, circuit_var: str) -> list[str]:
+        lines: list[str] = []
+        if not op.inverse:
+            lines += self._declare_ancilla(op.helper, circuit_var)
+            for operand in [*op.left, *op.right]:
+                if isinstance(operand, QubitRef) and operand.origin == "ancilla":
+                    lines += self._declare_ancilla(operand, circuit_var)
+            if op.product.origin == "ancilla":
+                lines += self._declare_ancilla(op.product, circuit_var)
+
+        self.needs_hrs_multiplier = True
+        width = sum(_operand_width(operand) for operand in op.left)
+        multiplier = (
+            f"HRSCumulativeMultiplier({width}, num_result_qubits={op.product.size})"
+        )
+        gate = f"{multiplier}.inverse()" if op.inverse else multiplier
+        qubits = ", ".join(
+            [
+                *(_spread_source(operand) for operand in op.left),
+                *(_spread_source(operand) for operand in op.right),
+                _spread_source(op.product),
+                f"{op.helper.name}[0]",
+            ]
+        )
+        lines.append(f"{circuit_var}.append({gate}, [{qubits}])")
+        return lines
 
     def _state_preparation_lines(self, op: InitOp, circuit_var: str) -> list[str]:
         assert isinstance(op.value, list)
@@ -213,16 +365,10 @@ class _Generator:
         for clause_ancilla in op.clause_ancillas:
             self.needs_xgate = True
             name = clause_ancilla.ancilla.name
-            lines.append(f'{name} = QuantumRegister(1, "{name}")')
-            lines.append(f"{circuit_var}.add_register({name})")
+            lines += self._declare_ancilla(clause_ancilla.ancilla, circuit_var)
 
-            clause_sources = [
-                f"*{q.name}" if isinstance(q, QubitRef) else _operand_source(q)
-                for q in clause_ancilla.qubits
-            ]
-            clause_controls = sum(
-                q.size if isinstance(q, QubitRef) else 1 for q in clause_ancilla.qubits
-            )
+            clause_sources = [_spread_source(q) for q in clause_ancilla.qubits]
+            clause_controls = sum(_operand_width(q) for q in clause_ancilla.qubits)
             compute = (
                 f"XGate().control({clause_controls}, "
                 f"ctrl_state={clause_ancilla.ctrl_state}, annotated=False)"
@@ -232,14 +378,8 @@ class _Generator:
             lines.append(f"{circuit_var}.x({name}[0])")
             clause_computes.append((compute, compute_qubits))
 
-        condition_sources = [
-            f"*{entry.name}" if isinstance(entry, QubitRef) else _operand_source(entry)
-            for entry in op.direct_qubits
-        ]
-        total_controls = sum(
-            entry.size if isinstance(entry, QubitRef) else 1
-            for entry in op.direct_qubits
-        )
+        condition_sources = [_spread_source(entry) for entry in op.direct_qubits]
+        total_controls = sum(_operand_width(entry) for entry in op.direct_qubits)
 
         if not op.negated:
             controlled = (
@@ -255,8 +395,7 @@ class _Generator:
             self.needs_xgate = True
             assert op.ancilla is not None
             ancilla = op.ancilla.name
-            lines.append(f'{ancilla} = QuantumRegister(1, "{ancilla}")')
-            lines.append(f"{circuit_var}.add_register({ancilla})")
+            lines += self._declare_ancilla(op.ancilla, circuit_var)
 
             compute = (
                 f"XGate().control({total_controls}, ctrl_state={op.ctrl_state}, "
@@ -290,6 +429,17 @@ class _Generator:
         if isinstance(expression, Name) and expression.name in BUILTIN_CONSTANTS:
             self.needs_numpy = True
             return PYTHON_CONSTANTS[expression.name]
+
+        if isinstance(expression, Name) and isinstance(
+            expression.resolved_symbol, ParamDecl
+        ):
+            return expression.name
+
+        if isinstance(expression, Index) and isinstance(
+            expression.base.resolved_symbol, ParamArrayDecl
+        ):
+            index = const_int(expression.index)
+            return f"{expression.base.name}[{index}]"
 
         if isinstance(expression, UnaryOp) and expression.op in ("-", "~"):
             return f"{expression.op}{self._wrapped(expression.operand, UNARY_PRECEDENCE)}"
@@ -337,7 +487,23 @@ def _precedence(expression: Expression) -> int:
 def _operand_source(operand: QubitOperand) -> str:
     if isinstance(operand, QubitBit):
         return f"{operand.ref.name}[{_qiskit_index(operand)}]"
+    assert not isinstance(operand, QubitSlice)
     return operand.name
+
+
+def _spread_source(operand: QubitOperand) -> str:
+    """Every qubit of `operand`, unpacked in place inside a `[...]` argument
+    list -- value semantics, no mirroring, same rule as `_operand_source`'s
+    whole-register case."""
+    if isinstance(operand, QubitBit):
+        return _operand_source(operand)
+    if isinstance(operand, QubitSlice):
+        return f"*{operand.ref.name}[0:{operand.size}]"
+    return f"*{operand.name}"
+
+
+def _operand_width(operand: QubitOperand) -> int:
+    return 1 if isinstance(operand, QubitBit) else operand.size
 
 
 def _qiskit_index(bit: QubitBit) -> int:

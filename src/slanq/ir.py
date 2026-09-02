@@ -27,7 +27,18 @@ class ClbitRef:
     size: int
 
 
-QubitOperand = QubitRef | QubitBit
+@dataclass(frozen=True, kw_only=True)
+class QubitSlice:
+    """The first `size` physical qubits of `ref` -- value semantics, does NOT
+    mirror, same rule as InitOp. Needed when a register is wider than an
+    operation actually needs (e.g. the low bits of a wider addend for a
+    `+=`)."""
+
+    ref: QubitRef
+    size: int
+
+
+QubitOperand = QubitRef | QubitBit | QubitSlice
 
 
 @dataclass(kw_only=True, eq=False)
@@ -70,6 +81,41 @@ class PhaseOp(Op):
     sub-circuit is controlled."""
 
     angle: Expression
+
+
+@dataclass(kw_only=True, eq=False)
+class ArithmeticOp(Op):
+    """`target += addend` or `target -= addend` (`subtract`). `addend` is
+    always target.size physical qubits long, concatenated -- may be the real
+    variable (possibly sliced via QubitSlice), plus a fresh 0-ancilla if the
+    real addend is narrower. `encode_constant` is set when the addend is a
+    compile-time constant: then `addend` is a fresh ancilla allocated only
+    for this purpose, which codegen encodes with X-gates before the add and
+    decodes with the same gates afterward. `helper` is the adder's own
+    self-restoring scratch qubit, fresh every time."""
+
+    target: QubitRef
+    addend: list[QubitOperand]
+    helper: QubitRef
+    subtract: bool
+    encode_constant: int | None
+
+
+@dataclass(kw_only=True, eq=False)
+class MultiplyOp(Op):
+    """`product := left * right` (or, with `inverse`, the same multiplier run
+    backwards to uncompute a temporary `product`). `left`/`right` are padded
+    to equal width with a 0-ancilla if their sizes differed -- also
+    discardable without uncompute, since the multiplier's inputs are left
+    unchanged. `product` is sized to the caller's need (silently truncated
+    mod 2^size if smaller than `2*width`). `helper` is the multiplier's own
+    scratch qubit, fresh every time."""
+
+    left: list[QubitOperand]
+    right: list[QubitOperand]
+    product: QubitRef
+    helper: QubitRef
+    inverse: bool
 
 
 @dataclass(kw_only=True)
@@ -120,25 +166,42 @@ class QIfOp(Op):
     body: IRBlock
 
 
+@dataclass(frozen=True, kw_only=True)
+class ParamInfo:
+    """A declared `param`/`param[]`, tracked so the codegen knows what
+    `Parameter` objects and `build_bound_circuit` signature to emit. `size`
+    is the element count for an array, `None` for a scalar."""
+
+    name: str
+    kind: Literal["scalar", "array"]
+    size: int | None
+    type_name: Literal["int", "float", "bool"]
+
+
 @dataclass(kw_only=True)
 class IRModule:
     qubits: list[QubitRef] = field(default_factory=list)
     clbits: list[ClbitRef] = field(default_factory=list)
+    params: list[ParamInfo] = field(default_factory=list)
     body: IRBlock = field(default_factory=IRBlock)
 
 
 __all__ = [
+    "ArithmeticOp",
     "ClbitRef",
     "GateOp",
     "IRBlock",
     "IRModule",
     "InitOp",
     "MeasurementOp",
+    "MultiplyOp",
     "Op",
+    "ParamInfo",
     "PhaseOp",
     "QIfClauseAncilla",
     "QIfOp",
     "QubitBit",
     "QubitOperand",
     "QubitRef",
+    "QubitSlice",
 ]
