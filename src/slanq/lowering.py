@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Literal as TypingLiteral
 
 from slanq.ast_nodes import (
+    AmplitudeList,
     AugAssign,
     BinaryOp,
     BoolType,
@@ -144,7 +145,11 @@ class _Lowerer(NodeVisitor):
             self._lower_multiply_decl(node, size, initializer)
             return
 
-        value = self._init_value(node.initializer)
+        if isinstance(initializer, AmplitudeList):
+            self._lower_amplitude_decl(node, size, initializer)
+            return
+
+        value = self._init_value(initializer)
         if value is None:
             self._error(
                 f"this way of initializing '{node.name}' is not implemented yet; "
@@ -180,22 +185,21 @@ class _Lowerer(NodeVisitor):
             self.module.body.ops.extend(ops)
 
     def visit_ParamDecl(self, node: ParamDecl) -> None:
+        type_name = _PARAM_TYPE_NAMES.get(type(node.declared_type))
+        assert type_name is not None, "analysis must reject a param type not in _PARAM_TYPE_NAMES"
         self.module.params.append(
-            ParamInfo(
-                name=node.name,
-                kind="scalar",
-                size=None,
-                type_name=_PARAM_TYPE_NAMES[type(node.declared_type)],
-            )
+            ParamInfo(name=node.name, kind="scalar", size=None, type_name=type_name)
         )
 
     def visit_ParamArrayDecl(self, node: ParamArrayDecl) -> None:
+        type_name = _PARAM_TYPE_NAMES.get(type(node.declared_type))
+        assert type_name is not None, "analysis must reject a param type not in _PARAM_TYPE_NAMES"
         self.module.params.append(
             ParamInfo(
                 name=node.name,
                 kind="array",
                 size=node.size,
-                type_name=_PARAM_TYPE_NAMES[type(node.declared_type)],
+                type_name=type_name,
             )
         )
 
@@ -351,6 +355,13 @@ class _Lowerer(NodeVisitor):
             value = const_value(expression)
         except ConstEvalError as exc:
             self._error(str(exc), expression.span)
+            return False
+        if isinstance(value, complex):
+            self._error(
+                "a complex number cannot be used as an angle; only int or "
+                "float are supported here",
+                expression.span,
+            )
             return False
         if value is None and not _is_param_expression(expression):
             self._error(
@@ -524,6 +535,28 @@ class _Lowerer(NodeVisitor):
             return None
         return left_operand, right_operand
 
+    def _lower_amplitude_decl(
+        self, node: QuantumDecl, size: int, initializer: AmplitudeList
+    ) -> None:
+        amplitudes: list[complex | float] = []
+        for element in initializer.elements:
+            value = self._const_value(element)
+            assert value is not None and not isinstance(value, bool)
+            amplitudes.append(value)
+
+        ref = QubitRef(name=node.name, size=size)
+        self.qubits[node.name] = ref
+        self.module.qubits.append(ref)
+        self.module.body.ops.append(
+            InitOp(
+                span=node.span,
+                target=ref,
+                value=amplitudes,
+                is_amplitude=True,
+                value_expressions=initializer.elements,
+            )
+        )
+
     def _lower_multiply_decl(
         self, node: QuantumDecl, size: int, initializer: BinaryOp
     ) -> None:
@@ -670,7 +703,7 @@ class _Lowerer(NodeVisitor):
         # through unchanged (`type(value) is int` would reject it).
         return value if isinstance(value, int) else None
 
-    def _const_value(self, expression: Expression) -> int | float | bool | None:
+    def _const_value(self, expression: Expression) -> int | float | bool | complex | None:
         try:
             return const_value(expression)
         except ConstEvalError as exc:

@@ -61,6 +61,11 @@ class BoolType(Type):
 
 
 @dataclass(kw_only=True)
+class ComplexType(Type):
+    pass
+
+
+@dataclass(kw_only=True)
 class Node:
     span: Span
 
@@ -96,9 +101,18 @@ class ProbList(Node):
 
 
 @dataclass(kw_only=True)
+class AmplitudeList(Node):
+    """`{}`-syntax amplitude list. Unlike ProbList, elements are arbitrary
+    compile-time expressions (not pre-evaluated), since they may be complex
+    and are only resolved to values later, via const_value."""
+
+    elements: list[Expression] = field(default_factory=list)
+
+
+@dataclass(kw_only=True)
 class QuantumDecl(Declaration):
     declared_type: Type
-    initializer: Expression | ProbList
+    initializer: Expression | ProbList | AmplitudeList
 
 
 @dataclass(kw_only=True)
@@ -200,7 +214,7 @@ class Name(Expression):
 
 @dataclass(kw_only=True)
 class Literal(Expression):
-    value: int | float | bool
+    value: int | float | bool | complex
 
 
 @dataclass(kw_only=True)
@@ -229,6 +243,7 @@ class UnaryOp(Expression):
 
 
 __all__ = [
+    "AmplitudeList",
     "Assign",
     "AugAssign",
     "BinaryOp",
@@ -237,6 +252,7 @@ __all__ = [
     "BuiltinDecl",
     "Call",
     "ClassicalDecl",
+    "ComplexType",
     "Declaration",
     "Expression",
     "ExprStatement",

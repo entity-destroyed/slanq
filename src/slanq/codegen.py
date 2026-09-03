@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from typing import cast
 
 from slanq import __version__
 from slanq.ast_nodes import (
@@ -63,7 +64,13 @@ PYTHON_FUNCTIONS: dict[str, str] = {
     "floor": "math.floor",
     "ceil": "math.ceil",
     "round": "_round",
+    "sqrt": "math.sqrt",
 }
+
+# Matches analysis.py's NORMALIZATION_TOLERANCE: below this, a `{}` amplitude
+# list is close enough to already-normalized that its elements can be
+# rendered as the original expressions, not divided by a computed norm.
+AMPLITUDE_NORMALIZATION_TOLERANCE = 1e-9
 
 ROUND_HELPER = [
     "def _round(value: float) -> int:",
@@ -333,17 +340,29 @@ class _Generator:
 
     def _state_preparation_lines(self, op: InitOp, circuit_var: str) -> list[str]:
         assert isinstance(op.value, list)
-        probabilities = op.value
+        values = op.value
 
-        if not probabilities:
+        if not values:
             return [
                 f"{circuit_var}.h({op.target.name}[{bit}])"
                 for bit in range(op.target.size)
             ]
 
         self.needs_state_preparation = True
-        total = sum(probabilities)
-        amplitudes = [math.sqrt(probability / total) for probability in probabilities]
+        if op.is_amplitude:
+            norm_squared = sum(abs(value) ** 2 for value in values)
+            already_normalized = abs(norm_squared - 1.0) <= AMPLITUDE_NORMALIZATION_TOLERANCE
+            if op.value_expressions is not None and already_normalized:
+                rendered = ", ".join(self.expression(e) for e in op.value_expressions)
+                return [
+                    f"{circuit_var}.append(StatePreparation([{rendered}]), {op.target.name})"
+                ]
+            norm = math.sqrt(norm_squared)
+            amplitudes = [value / norm for value in values]
+        else:
+            probabilities = cast(list[float], values)
+            total = sum(probabilities)
+            amplitudes = [math.sqrt(probability / total) for probability in probabilities]
         rendered = ", ".join(repr(amplitude) for amplitude in amplitudes)
         return [f"{circuit_var}.append(StatePreparation([{rendered}]), {op.target.name})"]
 

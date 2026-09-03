@@ -29,3 +29,4 @@ desktop.ini
 # Compiler output
 *.qasm
 out/
+.claude

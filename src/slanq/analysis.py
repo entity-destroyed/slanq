@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from slanq.ast_nodes import (
+    AmplitudeList,
     AugAssign,
     BinaryOp,
     Block,
     BuiltinDecl,
     Call,
+    ComplexType,
     Declaration,
     Expression,
     ExprStatement,
@@ -139,7 +141,7 @@ class _Checker(NodeVisitor):
     def __init__(self, bag: DiagnosticBag) -> None:
         self.bag = bag
 
-    def _value(self, expression: Expression) -> int | float | bool | None:
+    def _value(self, expression: Expression) -> int | float | bool | complex | None:
         try:
             return const_value(expression)
         except ConstEvalError as exc:
@@ -208,9 +210,10 @@ class _IndexChecker(_Checker):
             )
 
 
-# Below this, a probability list is treated as "meant to sum to 1": floating
-# point noise from ordinary decimal literals is silently normalized away rather than warned about.
-PROBABILITY_SUM_TOLERANCE = 1e-9
+# Below this, a probability/amplitude list is treated as "meant to already be
+# normalized": floating point noise from ordinary decimal literals is silently
+# normalized away rather than warned about.
+NORMALIZATION_TOLERANCE = 1e-9
 
 
 class _ProbListChecker(_Checker):
@@ -248,12 +251,79 @@ class _ProbListChecker(_Checker):
         if total <= 0:
             self._reject(f"the probabilities for '{node.name}' cannot sum to zero",
                           node.initializer)
-        elif abs(total - 1.0) > PROBABILITY_SUM_TOLERANCE:
+        elif abs(total - 1.0) > NORMALIZATION_TOLERANCE:
             self._warn(
                 f"the probabilities for '{node.name}' sum to {total}, not 1; "
                 "the compiler will normalize them",
                 node.initializer,
             )
+
+
+class _AmplitudeListChecker(_Checker):
+    def visit_QuantumDecl(self, node: QuantumDecl) -> None:
+        self.generic_visit(node)
+
+        if not isinstance(node.initializer, AmplitudeList):
+            return
+
+        elements = node.initializer.elements
+        if not elements:
+            # An empty list means equal superposition; nothing to validate.
+            return
+
+        size = qubit_count(node.declared_type)
+        if size is None:
+            return
+        expected = 2**size
+        if len(elements) != expected:
+            self._reject(
+                f"'{node.name}' needs {expected} amplitudes (2^{size}), "
+                f"got {len(elements)}",
+                node.initializer,
+            )
+            return
+
+        amplitudes: list[complex | float | int] = []
+        for index, element in enumerate(elements):
+            value = self._amplitude_value(element, index, node.name)
+            if value is None:
+                return
+            amplitudes.append(value)
+
+        norm_squared = sum(abs(value) ** 2 for value in amplitudes)
+        if norm_squared == 0:
+            self._reject(
+                f"the amplitudes for '{node.name}' cannot all be zero", node.initializer
+            )
+        elif abs(norm_squared - 1.0) > NORMALIZATION_TOLERANCE:
+            self._warn(
+                f"the amplitudes for '{node.name}' have squared norm {norm_squared}, "
+                "not 1; the compiler will normalize them",
+                node.initializer,
+            )
+
+    def _amplitude_value(
+        self, element: Expression, index: int, name: str
+    ) -> complex | float | int | None:
+        try:
+            value = const_value(element)
+        except ConstEvalError as exc:
+            self._reject(str(exc), element)
+            return None
+        if value is None:
+            self._reject(
+                f"the amplitude for value {index} of '{name}' is not a "
+                "compile-time constant",
+                element,
+            )
+            return None
+        if type(value) is bool:
+            self._reject(
+                f"the amplitude for value {index} of '{name}' cannot be a boolean",
+                element,
+            )
+            return None
+        return value
 
 
 class _ForChecker(_Checker):
@@ -722,13 +792,36 @@ def _quantum_size_of(base: Name) -> int | None:
     return qubit_count(symbol.declared_type)
 
 
+class _ParamTypeChecker(_Checker):
+    """No Qiskit gate-synthesis primitive ever consumes a `Parameter` except as
+    an already-present, real-valued angle or time -- never as a complex value
+    (`StatePreparation`, `UnitaryGate` and `PauliEvolutionGate` all
+    reject a symbolic/complex input). A `param complex` would therefore never
+    have a working consumer."""
+
+    def visit_ParamDecl(self, node: ParamDecl) -> None:
+        self._reject_if_complex(node.declared_type, node)
+
+    def visit_ParamArrayDecl(self, node: ParamArrayDecl) -> None:
+        self._reject_if_complex(node.declared_type, node)
+
+    def _reject_if_complex(self, declared_type: Type, node: Node) -> None:
+        if isinstance(declared_type, ComplexType):
+            self._reject(
+                "a param must be int, float, or bool; complex is not supported here",
+                node,
+            )
+
+
 def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _IndexChecker(bag).visit(ast)
     _ForChecker(bag).visit(ast)
     _CallChecker(bag).visit(ast)
     _ProbListChecker(bag).visit(ast)
+    _AmplitudeListChecker(bag).visit(ast)
     _QIfConditionChecker(bag).visit(ast)
     _ArithmeticChecker(bag).visit(ast)
+    _ParamTypeChecker(bag).visit(ast)
 
 
 def _check_affine(ast: Program, bag: DiagnosticBag) -> None:

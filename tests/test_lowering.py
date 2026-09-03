@@ -239,6 +239,28 @@ def test_runtime_angle_is_reported_as_a_limitation(lower: LowerSource) -> None:
     assert "not known at compile time" in bag.errors[0].message
 
 
+def test_complex_angle_is_rejected(lower: LowerSource) -> None:
+    _, bag = lower("qbool q = false; RX(0.5+0.3i, q);")
+    assert bag.has_errors
+    assert "cannot be used as an angle" in bag.errors[0].message
+
+
+def test_complex_phase_is_rejected(lower: LowerSource) -> None:
+    _, bag = lower("phase(1i);")
+    assert bag.has_errors
+    assert "cannot be used as an angle" in bag.errors[0].message
+
+
+def test_boolean_angle_is_still_accepted(lower: LowerSource) -> None:
+    """Documents a known, pre-existing, deliberately unfixed gap (see
+    Slanq_kesobbi_feladatok.md): a bool slips through as an angle today --
+    unlike complex, this does not crash the generated file (Qiskit silently
+    treats True/False as 1/0), so it stays out of scope for this round."""
+    module, bag = lower("qbool q = false; RX(true, q);")
+    assert not bag.has_errors
+    assert isinstance(module.body.ops[-1], GateOp)
+
+
 def test_phase_at_top_level_becomes_a_phase_op(lower: LowerSource) -> None:
     """A global phase is harmless outside a qif too, and meaningful if this
     circuit is later composed into something larger -- no reason to forbid it."""
@@ -266,6 +288,46 @@ def test_probability_list_reaches_the_ir_unnormalized(lower: LowerSource) -> Non
     init = module.body.ops[0]
     assert isinstance(init, InitOp)
     assert init.value == [0.1, 0.1, 0.1, 0.1]
+
+
+def test_empty_amplitude_list_becomes_an_empty_ir_value(lower: LowerSource) -> None:
+    module, bag = lower("qint<2> a = {};")
+    assert not bag.has_errors
+    init = module.body.ops[0]
+    assert isinstance(init, InitOp)
+    assert init.value == []
+
+
+def test_amplitude_list_reaches_the_ir_unnormalized_and_marked(lower: LowerSource) -> None:
+    """Lowering carries the raw evaluated amplitudes through as-is (not yet
+    normalized -- that is the codegen's job), and marks the op as an
+    amplitude list rather than a probability list."""
+    module, bag = lower("qint<1> a = {1/sqrt(2), 1i/sqrt(2)};")
+    assert not bag.has_errors
+    init = module.body.ops[0]
+    assert isinstance(init, InitOp)
+    assert init.is_amplitude is True
+    assert init.value == [1 / 2**0.5, 1j / 2**0.5]
+
+
+def test_amplitude_list_keeps_the_original_expressions(lower: LowerSource) -> None:
+    """The original expressions are kept alongside the evaluated value so
+    codegen can render an already-normalized amplitude symbolically instead
+    of a folded decimal."""
+    module, bag = lower("qint<1> a = {1/sqrt(2), 1i/sqrt(2)};")
+    assert not bag.has_errors
+    init = module.body.ops[0]
+    assert isinstance(init, InitOp)
+    assert init.value_expressions is not None
+    assert len(init.value_expressions) == 2
+
+
+def test_probability_list_is_not_marked_as_amplitude(lower: LowerSource) -> None:
+    module, bag = lower("qint<1> a = [0.5, 0.5];")
+    assert not bag.has_errors
+    init = module.body.ops[0]
+    assert isinstance(init, InitOp)
+    assert init.is_amplitude is False
 
 
 def test_qif_equality_condition_lowers_ctrl_state(lower: LowerSource) -> None:

@@ -148,6 +148,71 @@ def test_qbool_probability_list() -> None:
     assert counts["1"] > counts["0"]
 
 
+def test_amplitude_list_produces_the_exact_complex_state() -> None:
+    """Unlike a [] probability list, {} can encode a relative phase -- counts
+    alone cannot see this, so the statevector is checked directly."""
+    source = "qbool q = {1/sqrt(2), 1i/sqrt(2)};\n"
+    circuit = _build_circuit(source)
+    statevector = Statevector.from_instruction(circuit)
+    expected = np.array([1 / np.sqrt(2), 1j / np.sqrt(2)])
+    assert np.allclose(statevector.data, expected)
+
+
+def test_amplitude_list_with_negative_real_amplitude() -> None:
+    """[] cannot express this state at all -- a negative amplitude has no
+    corresponding (nonnegative) probability representation."""
+    source = "qbool q = {1/sqrt(2), -1/sqrt(2)};\n"
+    circuit = _build_circuit(source)
+    statevector = Statevector.from_instruction(circuit)
+    expected = np.array([1 / np.sqrt(2), -1 / np.sqrt(2)])
+    assert np.allclose(statevector.data, expected)
+
+
+def test_empty_amplitude_list_is_equal_superposition() -> None:
+    source = "qint<2> a = {};\nint result = measure(a);\n"
+    result = compile_source(source, source_name="test.slanq")
+    assert result.qiskit_source is not None
+    assert "StatePreparation" not in result.qiskit_source
+
+    counts = _counts(source)
+    assert set(counts) == {"00", "01", "10", "11"}
+    assert all(SHOTS * 0.15 < value < SHOTS * 0.35 for value in counts.values())
+
+
+def test_amplitude_list_needing_normalization_still_runs() -> None:
+    source = "qbool q = {0.6, 0.6};\nint result = measure(q);\n"
+    result = compile_source(source, source_name="test.slanq")
+    assert result.diagnostics.warnings
+    assert not result.diagnostics.has_errors
+
+    counts = _counts(source)
+    assert set(counts) == {"0", "1"}
+    assert SHOTS * 0.35 < counts["0"] < SHOTS * 0.65
+
+
+def test_amplitude_list_needing_normalization_with_a_complex_value() -> None:
+    """The normalization warning and the correction it triggers must both work
+    when the list contains a complex value, not just an all-real one."""
+    source = "qbool q = {0.6i, 0.6};\nint result = measure(q);\n"
+    result = compile_source(source, source_name="test.slanq")
+    assert result.diagnostics.warnings
+    assert not result.diagnostics.has_errors
+
+    counts = _counts(source)
+    assert set(counts) == {"0", "1"}
+    assert SHOTS * 0.35 < counts["0"] < SHOTS * 0.65
+
+
+def test_amplitude_list_wider_than_two_elements() -> None:
+    """Every other {} test uses a 2-element (qbool) list -- this checks a
+    4-element (qint<2>) list with a mix of real and complex amplitudes."""
+    source = "qint<2> a = {0.5, 0.5i, 0.5, 0.5i};\n"
+    circuit = _build_circuit(source)
+    statevector = Statevector.from_instruction(circuit)
+    expected = np.array([0.5, 0.5j, 0.5, 0.5j])
+    assert np.allclose(statevector.data, expected)
+
+
 def test_qif_equality_condition_fires_only_on_match() -> None:
     for a_value, expected in [(0, "0"), (1, "0"), (2, "1"), (3, "0")]:
         source = (

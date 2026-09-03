@@ -387,6 +387,62 @@ def test_qbool_probability_list_needs_exactly_two_entries(
     assert "needs 2 probabilities" in bag.errors[0].message
 
 
+def test_empty_amplitude_list_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
+    assert not diagnostics_of("qint<2> a = {};").has_errors
+
+
+def test_amplitude_list_length_must_match_two_to_the_size(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    bag = diagnostics_of("qint<2> a = {0.5, 0.5};")
+    assert bag.has_errors
+    assert "needs 4 amplitudes (2^2), got 2" in bag.errors[0].message
+
+
+def test_amplitude_list_accepts_negative_and_complex_values(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    assert not diagnostics_of("qint<1> a = {0.6, -0.8};").has_errors
+    assert not diagnostics_of("qint<1> a = {1/sqrt(2), 1i/sqrt(2)};").has_errors
+
+
+def test_amplitude_list_rejects_a_non_constant_element(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    bag = diagnostics_of("int x = 5; qint<1> a = {x, 0};")
+    assert bag.has_errors
+    assert "not a compile-time constant" in bag.errors[0].message
+
+
+def test_amplitude_list_rejects_a_boolean_element(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<1> a = {true, false};")
+    assert bag.has_errors
+    assert "cannot be a boolean" in bag.errors[0].message
+
+
+def test_amplitudes_summing_to_zero_norm_is_reported(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<1> a = {0, 0};")
+    assert bag.has_errors
+    assert "cannot all be zero" in bag.errors[0].message
+
+
+def test_amplitudes_off_by_a_meaningful_amount_warn(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<1> a = {0.6, 0.6};")
+    assert not bag.has_errors
+    assert bag.warnings
+    assert "squared norm" in bag.warnings[0].message
+
+
+def test_amplitude_list_unnormalized_but_within_tolerance_is_silent(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    """0.6**2 + 0.8**2 is exactly 1.0; no floating-point noise to tolerate here,
+    but this mirrors the analogous [] floating-point-noise test in spirit."""
+    bag = diagnostics_of("qint<1> a = {0.6, 0.8};")
+    assert not bag.has_errors
+    assert not bag.warnings
+
+
 def test_qif_equality_condition_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
     assert not diagnostics_of(
         "qint<2> a = 0; qbool out = false; qif(a == 2) { X(out); }"
@@ -644,3 +700,19 @@ def test_quantum_decl_multiply_with_a_classical_operand_is_rejected(
     bag = diagnostics_of("qint<2> a = 0; int x = 0; qint<4> c = a * x;")
     assert bag.has_errors
     assert "'x' is not a quantum variable" in bag.errors[0].message
+
+
+def test_param_complex_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
+    """No Qiskit gate-synthesis primitive ever consumes a complex-valued
+    Parameter -- measured against StatePreparation, UnitaryGate and
+    PauliEvolutionGate, all reject one. A param complex would never have a
+    working consumer."""
+    bag = diagnostics_of("param complex theta;")
+    assert bag.has_errors
+    assert "complex is not supported" in bag.errors[0].message
+
+
+def test_param_complex_array_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("param complex gamma[3];")
+    assert bag.has_errors
+    assert "complex is not supported" in bag.errors[0].message

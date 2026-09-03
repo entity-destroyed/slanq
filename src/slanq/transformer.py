@@ -4,6 +4,7 @@ from lark import Token, Transformer, v_args
 from lark.tree import Meta
 
 from slanq.ast_nodes import (
+    AmplitudeList,
     Assign,
     AugAssign,
     BinaryOp,
@@ -11,6 +12,7 @@ from slanq.ast_nodes import (
     BoolType,
     Call,
     ClassicalDecl,
+    ComplexType,
     Expression,
     ExprStatement,
     FloatType,
@@ -43,6 +45,7 @@ TYPE_BY_NAME: dict[str, type[Type]] = {
     "int": IntType,
     "float": FloatType,
     "bool": BoolType,
+    "complex": ComplexType,
     "qint": QIntType,
     "qbool": QBoolType,
 }
@@ -143,6 +146,13 @@ class SlanqTransformer(Transformer):
         return ProbList(
             span=_span_from_meta(meta),
             probabilities=[float(token) for token in children if token is not None],
+        )
+
+    def amplitude_list(self, meta: Meta, children) -> AmplitudeList:
+        # An empty list yields a single None placeholder rather than no children.
+        return AmplitudeList(
+            span=_span_from_meta(meta),
+            elements=[element for element in children if element is not None],
         )
 
     # --- procedures ---
@@ -246,6 +256,11 @@ class SlanqTransformer(Transformer):
         text = str(token)
         value: int | float = float(text) if "." in text else int(text)
         return Literal(span=_span_from_meta(meta), value=value)
+
+    def imaginary(self, meta: Meta, children) -> Literal:
+        (token,) = children
+        magnitude = float(str(token)[:-1])  # strip the trailing "i"
+        return Literal(span=_span_from_meta(meta), value=complex(0.0, magnitude))
 
     def boolean(self, meta: Meta, children) -> Literal:
         (token,) = children

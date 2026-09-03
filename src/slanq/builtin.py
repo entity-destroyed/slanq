@@ -9,11 +9,13 @@ render faithfully.
 
 from __future__ import annotations
 
+import cmath
 import math
 import operator
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from slanq.ast_nodes import (
     BinaryOp,
@@ -71,6 +73,7 @@ BUILTIN_SIGNATURES: dict[str, Signature] = {
     "phase": Signature(args=(ArgKind.ANGLE,)),
     "measure": Signature(args=(ArgKind.QVAR,), returns=IntType()),
     **_gates("floor ceil round", ArgKind.ANGLE, returns=IntType()),
+    "sqrt": Signature(args=(ArgKind.ANGLE,), returns=FloatType()),
 }
 
 
@@ -79,12 +82,21 @@ def _round_half_away(value: float) -> int:
     return math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5)
 
 
+def _sqrt(value: float | complex) -> float | complex:
+    """A negative real or complex input promotes to a complex result (with the
+    expected `i`); a nonnegative real input stays a plain float."""
+    if isinstance(value, complex) or value < 0:
+        return cmath.sqrt(value)
+    return math.sqrt(value)
+
+
 BUILTIN_CONSTANTS: dict[str, float] = {"PI": math.pi}
 
-BUILTIN_FUNCTIONS: dict[str, Callable[[float], int]] = {
+BUILTIN_FUNCTIONS: dict[str, Callable[[Any], Any]] = {
     "floor": math.floor,
     "ceil": math.ceil,
     "round": _round_half_away,
+    "sqrt": _sqrt,
 }
 
 # Recognised only as the iterable of a `for`, never as a value.
@@ -136,7 +148,7 @@ class ConstEvalError(Exception):
     `None` result and not an error on its own."""
 
 
-def const_value(expression: Expression) -> int | float | bool | None:
+def const_value(expression: Expression) -> int | float | bool | complex | None:
     """The compile-time value of `expression`, or None if it has none."""
     if isinstance(expression, Literal):
         return expression.value

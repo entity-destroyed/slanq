@@ -56,7 +56,17 @@ class Op:
 @dataclass(kw_only=True, eq=False)
 class InitOp(Op):
     target: QubitRef
-    value: int | bool | list[float]
+    value: int | bool | list[float] | list[complex | float]
+    # True for a `{}` amplitude list: `value` holds raw, not-yet-normalized
+    # amplitudes (int/float/complex), not probabilities -- codegen divides by
+    # the L2 norm instead of taking a square root.
+    is_amplitude: bool = False
+    # Only set when is_amplitude is True: each element's original Slanq
+    # expression, kept alongside the evaluated `value` so codegen can render
+    # an already-normalized amplitude symbolically (e.g. `1 / math.sqrt(2)`)
+    # instead of a decimal approximation -- the same "never fold a
+    # compile-time expression" rule angle arguments already follow.
+    value_expressions: list[Expression] | None = None
 
 
 @dataclass(kw_only=True, eq=False)

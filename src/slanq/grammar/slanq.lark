@@ -37,10 +37,15 @@ param_decl:       "param" CTYPE NAME ";"
 param_array_decl: "param" CTYPE NAME "[" INT "]" ";"
 
 ?q_initializer: prob_list
+              | amplitude_list
               | expr
 
 // An empty list means equal superposition; otherwise a probability list.
 prob_list: "[" [NUMBER ("," NUMBER)*] "]"
+
+// An empty list means equal superposition, same as prob_list. Otherwise each
+// element is an arbitrary compile-time (possibly complex) amplitude expression.
+amplitude_list: "{" [expr ("," expr)*] "}"
 
 // --- Assignment ------------------------------------------------------------
 
@@ -121,6 +126,7 @@ proc_param:  TYPE NAME
       | atom "**" unary -> pow
 
 ?atom: NUMBER            -> number
+     | IMAGINARY         -> imaginary
      | BOOL              -> boolean
      | call_expr
      | NAME "[" expr "]" -> index
@@ -132,13 +138,14 @@ arg_list:  expr ("," expr)*
 
 // --- Terminals -------------------------------------------------------------
 
-CTYPE: "int" | "float" | "bool"
+CTYPE: "int" | "float" | "bool" | "complex"
 TYPE:  "qint" | "qbool" | "int" | "float" | "bool"
 BOOL:  "true" | "false"
 
-NAME:   /[A-Za-z_][A-Za-z0-9_]*/
-NUMBER: /\d+(\.\d+)?/
-INT:    /\d+/
+NAME:      /[A-Za-z_][A-Za-z0-9_]*/
+NUMBER:    /\d+(\.\d+)?/
+IMAGINARY: /\d+(\.\d+)?i/
+INT:       /\d+/
 
 COMMENT: "//" /[^\n]*/
 

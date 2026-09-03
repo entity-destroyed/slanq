@@ -7,12 +7,14 @@ import pytest
 from lark import Lark, Tree
 
 from slanq.ast_nodes import (
+    AmplitudeList,
     Assign,
     AugAssign,
     BinaryOp,
     Block,
     Call,
     ClassicalDecl,
+    ComplexType,
     ExprStatement,
     For,
     If,
@@ -242,6 +244,39 @@ def test_boolean_true_literal(build_ast: BuildAst) -> None:
     assert isinstance(declaration, QuantumDecl)
     assert isinstance(declaration.initializer, Literal)
     assert declaration.initializer.value is True
+
+
+def test_imaginary_literal_becomes_a_complex_value(build_ast: BuildAst) -> None:
+    (declaration,) = build_ast("complex c = 3i;").statements
+    assert isinstance(declaration, ClassicalDecl)
+    assert isinstance(declaration.declared_type, ComplexType)
+    assert isinstance(declaration.initializer, Literal)
+    assert declaration.initializer.value == complex(0, 3)
+
+
+def test_complex_literal_combines_real_and_imaginary_parts(build_ast: BuildAst) -> None:
+    (declaration,) = build_ast("complex c = 0.5+0.3i;").statements
+    assert isinstance(declaration, ClassicalDecl)
+    assert isinstance(declaration.initializer, BinaryOp)
+    assert declaration.initializer.op == "+"
+    assert declaration.initializer.left.value == 0.5
+    assert declaration.initializer.right.value == complex(0, 0.3)
+
+
+def test_empty_amplitude_list_means_equal_superposition(build_ast: BuildAst) -> None:
+    (declaration,) = build_ast("qint<2> b = {};").statements
+    assert isinstance(declaration, QuantumDecl)
+    assert isinstance(declaration.initializer, AmplitudeList)
+    assert declaration.initializer.elements == []
+
+
+def test_amplitude_list_keeps_its_elements_as_expressions(build_ast: BuildAst) -> None:
+    (declaration,) = build_ast("qint<1> a = {1/sqrt(2), 1i};").statements
+    assert isinstance(declaration, QuantumDecl)
+    assert isinstance(declaration.initializer, AmplitudeList)
+    assert len(declaration.initializer.elements) == 2
+    assert isinstance(declaration.initializer.elements[0], BinaryOp)
+    assert isinstance(declaration.initializer.elements[1], Literal)
 
 
 @pytest.mark.parametrize(

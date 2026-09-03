@@ -199,6 +199,12 @@ def test_floor_and_ceil_map_to_math() -> None:
     assert "circuit.rx(math.floor(7 / 2) * math.ceil(1.2), q[0])" in source
 
 
+def test_sqrt_maps_to_math_as_an_angle_expression() -> None:
+    source = _param_source("sqrt(2)")
+    assert "circuit.rx(math.sqrt(2), q[0])" in source
+    assert "import math" in source
+
+
 @pytest.mark.parametrize(
     "slanq_source",
     [
@@ -262,6 +268,108 @@ def test_state_preparation_amplitudes_are_normalized_defensively(span: Span) -> 
     )
     source = _generate(module)
     assert "StatePreparation([0.7071067811865476, 0.7071067811865476])" in source
+
+
+def test_amplitude_list_becomes_normalized_state_preparation(span: Span) -> None:
+    """Unlike a probability list, an amplitude list is not square-rooted --
+    its raw values are already amplitudes, only divided by their L2 norm. No
+    value_expressions here, so this exercises the numeric fallback path (the
+    symbolic path is covered by test_normalized_amplitude_list_renders_symbolically
+    below)."""
+    qubit = QubitRef(name="a", size=1)
+    module = IRModule(
+        qubits=[qubit],
+        body=IRBlock(
+            ops=[
+                InitOp(
+                    span=span, target=qubit, value=[1.0, 1j], is_amplitude=True
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert "from qiskit.circuit.library import StatePreparation" in source
+    assert (
+        "circuit.append(StatePreparation([0.7071067811865475, "
+        "0.7071067811865475j]), a)" in source
+    )
+
+
+def test_normalized_amplitude_list_renders_symbolically(span: Span) -> None:
+    """An already-normalized amplitude list with value_expressions set renders
+    the original expressions (never-fold-a-compile-time-expression), not a
+    decimal approximation."""
+    qubit = QubitRef(name="a", size=1)
+    module = IRModule(
+        qubits=[qubit],
+        body=IRBlock(
+            ops=[
+                InitOp(
+                    span=span,
+                    target=qubit,
+                    value=[0.6, 0.8],
+                    is_amplitude=True,
+                    value_expressions=[
+                        Literal(span=span, value=0.6),
+                        Literal(span=span, value=0.8),
+                    ],
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert "circuit.append(StatePreparation([0.6, 0.8]), a)" in source
+
+
+def test_off_normalized_amplitude_list_ignores_value_expressions(span: Span) -> None:
+    """A genuine correction is needed, so the symbolic path must not be taken
+    even when value_expressions is present -- the expressions would no longer
+    describe the actual (normalized) amplitudes."""
+    qubit = QubitRef(name="a", size=1)
+    module = IRModule(
+        qubits=[qubit],
+        body=IRBlock(
+            ops=[
+                InitOp(
+                    span=span,
+                    target=qubit,
+                    value=[0.6, 0.6],
+                    is_amplitude=True,
+                    value_expressions=[
+                        Literal(span=span, value=0.6),
+                        Literal(span=span, value=0.6),
+                    ],
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert "StatePreparation([0.6, 0.6])" not in source
+    assert "0.7071067811865475" in source
+
+
+def test_amplitude_list_preserves_complex_values(span: Span) -> None:
+    qubit = QubitRef(name="a", size=1)
+    module = IRModule(
+        qubits=[qubit],
+        body=IRBlock(
+            ops=[InitOp(span=span, target=qubit, value=[1j, 0.0], is_amplitude=True)]
+        ),
+    )
+    source = _generate(module)
+    assert "1j" in source
+
+
+def test_empty_amplitude_list_becomes_hadamards(span: Span) -> None:
+    qubit = QubitRef(name="a", size=2)
+    module = IRModule(
+        qubits=[qubit],
+        body=IRBlock(ops=[InitOp(span=span, target=qubit, value=[], is_amplitude=True)]),
+    )
+    source = _generate(module)
+    assert "circuit.h(a[0])" in source
+    assert "circuit.h(a[1])" in source
+    assert "StatePreparation" not in source
 
 
 def test_qif_direct_control_when_not_negated(span: Span) -> None:
