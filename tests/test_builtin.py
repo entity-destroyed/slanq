@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 import pytest
 
+from slanq.analysis import analyze
 from slanq.ast_nodes import Expression, IntType, Program
 from slanq.builtin import (
     BUILTIN_GATES,
@@ -16,6 +17,7 @@ from slanq.builtin import (
     const_int,
     const_value,
 )
+from slanq.diagnostics import DiagnosticBag
 
 BuildAst = Callable[[str], Program]
 
@@ -36,6 +38,20 @@ def expression_of(build_ast: BuildAst) -> Callable[[str], Expression]:
         return declaration.initializer
 
     return _expression_of
+
+
+@pytest.fixture
+def last_value_of(build_ast: BuildAst) -> Callable[[str], object]:
+    """Like `value_of`, but for multi-statement source, evaluating the last
+    statement's initializer -- needed to test Name resolution, which depends
+    on `resolved_symbol` from a real `analyze()` pass, not just parsing."""
+
+    def _last_value_of(source: str) -> object:
+        ast = build_ast(source)
+        analyze(ast, DiagnosticBag())
+        return const_value(ast.statements[-1].initializer)
+
+    return _last_value_of
 
 
 def test_pi_is_a_constant(value_of) -> None:
@@ -116,6 +132,21 @@ def test_non_constant_expression_has_no_value(value_of) -> None:
     assert value_of("n + 1") is None
 
 
+def test_classical_name_resolves_to_its_initializer(last_value_of) -> None:
+    assert last_value_of("complex c = 0.5+0.3i; complex d = c;") == complex(0.5, 0.3)
+    assert last_value_of("float t = PI / 4; float u = t * 2;") == pytest.approx(
+        math.pi / 2
+    )
+
+
+def test_classical_name_resolution_is_transitive(last_value_of) -> None:
+    assert last_value_of("int a = 2; int b = a; int c = b + 1;") == 3
+
+
+def test_param_name_is_not_a_compile_time_constant(last_value_of) -> None:
+    assert last_value_of("param float p; float x = p;") is None
+
+
 def test_comparisons_are_not_constant_folded(value_of) -> None:
     """Only what the code generator can print back out is evaluated here."""
     assert value_of("1 < 2") is None
@@ -124,6 +155,27 @@ def test_comparisons_are_not_constant_folded(value_of) -> None:
 def test_division_by_zero_is_an_error(expression_of) -> None:
     with pytest.raises(ConstEvalError):
         const_value(expression_of("1 / 0"))
+
+
+def test_huge_power_is_rejected(expression_of) -> None:
+    with pytest.raises(ConstEvalError, match="bits to represent"):
+        const_value(expression_of("2 ** 10000000"))
+
+
+def test_power_tower_is_rejected_without_hanging(expression_of) -> None:
+    """Right-associativity means this is 2 ** (2 ** (2 ** 20)) -- the outer
+    step alone would need far more memory than exists to even represent the
+    result, so the guard must catch it before `operator.pow` ever runs."""
+    with pytest.raises(ConstEvalError, match="bits to represent"):
+        const_value(expression_of("2 ** 2 ** 2 ** 20"))
+
+
+def test_power_guard_does_not_reject_legitimate_constants(value_of) -> None:
+    assert value_of("2 ** 100") == 2**100
+    assert value_of("1 ** 999999999999") == 1
+    assert value_of("(-1) ** 999999999999") == -1
+    assert value_of("2 ** -1000000") == 0.0
+    assert value_of("2.5 ** 3") == 15.625
 
 
 def test_bitwise_on_a_float_is_an_error(expression_of) -> None:

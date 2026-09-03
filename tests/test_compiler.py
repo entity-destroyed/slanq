@@ -41,10 +41,25 @@ def test_syntax_error_raises(mvp_a_source: str) -> None:
 
 
 def test_semantic_error_stops_before_codegen() -> None:
+    """Lowering still runs after a semantic error -- it independently
+    validates its own concerns, so skipping it would hide diagnostics behind
+    whichever error analysis happened to find first. Only codegen requires a
+    fully clean run."""
     result = compile_source("H(unknown);")
     assert result.diagnostics.has_errors
-    assert result.ir is None
+    assert result.ir is not None
     assert result.qiskit_source is None
+
+
+def test_lowering_runs_despite_a_prior_analysis_error() -> None:
+    """An analysis error must not hide an independent lowering-phase error --
+    each phase validates its own concerns, and gating lowering behind
+    analysis would silently drop diagnostics that have nothing to do with
+    the analysis error itself."""
+    result = compile_source("qbool q = false; H(unknown); if(1) { X(q); }")
+    messages = [d.message for d in result.diagnostics.errors]
+    assert any("undefined name" in message for message in messages)
+    assert any("if statement" in message for message in messages)
 
 
 def test_source_name_reaches_the_header(mvp_a_source: str) -> None:

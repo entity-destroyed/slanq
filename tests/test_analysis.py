@@ -170,9 +170,17 @@ def test_index_within_range_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
 
 
 def test_non_constant_quantum_index_is_reported(diagnostics_of: DiagnosticsOf) -> None:
-    bag = diagnostics_of("qint<2> q = 0; int i = 0; H(q[i]);")
+    """A genuinely runtime value (a measurement result) stays rejected -- a
+    classical constant, tested just below, is a different case now."""
+    bag = diagnostics_of(
+        "qint<2> q = 0; qbool flag = false; int i = measure(flag); H(q[i]);"
+    )
     assert bag.has_errors
     assert "compile-time integer" in bag.errors[0].message
+
+
+def test_classical_int_name_index_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
+    assert not diagnostics_of("qint<2> q = 0; int i = 0; H(q[i]);").has_errors
 
 
 def test_constant_expression_index_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
@@ -409,9 +417,16 @@ def test_amplitude_list_accepts_negative_and_complex_values(
 def test_amplitude_list_rejects_a_non_constant_element(
     diagnostics_of: DiagnosticsOf,
 ) -> None:
-    bag = diagnostics_of("int x = 5; qint<1> a = {x, 0};")
+    """A classical constant resolves fine here (see
+    test_amplitude_list_accepts_a_classical_name below) -- a `param`, which
+    has no compile-time value at all, is what stays rejected."""
+    bag = diagnostics_of("param float x; qint<1> a = {x, 0};")
     assert bag.has_errors
     assert "not a compile-time constant" in bag.errors[0].message
+
+
+def test_amplitude_list_accepts_a_classical_name(diagnostics_of: DiagnosticsOf) -> None:
+    assert not diagnostics_of("float x = 0.6; qint<1> a = {x, -0.8};").has_errors
 
 
 def test_amplitude_list_rejects_a_boolean_element(diagnostics_of: DiagnosticsOf) -> None:

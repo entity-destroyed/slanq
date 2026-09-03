@@ -363,6 +363,13 @@ class _Lowerer(NodeVisitor):
                 expression.span,
             )
             return False
+        if type(value) is bool or (value is None and _is_boolean_param_expression(expression)):
+            self._error(
+                "a bool value cannot be used as an angle; only int or float "
+                "are supported here",
+                expression.span,
+            )
+            return False
         if value is None and not _is_param_expression(expression):
             self._error(
                 "an angle that is not known at compile time is not "
@@ -793,6 +800,27 @@ def _is_param_expression(expression: Expression) -> bool:
             and _is_param_expression(expression.left)
             and _is_param_expression(expression.right)
         )
+    return False
+
+
+def _is_boolean_param_expression(expression: Expression) -> bool:
+    """Whether a param expression involves a `param bool` -- arithmetic never
+    produces `bool` in Python, so this only needs to check leaves, not the
+    combinators (`+ - * / ** -`) that hold the tree together."""
+    if isinstance(expression, Name):
+        return isinstance(expression.resolved_symbol, ParamDecl) and isinstance(
+            expression.resolved_symbol.declared_type, BoolType
+        )
+    if isinstance(expression, Index):
+        return isinstance(
+            expression.base.resolved_symbol, ParamArrayDecl
+        ) and isinstance(expression.base.resolved_symbol.declared_type, BoolType)
+    if isinstance(expression, UnaryOp):
+        return _is_boolean_param_expression(expression.operand)
+    if isinstance(expression, BinaryOp):
+        return _is_boolean_param_expression(
+            expression.left
+        ) or _is_boolean_param_expression(expression.right)
     return False
 
 

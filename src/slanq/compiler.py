@@ -65,7 +65,7 @@ def compile_source(
         return result
 
     analyze(result.ast, result.diagnostics)
-    if stop_after == "semantic" or result.diagnostics.has_errors:
+    if stop_after == "semantic":
         return result
 
     result.ir = lower_to_ir(result.ast, result.diagnostics)

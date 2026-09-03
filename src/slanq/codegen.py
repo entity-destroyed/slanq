@@ -7,6 +7,7 @@ from slanq import __version__
 from slanq.ast_nodes import (
     BinaryOp,
     Call,
+    ClassicalDecl,
     Expression,
     Index,
     Literal,
@@ -106,8 +107,11 @@ def generate_qiskit(module: IRModule, *, source_name: str) -> str:
         "",
         'if __name__ == "__main__":',
         # The circuit drawing uses box-drawing characters, which fail on a
-        # non-UTF-8 stdout (Windows consoles, redirected output).
-        INDENT + 'sys.stdout.reconfigure(encoding="utf-8")',
+        # non-UTF-8 stdout (Windows consoles, redirected output). Guarded:
+        # `reconfigure` is a TextIOWrapper method, missing if something else
+        # already replaced sys.stdout (Jupyter %run, IDLE).
+        INDENT + 'if hasattr(sys.stdout, "reconfigure"):',
+        INDENT * 2 + 'sys.stdout.reconfigure(encoding="utf-8")',
         INDENT + "print(build_circuit())",
         "",
     ]
@@ -453,6 +457,14 @@ class _Generator:
             expression.resolved_symbol, ParamDecl
         ):
             return expression.name
+
+        if isinstance(expression, Name) and isinstance(
+            expression.resolved_symbol, ClassicalDecl
+        ):
+            # No Python variable exists for a classical constant (lowering
+            # gives it no IR representation) -- inline its initializer, same
+            # substitution const_value already does for compile-time eval.
+            return self.expression(expression.resolved_symbol.initializer)
 
         if isinstance(expression, Index) and isinstance(
             expression.base.resolved_symbol, ParamArrayDecl

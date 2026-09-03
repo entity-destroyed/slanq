@@ -203,6 +203,21 @@ def test_amplitude_list_needing_normalization_with_a_complex_value() -> None:
     assert SHOTS * 0.35 < counts["0"] < SHOTS * 0.65
 
 
+def test_amplitude_list_element_from_a_classical_name() -> None:
+    """The motivating gap for the const_value Name-resolution fix: a
+    classical constant, and arithmetic on it, used as a {} element."""
+    source = "complex c = 0.5+0.3i;\nqbool q = {c, 1 - c};\n"
+    result = compile_source(source, source_name="test.slanq")
+    assert result.diagnostics.warnings  # not normalized
+    assert not result.diagnostics.has_errors
+
+    circuit = _build_circuit(source)
+    statevector = Statevector.from_instruction(circuit)
+    raw = np.array([0.5 + 0.3j, 0.5 - 0.3j])
+    expected = raw / np.linalg.norm(raw)
+    assert np.allclose(statevector.data, expected)
+
+
 def test_amplitude_list_wider_than_two_elements() -> None:
     """Every other {} test uses a 2-element (qbool) list -- this checks a
     4-element (qint<2>) list with a mix of real and complex amplitudes."""
@@ -429,15 +444,19 @@ def test_param_array_indexed_angle_binds_at_runtime() -> None:
     assert statevector.equiv(expected)
 
 
-def test_hello_example_leaves_only_the_param_arithmetic_limitation(
-    hello_source: str,
-) -> None:
+def test_hello_example_reports_every_remaining_limitation(hello_source: str) -> None:
     """Classical arithmetic and params eliminate every limitation from
-    hello.slanq except adding a runtime param to a quantum variable."""
+    hello.slanq except: adding a runtime param to a quantum variable, and the
+    three still-fully-unlowered statement kinds it also happens to use
+    (if/for/process) -- lowering now runs regardless of analysis errors, so
+    all four surface together instead of the first one hiding the rest."""
     result = compile_source(hello_source, source_name="hello.slanq")
     messages = [d.message for d in result.diagnostics.errors]
-    assert len(messages) == 1
-    assert "runtime parameter" in messages[0]
+    assert len(messages) == 4
+    assert any("runtime parameter" in message for message in messages)
+    assert any("if statement" in message for message in messages)
+    assert any("for loop" in message for message in messages)
+    assert any("process definition" in message for message in messages)
 
 
 def test_qif_top_level_negation_composes_with_a_clause_ancilla() -> None:

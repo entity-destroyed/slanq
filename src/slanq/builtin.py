@@ -21,6 +21,7 @@ from slanq.ast_nodes import (
     BinaryOp,
     BuiltinDecl,
     Call,
+    ClassicalDecl,
     Expression,
     FloatType,
     IntType,
@@ -148,13 +149,39 @@ class ConstEvalError(Exception):
     `None` result and not an error on its own."""
 
 
+# Only `int ** positive int` can blow up memory: `float`/`complex` power is
+# fixed-precision (uses a C log/exp implementation, never grows). A right-
+# associative chain (`2 ** 2 ** 2 ** 20`) explodes at whichever step first
+# exceeds this, so checking each `**` application individually, before it
+# runs, is enough to stop a tower regardless of depth -- the exponent itself
+# may already be a huge int object by the outer steps, but computing its bit
+# count and multiplying by the base's is cheap even then.
+_MAX_POWER_RESULT_BITS = 4096
+
+
+def _guard_power(base: object, exponent: object) -> None:
+    if type(base) is not int or type(exponent) is not int:
+        return
+    if exponent <= 1 or abs(base) <= 1:
+        return
+    if base.bit_length() * exponent > _MAX_POWER_RESULT_BITS:
+        raise ConstEvalError(
+            f"'**' result would need more than {_MAX_POWER_RESULT_BITS} bits to "
+            "represent -- this is not evaluated at compile time"
+        )
+
+
 def const_value(expression: Expression) -> int | float | bool | complex | None:
     """The compile-time value of `expression`, or None if it has none."""
     if isinstance(expression, Literal):
         return expression.value
 
     if isinstance(expression, Name):
-        return BUILTIN_CONSTANTS.get(expression.name)
+        if expression.name in BUILTIN_CONSTANTS:
+            return BUILTIN_CONSTANTS[expression.name]
+        if isinstance(expression.resolved_symbol, ClassicalDecl):
+            return const_value(expression.resolved_symbol.initializer)
+        return None
 
     if isinstance(expression, UnaryOp):
         operand = const_value(expression.operand)
@@ -171,6 +198,8 @@ def const_value(expression: Expression) -> int | float | bool | complex | None:
         right = const_value(expression.right)
         if left is None or right is None:
             return None
+        if expression.op == "**":
+            _guard_power(left, right)
         return _apply(function, (left, right), expression.op)
 
     if isinstance(expression, Call):

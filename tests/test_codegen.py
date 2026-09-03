@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import sys
 
 import numpy
 import pytest
@@ -67,6 +68,36 @@ def test_main_guard_forces_utf8_stdout(mvp_a_ir: IRModule) -> None:
     source = _generate(mvp_a_ir)
     assert "import sys" in source
     assert 'sys.stdout.reconfigure(encoding="utf-8")' in source
+
+
+class _StdoutWithoutReconfigure:
+    """Stands in for a replaced sys.stdout (Jupyter %run, IDLE), which lacks
+    TextIOWrapper.reconfigure -- has `encoding`, like a real IO-like
+    replacement, so only the missing `reconfigure` is under test."""
+
+    encoding = "utf-8"
+
+    def write(self, text: str) -> int:
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+
+def test_utf8_stdout_fix_is_guarded(mvp_a_ir: IRModule) -> None:
+    """An unguarded `reconfigure()` call would raise AttributeError when
+    something replaced sys.stdout -- worse than the UnicodeEncodeError it
+    exists to prevent. Runs the generated __main__ block for real, not just
+    checking the guard text is present."""
+    source = _generate(mvp_a_ir)
+    assert 'if hasattr(sys.stdout, "reconfigure"):' in source
+
+    original_stdout = sys.stdout
+    sys.stdout = _StdoutWithoutReconfigure()  # type: ignore[assignment]
+    try:
+        exec(compile(source, "<generated>", "exec"), {"__name__": "__main__"})  # noqa: S102
+    finally:
+        sys.stdout = original_stdout
 
 
 def test_false_initializer_emits_nothing(mvp_a_ir: IRModule) -> None:
@@ -203,6 +234,13 @@ def test_sqrt_maps_to_math_as_an_angle_expression() -> None:
     source = _param_source("sqrt(2)")
     assert "circuit.rx(math.sqrt(2), q[0])" in source
     assert "import math" in source
+
+
+def test_classical_name_angle_inlines_its_initializer() -> None:
+    result = compile_source("float t = PI / 4;\nqbool q = false;\nRX(t, q);\n")
+    assert not result.diagnostics.has_errors
+    assert result.qiskit_source is not None
+    assert "circuit.rx(np.pi / 4, q[0])" in result.qiskit_source
 
 
 @pytest.mark.parametrize(

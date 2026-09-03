@@ -195,11 +195,21 @@ def test_unimplemented_statement_names_the_construct(lower: LowerSource) -> None
 
 
 def test_unimplemented_message_blames_the_compiler(lower: LowerSource) -> None:
-    """A quantum variable initialized from another variable: `const_value`
-    never resolves a `Name`, so this stays a limitation, not a crash."""
-    _, bag = lower("int t = 5; qint<2> b = t;")
+    """A quantum variable initialized from a `param`: a `param` is a runtime
+    `Parameter`, never a compile-time value, so this stays a limitation, not
+    a crash -- unlike a classical constant, see
+    test_classical_name_initializes_a_quantum_variable below."""
+    _, bag = lower("param int t; qint<2> b = t;")
     assert bag.has_errors
     assert "limitation of the compiler" in bag.errors[0].message
+
+
+def test_classical_name_initializes_a_quantum_variable(lower: LowerSource) -> None:
+    module, bag = lower("int t = 2; qint<2> b = t;")
+    assert not bag.has_errors
+    init = module.body.ops[-1]
+    assert isinstance(init, InitOp)
+    assert init.value == 2
 
 
 def test_ccx_on_registers_becomes_one_gate_per_bit(lower: LowerSource) -> None:
@@ -234,9 +244,25 @@ def test_angle_position_comes_from_the_signature(lower: LowerSource) -> None:
 
 
 def test_runtime_angle_is_reported_as_a_limitation(lower: LowerSource) -> None:
-    _, bag = lower("qbool q = false; float t = 1.0; RX(t, q);")
+    """A classical constant (`float t = 1.0;`) is resolvable at compile time
+    (see test_classical_name_is_a_renderable_angle below) -- a genuinely
+    runtime value, like a measurement result, is what stays a limitation."""
+    _, bag = lower("qbool q = false; qbool q2 = false; int t = measure(q); RX(t, q2);")
     assert bag.has_errors
     assert "not known at compile time" in bag.errors[0].message
+
+
+def test_classical_name_is_a_renderable_angle(lower: LowerSource) -> None:
+    """A classical constant has no runtime reassignment path yet, so a Name
+    referencing it is just as renderable as the literal it was initialized
+    with."""
+    module, bag = lower("qbool q = false; float t = PI / 4; RX(t, q);")
+    assert not bag.has_errors
+
+    gate = module.body.ops[-1]
+    assert isinstance(gate, GateOp)
+    assert len(gate.params) == 1
+    assert gate.params[0].name == "t"
 
 
 def test_complex_angle_is_rejected(lower: LowerSource) -> None:
@@ -251,14 +277,38 @@ def test_complex_phase_is_rejected(lower: LowerSource) -> None:
     assert "cannot be used as an angle" in bag.errors[0].message
 
 
-def test_boolean_angle_is_still_accepted(lower: LowerSource) -> None:
-    """Documents a known, pre-existing, deliberately unfixed gap (see
-    Slanq_kesobbi_feladatok.md): a bool slips through as an angle today --
-    unlike complex, this does not crash the generated file (Qiskit silently
-    treats True/False as 1/0), so it stays out of scope for this round."""
-    module, bag = lower("qbool q = false; RX(true, q);")
-    assert not bag.has_errors
-    assert isinstance(module.body.ops[-1], GateOp)
+def test_complex_classical_name_angle_is_rejected(lower: LowerSource) -> None:
+    """Same rejection reached through a classical constant, not just a bare
+    literal -- the complex check runs on the resolved value either way."""
+    _, bag = lower("complex c = 1i; qbool q = false; RX(c, q);")
+    assert bag.has_errors
+    assert "cannot be used as an angle" in bag.errors[0].message
+
+
+def test_boolean_literal_angle_is_rejected(lower: LowerSource) -> None:
+    _, bag = lower("qbool q = false; RX(true, q);")
+    assert bag.has_errors
+    assert "cannot be used as an angle" in bag.errors[0].message
+
+
+def test_boolean_classical_name_angle_is_rejected(lower: LowerSource) -> None:
+    """Same rejection reached through a classical constant, not just a bare
+    literal -- exercises the const_value Name resolution added alongside."""
+    _, bag = lower("qbool q = false; bool flag = true; RX(flag, q);")
+    assert bag.has_errors
+    assert "cannot be used as an angle" in bag.errors[0].message
+
+
+def test_boolean_param_angle_is_rejected(lower: LowerSource) -> None:
+    _, bag = lower("param bool flag; qbool q = false; RX(flag, q);")
+    assert bag.has_errors
+    assert "cannot be used as an angle" in bag.errors[0].message
+
+
+def test_boolean_param_inside_arithmetic_angle_is_rejected(lower: LowerSource) -> None:
+    _, bag = lower("param bool flag; qbool q = false; RX(flag + 1, q);")
+    assert bag.has_errors
+    assert "cannot be used as an angle" in bag.errors[0].message
 
 
 def test_phase_at_top_level_becomes_a_phase_op(lower: LowerSource) -> None:
