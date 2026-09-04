@@ -322,6 +322,40 @@ def test_builtin_name_cannot_be_redeclared(diagnostics_of: DiagnosticsOf) -> Non
     assert "built into the language" in bag.errors[0].message
 
 
+def test_python_keyword_cannot_be_used_as_a_name(diagnostics_of: DiagnosticsOf) -> None:
+    """A Python keyword becomes a bare identifier in the generated file
+    (`class = QuantumRegister(...)`), which is a SyntaxError -- caught here
+    instead of surfacing as an unreadable generated-file failure."""
+    bag = diagnostics_of("qbool class = false;")
+    assert bag.has_errors
+    assert "reserved Python keyword" in bag.errors[0].message
+
+
+def test_codegen_internal_name_cannot_be_used_as_a_name(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    """`circuit` is the compiler's own generated variable name for the
+    QuantumCircuit object -- reusing it would shadow it in the generated
+    file (measured: crashes with IndexError at generated-file runtime)."""
+    bag = diagnostics_of("qbool circuit = false;")
+    assert bag.has_errors
+    assert "reserved for the compiler" in bag.errors[0].message
+
+
+def test_reserved_name_check_covers_nested_declarations(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    """The same check applies wherever a name is declared, not just at the
+    top level: a process parameter and a for-loop variable."""
+    bag = diagnostics_of("process p(qint class) { X(class); }")
+    assert bag.has_errors
+    assert any("reserved Python keyword" in error.message for error in bag.errors)
+
+    bag = diagnostics_of("for(int circuit in range(3)) { int x = circuit; }")
+    assert bag.has_errors
+    assert any("reserved for the compiler" in error.message for error in bag.errors)
+
+
 def test_gate_used_as_a_value_is_reported(diagnostics_of: DiagnosticsOf) -> None:
     bag = diagnostics_of("qbool q = false; int x = H(q);")
     assert bag.has_errors

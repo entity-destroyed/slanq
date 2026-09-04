@@ -62,6 +62,15 @@ def test_lowering_runs_despite_a_prior_analysis_error() -> None:
     assert any("if statement" in message for message in messages)
 
 
+def test_reserved_name_never_reaches_codegen() -> None:
+    """`circuit` used to compile clean and only fail at generated-file
+    runtime (IndexError, from shadowing the compiler's own variable) --
+    this must now be caught as a compile-time error instead."""
+    result = compile_source("qbool circuit = false;\nH(circuit);\n")
+    assert result.diagnostics.has_errors
+    assert result.qiskit_source is None
+
+
 def test_source_name_reaches_the_header(mvp_a_source: str) -> None:
     result = compile_source(mvp_a_source, source_name="demo.slanq")
     assert result.qiskit_source is not None

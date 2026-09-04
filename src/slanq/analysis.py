@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import keyword
+
 from slanq.ast_nodes import (
     AmplitudeList,
     AugAssign,
@@ -61,6 +63,9 @@ def _build_symbol_table(ast: Program, bag: DiagnosticBag) -> Scope:
         if statement.name in BUILTIN_SCOPE:
             _error(bag, _shadowing_message(statement.name), statement.span)
             continue
+        if _is_unusable_target_name(statement.name):
+            _error(bag, _unusable_name_message(statement.name), statement.span)
+            continue
         if statement.name in scope:
             _error(bag, f"duplicate declaration of '{statement.name}'", statement.span)
             continue
@@ -70,6 +75,36 @@ def _build_symbol_table(ast: Program, bag: DiagnosticBag) -> Scope:
 
 def _shadowing_message(name: str) -> str:
     return f"'{name}' is built into the language and cannot be redeclared"
+
+
+# Bare identifiers the generated Python file emits as a module-level or
+# build_circuit()-scope name, unconditionally or depending on which features
+# a program uses -- a Slanq declaration reusing one of these would either
+# break the generated file's syntax (a Python keyword) or shadow an internal
+# codegen name (silently breaking or crashing it at runtime, since it is a
+# plain identifier, not a string, and every occurrence in the emitted source
+# is this exact bare word). Must be kept in sync with codegen.py's literals.
+_RESERVED_CODEGEN_NAMES = frozenset(
+    {
+        "sys", "math", "np",
+        "QuantumCircuit", "QuantumRegister", "ClassicalRegister", "Parameter",
+        "StatePreparation", "XGate", "CDKMRippleCarryAdder", "HRSCumulativeMultiplier",
+        "circuit", "build_circuit", "build_bound_circuit", "bindings", "used", "_round",
+    }
+)
+
+
+def _is_unusable_target_name(name: str) -> bool:
+    return keyword.iskeyword(name) or name in _RESERVED_CODEGEN_NAMES
+
+
+def _unusable_name_message(name: str) -> str:
+    if keyword.iskeyword(name):
+        return (
+            f"'{name}' is a reserved Python keyword and cannot be used as a "
+            "Slanq name, because it would break the generated file"
+        )
+    return f"'{name}' is reserved for the compiler's own generated code"
 
 
 class _NameResolver(NodeVisitor):
@@ -118,6 +153,9 @@ class _NameResolver(NodeVisitor):
             return
         if symbol.name in BUILTIN_SCOPE:
             _error(self.bag, _shadowing_message(symbol.name), symbol.span)
+            return
+        if _is_unusable_target_name(symbol.name):
+            _error(self.bag, _unusable_name_message(symbol.name), symbol.span)
             return
         if existing is not None:
             _error(self.bag, f"duplicate declaration of '{symbol.name}'", symbol.span)
