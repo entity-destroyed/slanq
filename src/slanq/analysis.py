@@ -41,6 +41,7 @@ from slanq.builtin import (
     const_value,
 )
 from slanq.diagnostics import DiagnosticBag
+from slanq.passes import expand_processes
 from slanq.visitor import NodeVisitor, iter_child_nodes
 
 Scope = dict[str, Symbol]
@@ -49,6 +50,8 @@ Scope = dict[str, Symbol]
 def analyze(ast: Program, bag: DiagnosticBag) -> None:
     scope = _build_symbol_table(ast, bag)
     _resolve_names(ast, bag, scope)
+    _check_process_calls(ast, bag)
+    expand_processes(ast, bag)
     _check_types(ast, bag)
     _check_affine(ast, bag)
 
@@ -494,6 +497,69 @@ class _ArithmeticChecker(_Checker):
         return declared
 
 
+class _ProcessCallChecker(_Checker):
+    """Everything about a `process` call that is a property of the call rather
+    than of the body: arity, the aliasing ban, and being called as a statement.
+    Runs before expansion, since afterwards the call is gone."""
+
+    def __init__(self, bag: DiagnosticBag) -> None:
+        super().__init__(bag)
+        self.statement_call: Expression | None = None
+
+    def visit_ExprStatement(self, node: ExprStatement) -> None:
+        previous = self.statement_call
+        self.statement_call = node.expr
+        self.generic_visit(node)
+        self.statement_call = previous
+
+    def visit_Call(self, node: Call) -> None:
+        self.generic_visit(node)
+
+        name = node.callee.name
+        symbol = node.callee.resolved_symbol
+        if symbol is None or isinstance(symbol, BuiltinDecl):
+            # Undefined (already reported) or a builtin, which _CallChecker owns.
+            return
+
+        if not isinstance(symbol, ProcessDef):
+            self._reject(f"'{name}' is not a gate, a function or a process", node)
+            return
+
+        if node is not self.statement_call:
+            self._reject(
+                f"'{name}' is a process and returns no value, so it can only "
+                "be called as a statement",
+                node,
+            )
+            return
+
+        expected = len(symbol.params)
+        if len(node.args) != expected:
+            self._reject(
+                f"'{name}' takes {expected} argument(s), got {len(node.args)}", node
+            )
+            return
+
+        self._check_no_aliasing(name, node)
+
+    def _check_no_aliasing(self, name: str, node: Call) -> None:
+        """A process is inlined, so passing the same variable twice would put
+        it on both sides of whatever the body does to its parameters."""
+        seen: set[tuple[str, int]] = set()
+        aliased: set[tuple[str, int]] = set()
+        for argument in node.args:
+            bits = _touched_bits(argument) or set()
+            aliased |= seen & bits
+            seen |= bits
+        if aliased:
+            names = ", ".join(sorted({bit_name for bit_name, _ in aliased}))
+            self._reject(
+                f"'{name}' cannot be given the same qubit(s) in more than one "
+                f"argument (here: {names})",
+                node,
+            )
+
+
 class _CallChecker(_Checker):
     """Arity, argument kinds and broadcast shape for calls to builtins."""
 
@@ -523,7 +589,8 @@ class _CallChecker(_Checker):
 
         symbol = node.callee.resolved_symbol
         if not isinstance(symbol, BuiltinDecl):
-            # A call to a `process`; the lowering reports it as unimplemented.
+            # Not a builtin: _ProcessCallChecker already ran and reported
+            # whatever this is, before expansion took the valid calls away.
             return
 
         name = node.callee.name
@@ -849,6 +916,10 @@ class _ParamTypeChecker(_Checker):
                 "a param must be int, float, or bool; complex is not supported here",
                 node,
             )
+
+
+def _check_process_calls(ast: Program, bag: DiagnosticBag) -> None:
+    _ProcessCallChecker(bag).visit(ast)
 
 
 def _check_types(ast: Program, bag: DiagnosticBag) -> None:

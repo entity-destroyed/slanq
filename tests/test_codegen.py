@@ -432,11 +432,13 @@ def test_qif_direct_control_when_not_negated(span: Span) -> None:
         ),
     )
     source = _generate(module)
-    assert '_qif_body_1 = QuantumCircuit(out, name="qif_body")' in source
-    assert "_qif_body_1.x(out)" in source
+    # One wire per qubit the body touches, never a whole register -- see
+    # test_qif_control_and_target_in_one_register_do_not_collide.
+    assert '_qif_body_1 = QuantumCircuit(1, name="qif_body")' in source
+    assert "_qif_body_1.x(_qif_body_1.qubits[0])" in source
     assert (
         "circuit.append(_qif_body_1.to_gate().control(2, ctrl_state=2, "
-        "annotated=False), [*a, *out])" in source
+        "annotated=False), [*a, out[0]])" in source
     )
     assert "add_register" not in source
     assert "XGate" not in source
@@ -475,7 +477,7 @@ def test_qif_negated_uses_an_ancilla(span: Span) -> None:
     assert "circuit.x(_ancilla_0[0])" in source
     assert (
         "circuit.append(_qif_body_1.to_gate().control(1, annotated=False), "
-        "[_ancilla_0[0], *out])" in source
+        "[_ancilla_0[0], out[0]])" in source
     )
 
 
@@ -500,7 +502,7 @@ def test_qif_phase_only_body_needs_no_local_registers(span: Span) -> None:
         ),
     )
     source = _generate(module)
-    assert '_qif_body_1 = QuantumCircuit(name="qif_body")' in source
+    assert '_qif_body_1 = QuantumCircuit(0, name="qif_body")' in source
     assert "_qif_body_1.global_phase += 1.5" in source
 
 
@@ -529,7 +531,70 @@ def test_qif_indexed_condition_qubit_mirrors(span: Span) -> None:
     )
     source = _generate(module)
     # Slanq index 0 on a size-3 register mirrors to Qiskit position 2.
-    assert "[a[2], *out]" in source
+    assert "[a[2], out[0]]" in source
+
+
+def test_qif_control_and_target_in_one_register_do_not_collide(span: Span) -> None:
+    """`qif(a[0]) { X(a[1]); }` -- different qubits, so the program is legal
+    and analysis allows it, but a whole-register body sub-circuit used to
+    unpack a[0] into the append list a second time, next to the control, and
+    the generated file died with `CircuitError: duplicate bit arguments`."""
+    register = QubitRef(name="a", size=2)
+    module = IRModule(
+        qubits=[register],
+        body=IRBlock(
+            ops=[
+                QIfOp(
+                    span=span,
+                    direct_qubits=[QubitBit(ref=register, index=0)],
+                    ctrl_state=1,
+                    clause_ancillas=[],
+                    negated=False,
+                    ancilla=None,
+                    body=IRBlock(
+                        ops=[
+                            GateOp(
+                                span=span,
+                                name="X",
+                                targets=[QubitBit(ref=register, index=1)],
+                            )
+                        ]
+                    ),
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert "annotated=False), [a[1], a[0]])" in source
+
+
+def test_qif_body_register_operand_becomes_a_qubit_list(span: Span) -> None:
+    """A whole-register operand is several wires once registers are gone, and
+    a list is how Qiskit takes several qubits for one operand."""
+    condition = QubitRef(name="c", size=1)
+    target = QubitRef(name="out", size=2)
+    module = IRModule(
+        qubits=[condition, target],
+        body=IRBlock(
+            ops=[
+                QIfOp(
+                    span=span,
+                    direct_qubits=[QubitBit(ref=condition, index=0)],
+                    ctrl_state=1,
+                    clause_ancillas=[],
+                    negated=False,
+                    ancilla=None,
+                    body=IRBlock(
+                        ops=[GateOp(span=span, name="X", targets=[target])]
+                    ),
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert '_qif_body_1 = QuantumCircuit(2, name="qif_body")' in source
+    assert "_qif_body_1.x([_qif_body_1.qubits[0], _qif_body_1.qubits[1]])" in source
+    assert "annotated=False), [c[0], out[0], out[1]])" in source
 
 
 def test_qif_multiple_clause_ancillas_compute_and_uncompute_in_order(

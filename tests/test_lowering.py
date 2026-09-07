@@ -5,7 +5,17 @@ from collections.abc import Callable
 import pytest
 
 from slanq.analysis import analyze
-from slanq.ast_nodes import Program
+from slanq.ast_nodes import (
+    Block,
+    Call,
+    ExprStatement,
+    Name,
+    ProcessDef,
+    ProcParam,
+    Program,
+    QBoolType,
+    Span,
+)
 from slanq.builtin import const_value
 from slanq.diagnostics import DiagnosticBag
 from slanq.ir import (
@@ -473,6 +483,58 @@ def test_unimplemented_statement_inside_qif_body(lower: LowerSource) -> None:
     assert bag.has_errors
     assert "compound assignment" in bag.errors[0].message
     assert "inside a qif body" in bag.errors[0].message
+
+
+def test_a_process_definition_produces_no_operations(lower: LowerSource) -> None:
+    """A template, not code: only the InitOp for `a` is left."""
+    module, bag = lower("process f(qint x) { X(x); }\nqint<2> a = 0;\n")
+    assert not bag.has_errors
+    assert [type(op).__name__ for op in module.body.ops] == ["InitOp"]
+
+
+def test_an_expanded_call_lowers_like_written_out_code(lower: LowerSource) -> None:
+    module, bag = lower(
+        "process add(qint x, qint y) { x += y; }\n"
+        "qint<2> num1 = 1;\nqint<2> num2 = 2;\nadd(num1, num2);\n"
+    )
+    assert not bag.has_errors
+    written_out, _ = lower(
+        "qint<2> num1 = 1;\nqint<2> num2 = 2;\nnum1 += num2;\n"
+    )
+    assert [type(op).__name__ for op in module.body.ops] == [
+        type(op).__name__ for op in written_out.body.ops
+    ]
+
+
+def test_an_unexpanded_process_call_is_an_internal_error(span: Span) -> None:
+    """Lowering is reached with a resolved process call still in the tree only
+    if the compiler itself skipped expansion, so the message says so rather
+    than blaming the source. Built by hand because the real pipeline cannot
+    produce this state -- which is the point."""
+    process = ProcessDef(
+        span=span,
+        name="f",
+        params=[ProcParam(span=span, name="x", declared_type=QBoolType())],
+        body=Block(span=span),
+    )
+    callee = Name(span=span, name="f", resolved_symbol=process)
+    ast = Program(
+        span=span,
+        statements=[ExprStatement(span=span, expr=Call(span=span, callee=callee))],
+    )
+    bag = DiagnosticBag()
+    lower_to_ir(ast, bag)
+    assert any("internal error" in diagnostic.message for diagnostic in bag.errors)
+
+
+def test_an_undefined_call_is_not_blamed_on_the_compiler(lower: LowerSource) -> None:
+    """It used to say "calling a process is not implemented yet" for any
+    unknown callee, which was simply wrong for a typo."""
+    _, bag = lower("qbool q = false;\nnosuchgate(q);\n")
+    messages = [diagnostic.message for diagnostic in bag.errors]
+    assert any("undefined name 'nosuchgate'" in message for message in messages)
+    assert any("'nosuchgate' is not a gate" in message for message in messages)
+    assert not any("limitation of the compiler" in message for message in messages)
 
 
 

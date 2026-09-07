@@ -117,6 +117,56 @@ def test_process_parameters_are_in_scope(diagnostics_of: DiagnosticsOf) -> None:
     assert not diagnostics_of("process add(qint x, qint y) { x += y; }").has_errors
 
 
+def test_process_call_arity_is_checked(diagnostics_of: DiagnosticsOf) -> None:
+    source = "process add(qint x, qint y) { x += y; }\nqint<2> a = 1;\nadd(a);\n"
+    bag = diagnostics_of(source)
+    assert any("takes 2 argument(s), got 1" in d.message for d in bag.errors)
+
+
+def test_process_call_rejects_the_same_variable_twice(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    """The section 3.4 aliasing ban. A call-site rule, so it is checked before
+    expansion -- afterwards there is no call left to point at."""
+    source = "process add(qint x, qint y) { x += y; }\nqint<2> a = 1;\nadd(a, a);\n"
+    bag = diagnostics_of(source)
+    assert any("same qubit(s) in more than one argument" in d.message for d in bag.errors)
+
+
+def test_process_call_rejects_the_same_qubit_twice(diagnostics_of: DiagnosticsOf) -> None:
+    """Aliasing is about physical qubits, not names: two different spellings
+    of the same bit alias just as much."""
+    source = (
+        "process pair(qbool p, qbool r) { CX(p, r); }\n"
+        "qint<2> a = 0;\npair(a[0], a[0]);\n"
+    )
+    bag = diagnostics_of(source)
+    assert any("same qubit(s) in more than one argument" in d.message for d in bag.errors)
+
+
+def test_two_distinct_qubits_of_one_register_are_accepted(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    source = (
+        "process pair(qbool p, qbool r) { CX(p, r); }\n"
+        "qint<2> a = 0;\npair(a[0], a[1]);\n"
+    )
+    assert not diagnostics_of(source).has_errors
+
+
+def test_a_process_call_must_be_a_statement(diagnostics_of: DiagnosticsOf) -> None:
+    source = "process f(qint x) { X(x); }\nqint<2> a = 0;\nint r = f(a);\n"
+    bag = diagnostics_of(source)
+    assert any("returns no value" in d.message for d in bag.errors)
+
+
+def test_calling_a_variable_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
+    """Previously nothing checked this: a callee resolving to neither a
+    builtin nor a process fell through analysis silently."""
+    bag = diagnostics_of("qint<2> a = 0;\na(1);\n")
+    assert any("not a gate, a function or a process" in d.message for d in bag.errors)
+
+
 def test_block_scoped_declaration_is_not_visible_outside(
     diagnostics_of: DiagnosticsOf,
 ) -> None:

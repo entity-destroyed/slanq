@@ -38,6 +38,11 @@ from slanq.ir import (
 
 INDENT = " " * 4
 
+# A physical qubit as (register name, Qiskit index), and a renaming of such
+# qubits to their wires in a nested sub-circuit.
+Qubit = tuple[str, int]
+QubitMap = dict[Qubit, str]
+
 BINARY_PRECEDENCE: dict[str, int] = {
     "|": 1, "^": 2, "&": 3,
     "+": 4, "-": 4,
@@ -227,7 +232,14 @@ class _Generator:
         lines.append("return circuit")
         return lines
 
-    def op_lines(self, op: Op, circuit_var: str = "circuit") -> list[str]:
+    def op_lines(
+        self,
+        op: Op,
+        circuit_var: str = "circuit",
+        qubits: QubitMap | None = None,
+    ) -> list[str]:
+        """`qubits` renames every physical qubit to its wire in a nested
+        sub-circuit; only a qif body passes one."""
         if isinstance(op, InitOp):
             if isinstance(op.value, list):
                 return self._state_preparation_lines(op, circuit_var)
@@ -247,7 +259,7 @@ class _Generator:
                     "This is a bug in the compiler, not in the source program."
                 )
             arguments = [self.expression(param) for param in op.params]
-            arguments += [_operand_source(target) for target in op.targets]
+            arguments += [_target_source(target, qubits) for target in op.targets]
             return [f"{circuit_var}.{method}({', '.join(arguments)})"]
 
         if isinstance(op, MeasurementOp):
@@ -374,12 +386,21 @@ class _Generator:
         self._qif_counter += 1
         body_var = f"_qif_body_{self._qif_counter}"
 
-        touched = _touched_registers(op.body)
-        constructor_args = [ref.name for ref in touched] + ['name="qif_body"']
-        lines = [f'{body_var} = QuantumCircuit({", ".join(constructor_args)})']
+        # The sub-circuit gets one wire per qubit the body actually touches,
+        # never a whole register: a register would drag in its untouched
+        # qubits too, and if one of those is a condition qubit it would then
+        # appear twice in the append list below -- `CircuitError: duplicate
+        # bit arguments` at generated-file runtime, for a program whose
+        # condition and body do touch different qubits (`qif(a[0]) { X(a[1]); }`).
+        body_qubits = _body_qubits(op.body)
+        local = {
+            qubit: f"{body_var}.qubits[{wire}]"
+            for wire, qubit in enumerate(body_qubits)
+        }
+        lines = [f'{body_var} = QuantumCircuit({len(body_qubits)}, name="qif_body")']
         for sub_op in op.body.ops:
-            lines += self.op_lines(sub_op, body_var)
-        body_sources = [f"*{ref.name}" for ref in touched]
+            lines += self.op_lines(sub_op, body_var, qubits=local)
+        body_sources = [f"{name}[{index}]" for name, index in body_qubits]
 
         # Each wide-negated clause needs its own ancilla, computed before
         # everything else and uncomputed after everything else -- proper
@@ -429,8 +450,10 @@ class _Generator:
             lines.append(f"{circuit_var}.x({ancilla}[0])")
 
             controlled_body = f"{body_var}.to_gate().control(1, annotated=False)"
-            body_qubits = ", ".join([f"{ancilla}[0]", *body_sources])
-            lines.append(f"{circuit_var}.append({controlled_body}, [{body_qubits}])")
+            controlled_qubits = ", ".join([f"{ancilla}[0]", *body_sources])
+            lines.append(
+                f"{circuit_var}.append({controlled_body}, [{controlled_qubits}])"
+            )
 
             lines.append(f"{circuit_var}.x({ancilla}[0])")
             lines.append(f"{circuit_var}.append({compute}, [{compute_qubits}])")
@@ -543,16 +566,40 @@ def _qiskit_index(bit: QubitBit) -> int:
     return bit.ref.size - 1 - bit.index
 
 
-def _touched_registers(body: IRBlock) -> list[QubitRef]:
-    """The distinct outer registers a qif body's gates target, in the order
-    first referenced -- becomes both the local sub-circuit's own registers
-    and, unpacked, the tail of the qubit list passed to circuit.append()."""
-    seen: dict[QubitRef, None] = {}
+def _body_qubits(body: IRBlock) -> list[Qubit]:
+    """Every physical qubit a qif body's gates touch, in first-reference
+    order -- one wire each in the sub-circuit, and, in this same order, the
+    tail of the qubit list passed to circuit.append()."""
+    seen: dict[Qubit, None] = {}
     for op in body.ops:
-        if isinstance(op, GateOp):
-            for target in op.targets:
-                seen[target if isinstance(target, QubitRef) else target.ref] = None
+        if isinstance(op, PhaseOp):
+            continue  # a global phase touches no qubit
+        assert isinstance(op, GateOp), (
+            "a qif body holds only gates and phases; a new op kind allowed "
+            "here must have its operands mapped into the sub-circuit too"
+        )
+        for target in op.targets:
+            for qubit in _operand_qubits(target):
+                seen[qubit] = None
     return list(seen)
+
+
+def _operand_qubits(operand: QubitOperand) -> list[Qubit]:
+    """`operand` spread into physical qubits. A whole register contributes all
+    of its qubits in Qiskit order -- the order Qiskit broadcasts it in."""
+    if isinstance(operand, QubitBit):
+        return [(operand.ref.name, _qiskit_index(operand))]
+    assert not isinstance(operand, QubitSlice), "a qif body has no sliced operands"
+    return [(operand.name, index) for index in range(operand.size)]
+
+
+def _target_source(operand: QubitOperand, qubits: QubitMap | None) -> str:
+    if qubits is None:
+        return _operand_source(operand)
+    sources = [qubits[qubit] for qubit in _operand_qubits(operand)]
+    # A list is how Qiskit takes several qubits for one operand, which is what
+    # a whole-register operand becomes once registers are gone.
+    return sources[0] if len(sources) == 1 else f"[{', '.join(sources)}]"
 
 
 __all__ = ["generate_qiskit"]

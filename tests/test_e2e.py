@@ -445,18 +445,125 @@ def test_param_array_indexed_angle_binds_at_runtime() -> None:
 
 
 def test_hello_example_reports_every_remaining_limitation(hello_source: str) -> None:
-    """Classical arithmetic and params eliminate every limitation from
-    hello.slanq except: adding a runtime param to a quantum variable, and the
-    three still-fully-unlowered statement kinds it also happens to use
-    (if/for/process) -- lowering now runs regardless of analysis errors, so
-    all four surface together instead of the first one hiding the rest."""
+    """Three limitations are left in hello.slanq: adding a runtime param to a
+    quantum variable, and the two still-fully-unlowered statement kinds it
+    uses. Its `process` -- defined AND called -- is no longer one of them;
+    lowering runs regardless of analysis errors, so all three surface together
+    instead of the first one hiding the rest."""
     result = compile_source(hello_source, source_name="hello.slanq")
     messages = [d.message for d in result.diagnostics.errors]
-    assert len(messages) == 4
+    assert len(messages) == 3
     assert any("runtime parameter" in message for message in messages)
     assert any("if statement" in message for message in messages)
     assert any("for loop" in message for message in messages)
-    assert any("process definition" in message for message in messages)
+
+
+def test_process_call_runs_the_body_on_the_arguments() -> None:
+    """The section 3.4 example, end to end: 1 + 2 == 3."""
+    source = (
+        "process add(qint x, qint y) { x += y; }\n"
+        "qint<2> num1 = 1;\nqint<2> num2 = 2;\nadd(num1, num2);\n"
+        "int result = measure(num1);\n"
+    )
+    assert _counts(source) == {"11": SHOTS}
+
+
+def test_a_process_is_equivalent_to_writing_the_body_out() -> None:
+    inlined = _build_circuit(
+        "process add(qint x, qint y) { x += y; }\n"
+        "qint<3> a = 5;\nqint<2> b = 2;\nadd(a, b);\n"
+    )
+    written = _build_circuit("qint<3> a = 5;\nqint<2> b = 2;\na += b;\n")
+    assert Statevector.from_instruction(inlined).equiv(
+        Statevector.from_instruction(written)
+    )
+
+
+def test_two_calls_of_one_process_both_take_effect() -> None:
+    source = (
+        "process bump(qint x) { x += 1; }\n"
+        "qint<2> a = 0;\nbump(a);\nbump(a);\nint result = measure(a);\n"
+    )
+    assert _counts(source) == {"10": SHOTS}
+
+
+def test_a_process_parameter_may_be_a_single_qubit() -> None:
+    source = (
+        "process flip(qbool b) { X(b); }\n"
+        "qint<2> a = 0;\nflip(a[1]);\nint result = measure(a);\n"
+    )
+    assert _counts(source) == {"01": SHOTS}
+
+
+def test_a_classical_process_parameter_reaches_the_generated_file_unfolded() -> None:
+    """A classical parameter is substituted as an expression, so the "never
+    fold a compile-time expression" rule still holds inside a body."""
+    result = compile_source(
+        "process rot(qbool q, float angle) { RX(angle, q); }\n"
+        "qbool t = false;\nrot(t, PI / 2);\n",
+        source_name="test.slanq",
+    )
+    assert result.qiskit_source is not None
+    assert "np.pi / 2" in result.qiskit_source
+
+
+def test_a_qif_inside_a_process_body_still_controls_the_body() -> None:
+    source = (
+        "process guarded(qint a, qbool out) { qif(a == 2) { X(out); } }\n"
+        "qint<2> a = 2;\nqbool out = false;\nguarded(a, out);\n"
+        "int result = measure(out);\n"
+    )
+    assert _counts(source) == {"1": SHOTS}
+
+
+def test_a_process_call_inside_a_qif_body_is_controlled() -> None:
+    """Expansion turns the call into plain gates before lowering sees the qif
+    body, which is what lets a qif body contain a call at all -- a qif body
+    must always resolve to gates, since a control-flow op cannot be a gate."""
+    source = (
+        "process flip(qbool b) { X(b); }\n"
+        "qint<2> a = 2;\nqbool out = false;\nqif(a == 2) { flip(out); }\n"
+        "int result = measure(out);\n"
+    )
+    assert _counts(source) == {"1": SHOTS}
+
+
+def test_a_classical_parameter_can_index_a_qubit() -> None:
+    source = (
+        "process poke(qint q, int i) { X(q[i]); }\n"
+        "qint<2> a = 0;\npoke(a, 1);\nint result = measure(a);\n"
+    )
+    assert _counts(source) == {"01": SHOTS}
+
+
+def test_a_nested_process_call_reaches_the_circuit() -> None:
+    source = (
+        "process inner(qbool x) { X(x); }\nprocess outer(qbool y) { inner(y); }\n"
+        "qbool q = false;\nouter(q);\nint result = measure(q);\n"
+    )
+    assert _counts(source) == {"1": SHOTS}
+
+
+def test_qif_controls_one_qubit_of_a_register_on_another() -> None:
+    """Condition and body use different qubits of the SAME register --
+    legal, and the compiler used to emit a file that died on `duplicate bit
+    arguments` when the generated circuit was built."""
+    for value, expected in [(2, "11"), (0, "00")]:
+        source = (
+            f"qint<2> a = {value};\n"
+            "qif(a[0]) { X(a[1]); }\n"
+            "int result = measure(a);\n"
+        )
+        assert _counts(source) == {expected: SHOTS}
+
+
+def test_qif_controls_across_a_wider_register() -> None:
+    source = (
+        "qint<3> a = 4;\n"
+        "qif(a[0]) { X(a[2]); }\n"
+        "int result = measure(a);\n"
+    )
+    assert _counts(source) == {"101": SHOTS}
 
 
 def test_qif_top_level_negation_composes_with_a_clause_ancilla() -> None:

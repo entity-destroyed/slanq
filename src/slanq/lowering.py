@@ -20,6 +20,7 @@ from slanq.ast_nodes import (
     ParamArrayDecl,
     ParamDecl,
     ProbList,
+    ProcessDef,
     Program,
     QIf,
     QuantumDecl,
@@ -76,7 +77,6 @@ UNIMPLEMENTED: dict[str, str] = {
     "If": "the if statement",
     "While": "the while loop",
     "For": "the for loop",
-    "ProcessDef": "a process definition",
 }
 
 # Additional phrases for statements that lower fine at the top level but a
@@ -183,6 +183,11 @@ class _Lowerer(NodeVisitor):
         ops = self._lower_gate_statement(node, in_qif=False)
         if ops is not None:
             self.module.body.ops.extend(ops)
+
+    def visit_ProcessDef(self, node: ProcessDef) -> None:
+        # A template, not code: the expansion pass copied its body into every
+        # call site, so the definition itself contributes no operations.
+        return
 
     def visit_ParamDecl(self, node: ParamDecl) -> None:
         type_name = _PARAM_TYPE_NAMES.get(type(node.declared_type))
@@ -313,11 +318,15 @@ class _Lowerer(NodeVisitor):
 
         signature = BUILTIN_SIGNATURES.get(name)
         if signature is None:
-            self._error(
-                "calling a process is not implemented yet; this is a limitation "
-                "of the compiler, not an error in the program",
-                node.span,
-            )
+            if isinstance(expr.callee.resolved_symbol, ProcessDef):
+                self._error(
+                    f"internal error: the call to '{name}' was not expanded "
+                    "before lowering. This is a bug in the compiler, not in "
+                    "the source program.",
+                    node.span,
+                )
+            else:
+                self._error(f"'{name}' is not a gate", node.span)
             return None
 
         # Which argument is an angle and which is a qubit comes from the

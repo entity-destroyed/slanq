@@ -39,3 +39,6 @@ for(int i in range(4)) {
 process add(qint x, qint y) {
     x += y;
 }
+
+// Calling it: the body is inlined here, so this is another `a += b;`
+add(a, b);
