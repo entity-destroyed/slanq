@@ -6,14 +6,22 @@ import pytest
 
 from slanq.analysis import analyze
 from slanq.ast_nodes import (
+    AugAssign,
     Block,
     Call,
     ExprStatement,
+    For,
+    Index,
+    IntType,
+    Literal,
+    LoopVarDecl,
     Name,
     ProcessDef,
     ProcParam,
     Program,
     QBoolType,
+    QIntType,
+    QuantumDecl,
     Span,
 )
 from slanq.builtin import const_value
@@ -777,3 +785,94 @@ def test_param_decl_inside_qif_body_is_a_top_level_only_error(
     assert bag.has_errors
     assert "only allowed at the top level of a program" in bag.errors[0].message
     assert "not implemented" not in bag.errors[0].message
+
+
+# Every shape analysis rejects but lowering still walks into, because lowering
+# runs after an error by design: each one used to raise AssertionError, killing
+# the compiler on a program whose real error had already been reported.
+REJECTED_SHAPES = [
+    "qint<2> a = 0;\nparam int g[2];\na += g[0];\n",
+    "qint<2> a = 0;\nqint<2> b = 0;\na += b[0];\n",
+    "qint<2> a = 0;\na += 1.5;\n",
+    "qint<2> a = 0;\nqint<2> b = 0;\na[0] += b;\n",
+    "qint<2> a = 0;\nqint<4> c = a * 3;\n",
+    "qint<2> a = 0;\nqint<2> b = 0;\nqint<4> c = a * b[0];\n",
+    "param complex t;\nqint<2> a = 0;\nRX(t, a[0]);\n",
+    "qint<2> a = 0;\nqif(1) { X(a[0]); }\n",
+    "qint<2> a = 0;\nqif(a + 1) { X(a[0]); }\n",
+    "qint<2> a = 0;\nqif(1 == 2) { X(a[0]); }\n",
+    "qint<2> a = 0;\nqif(a[0] == 1) { X(a[1]); }\n",
+    "qint<1> a = {true, false};\n",
+    "param float t;\nqint<1> a = {t, 0};\n",
+]
+
+
+@pytest.mark.parametrize("source", REJECTED_SHAPES)
+def test_a_rejected_shape_does_not_crash_lowering(
+    lower: LowerSource, source: str
+) -> None:
+    _, bag = lower(source)
+    assert bag.has_errors
+    assert not any("internal error" in error.message for error in bag.errors)
+
+
+def test_an_unreachable_shape_with_no_error_is_an_internal_error(span: Span) -> None:
+    """The other half of the guard: with an empty bag nothing rejected this, so
+    analysis has a hole and the compiler says so instead of going quiet. Built
+    by hand, since analysis does reject this shape."""
+    ast = Program(
+        span=span,
+        statements=[
+            QuantumDecl(
+                span=span,
+                name="a",
+                declared_type=QIntType(size=2),
+                initializer=Literal(span=span, value=0),
+            ),
+            AugAssign(
+                span=span,
+                target=Index(
+                    span=span,
+                    base=Name(span=span, name="a"),
+                    index=Literal(span=span, value=0),
+                ),
+                op="+=",
+                value=Name(span=span, name="a"),
+            ),
+        ],
+    )
+    bag = DiagnosticBag()
+    lower_to_ir(ast, bag)
+    assert any("internal error" in error.message for error in bag.errors)
+
+
+def test_an_unrolled_loop_reaching_lowering_is_an_internal_error(span: Span) -> None:
+    """A loop is replaced by its body or dropped, so lowering never meets one.
+    Built by hand, since the pipeline cannot produce this state."""
+    ast = Program(
+        span=span,
+        statements=[
+            For(
+                span=span,
+                binding=LoopVarDecl(span=span, name="i", declared_type=IntType()),
+                iterable=Call(
+                    span=span,
+                    callee=Name(span=span, name="range"),
+                    args=[Literal(span=span, value=2)],
+                ),
+                body=Block(span=span),
+            )
+        ],
+    )
+    bag = DiagnosticBag()
+    lower_to_ir(ast, bag)
+    assert any("internal error" in error.message for error in bag.errors)
+    assert not any("not implemented yet" in error.message for error in bag.errors)
+
+
+def test_a_loop_lowers_to_its_unrolled_operations(lower: LowerSource) -> None:
+    module, bag = lower("qint<3> a = 0;\nfor(int i in range(3)) { X(a[i]); }\n")
+    assert not bag.has_errors
+    gates = [op for op in module.body.ops if isinstance(op, GateOp)]
+    assert len(gates) == 3
+    assert [gate.name for gate in gates] == ["X", "X", "X"]

@@ -12,20 +12,26 @@ from slanq.ast_nodes import (
     Declaration,
     Expression,
     ExprStatement,
+    For,
     Index,
+    Literal,
+    LoopVarDecl,
     Name,
     Node,
+    ParamArrayDecl,
+    ParamDecl,
     ProcessDef,
     Program,
     Span,
     Statement,
 )
+from slanq.builtin import RANGE, ConstEvalError, const_value
 from slanq.diagnostics import DiagnosticBag
 
-# A body is copied into every call site, so a chain where each process calls
-# the next one twice doubles the statement count per level. Bounded so a short
-# program cannot hang the compiler -- the same class of guard const_value's
-# `**` carries.
+# A body is copied into every call site and once per iteration, so a chain
+# where each process calls the next one twice, or a loop nested in a loop,
+# multiplies the statement count per level. Bounded so a short program cannot
+# hang the compiler -- the same class of guard const_value's `**` carries.
 MAX_EXPANDED_STATEMENTS = 10_000
 
 
@@ -49,20 +55,113 @@ def expand_processes(ast: Program, bag: DiagnosticBag) -> None:
     ast.statements = expander.rewrite(ast.statements, top_level=True)
 
 
-class _Expander:
+def unroll_loops(ast: Program, bag: DiagnosticBag) -> None:
+    """Replace every `for` with its body repeated once per iteration, the loop
+    variable substituted by that iteration's value.
+    """
+    ast.statements = _Unroller(bag).rewrite(ast.statements)
+
+
+class _Copier:
+    """Copies a body, replacing some of the names in it with expressions.
+
+    Fields marked `metadata={"annotation": True}` hold a back-reference to a
+    declaration, not tree structure, so they are shared rather than copied --
+    which is exactly what keeps a copied name resolved. Declarations are
+    shared for the same reason read backwards: every reference to one is
+    shared, so a copied declaration would be one nothing points at. Spans are
+    shared too, so a diagnostic from inside a copied body points at the line
+    where the offending code is actually written.
+    """
+
+    # Two fields are typed as a bare Name rather than any expression, so
+    # substituting something else there would leave a shape no later phase can
+    # read (`num[1][0]`).
+    index_base_error: str
+    callee_error: str
+
     def __init__(self, bag: DiagnosticBag) -> None:
         self.bag = bag
-        # Process names currently being expanded, so a cycle is caught as one
-        # is re-entered; this covers mutual recursion, not just self-calls.
-        self.active: list[str] = []
         self.budget = MAX_EXPANDED_STATEMENTS
         self.reported_budget = False
         # Set while copying a body if substitution produced an unreadable
-        # shape, so that expansion is abandoned instead of half-applied.
+        # shape, so that the copy is abandoned instead of half-applied.
         self.invalid = False
+
+    def _substitute(self, node: Name) -> Expression | None:
+        """The expression `node` stands for in this copy, or None if it is not
+        one of the substituted names."""
+        raise NotImplementedError
+
+    def _copy(self, node: Node, *, substitute: bool = True) -> Node:
+        if substitute and isinstance(node, Name):
+            replacement = self._substitute(node)
+            if replacement is not None:
+                return replacement
+
+        values: dict[str, Any] = {}
+        for f in dataclasses.fields(node):
+            value = getattr(node, f.name)
+            if f.metadata.get("annotation") or not isinstance(value, Node | list):
+                continue
+            if isinstance(value, Declaration):
+                continue
+            if isinstance(value, Node):
+                values[f.name] = self._copy(value, substitute=substitute)
+            else:
+                values[f.name] = [
+                    self._copy(item, substitute=substitute) if isinstance(item, Node) else item
+                    for item in value
+                ]
+        copied = dataclasses.replace(node, **values)
+
+        # `invalid` makes the caller drop the whole copy, since a partially
+        # substituted body would only produce follow-on errors about a name
+        # that no longer means anything.
+        if isinstance(copied, Index) and not isinstance(copied.base, Name):
+            self._error(self.index_base_error, node.span)
+            self.invalid = True
+        elif isinstance(copied, Call) and not isinstance(copied.callee, Name):
+            self._error(self.callee_error, node.span)
+            self.invalid = True
+        return copied
+
+    def _charge(self, statements: int, what: str, span: Span) -> bool:
+        """Whether `statements` more fit in the budget. Reported once: a
+        program over the limit is usually over it at every call site."""
+        self.budget -= statements
+        if self.budget >= 0:
+            return True
+        if not self.reported_budget:
+            self.reported_budget = self._error(
+                f"{what} produced more than {MAX_EXPANDED_STATEMENTS} "
+                "statements; this is not compiled",
+                span,
+            )
+        return False
+
+    def _error(self, message: str, span: Span) -> bool:
+        """Whether the message was taken; a subclass may suppress it."""
+        self.bag.error(message, line=span.start_line, column=span.start_col)
+        return True
+
+
+class _Expander(_Copier):
+    index_base_error = (
+        "a process parameter that is indexed in the process body must be given "
+        "a whole quantum variable, not a single qubit"
+    )
+    callee_error = "a process parameter cannot be called"
+
+    def __init__(self, bag: DiagnosticBag) -> None:
+        super().__init__(bag)
+        # Process names currently being expanded, so a cycle is caught as one
+        # is re-entered; this covers mutual recursion, not just self-calls.
+        self.active: list[str] = []
         # Processes already reported as impossible to expand; their calls
         # expand to nothing rather than to a body known to be broken.
         self.unexpandable: set[str] = set()
+        self.bindings: dict[int, Expression] = {}
 
     def rewrite(self, statements: list[Statement], *, top_level: bool) -> list[Statement]:
         result: list[Statement] = []
@@ -109,6 +208,17 @@ class _Expander:
                 )
                 self.unexpandable.add(process.name)
 
+    def _substitute(self, node: Name) -> Expression | None:
+        argument = self.bindings.get(id(node.resolved_symbol))
+        if argument is None:
+            return None
+        # Copied, not shared: a parameter used twice would otherwise put one
+        # argument node in the tree twice. Substitution is off inside it, so an
+        # argument that happens to name another parameter is left alone.
+        copied = self._copy(argument, substitute=False)
+        assert isinstance(copied, Expression)
+        return copied
+
     def _expand_call(self, statement: Statement) -> list[Statement] | None:
         """The statements a process call expands to, or None if `statement` is
         not a process call at all."""
@@ -136,7 +246,7 @@ class _Expander:
             )
             return []
 
-        bindings = {
+        self.bindings = {
             id(parameter): argument
             for parameter, argument in zip(process.params, call.args, strict=True)
         }
@@ -144,22 +254,13 @@ class _Expander:
         self.invalid = False
         body: list[Statement] = []
         for source in process.body.statements:
-            copied = self._copy(source, bindings)
+            copied = self._copy(source)
             assert isinstance(copied, Statement)
             body.append(copied)
         if self.invalid:
             return []
 
-        self.budget -= len(body)
-        if self.budget < 0:
-            if not self.reported_budget:
-                self.reported_budget = True
-                self._error(
-                    f"expanding process calls produced more than "
-                    f"{MAX_EXPANDED_STATEMENTS} statements; this is not "
-                    "compiled",
-                    call.span,
-                )
+        if not self._charge(len(body), "expanding process calls", call.span):
             return []
 
         self.active.append(process.name)
@@ -167,54 +268,165 @@ class _Expander:
         self.active.pop()
         return expanded
 
-    def _copy(self, node: Node, bindings: dict[int, Expression]) -> Node:
-        """A copy of `node` with every reference to a bound parameter replaced
-        by that parameter's argument.
 
-        Fields marked `metadata={"annotation": True}` hold a back-reference to
-        a declaration, not tree structure, so they are shared rather than
-        copied -- which is exactly what keeps a copied name resolved. Spans are
-        shared too, so a diagnostic from inside a body points at the line of
-        the process, where the offending code is actually written.
-        """
-        if isinstance(node, Name):
-            argument = bindings.get(id(node.resolved_symbol))
-            if argument is not None:
-                return self._copy(argument, {})
+class _Unroller(_Copier):
+    index_base_error = "a loop variable holds a number, so it cannot be indexed"
+    callee_error = "a loop variable cannot be called"
 
-        values: dict[str, Any] = {}
-        for f in dataclasses.fields(node):
-            value = getattr(node, f.name)
-            if f.metadata.get("annotation") or not isinstance(value, Node | list):
+    def __init__(self, bag: DiagnosticBag) -> None:
+        super().__init__(bag)
+        self.loop_var: LoopVarDecl | None = None
+        self.value = 0
+        # Loops reached only by substitution, so that a triangular loop's
+        # empty first pass is not warned about like a written `range(0)`.
+        self.copied = 0
+        self.silent = False
+
+    def rewrite(self, statements: list[Statement]) -> list[Statement]:
+        result: list[Statement] = []
+        for statement in statements:
+            if isinstance(statement, For):
+                # Unrolled before anything inside it is walked, so a nested
+                # loop whose range mentions the outer variable (`range(i)`) is
+                # already constant by the time it is reached.
+                result.extend(self._unroll(statement))
                 continue
-            if isinstance(value, Node):
-                values[f.name] = self._copy(value, bindings)
-            else:
-                values[f.name] = [
-                    self._copy(item, bindings) if isinstance(item, Node) else item
-                    for item in value
-                ]
-        copied = dataclasses.replace(node, **values)
+            previous = self.silent
+            self.silent = self.silent or isinstance(statement, ProcessDef)
+            for block in _child_blocks(statement):
+                block.statements = self.rewrite(block.statements)
+            self.silent = previous
+            result.append(statement)
+        return result
 
-        # Two fields are typed as a bare Name rather than any expression, so
-        # substituting something else there would leave a shape no later phase
-        # can read (`num[1][0]`). Rejected instead; `invalid` makes the caller
-        # drop the whole expansion, since a partially substituted body would
-        # only produce follow-on errors about the parameter name.
-        if isinstance(copied, Index) and not isinstance(copied.base, Name):
-            self._error(
-                "a process parameter that is indexed in the process body must "
-                "be given a whole quantum variable, not a single qubit",
-                node.span,
+    def _error(self, message: str, span: Span) -> bool:
+        """A process definition stays in the tree as a template, and its
+        parameters have no values there, so `range(n)` is not constant however
+        constant every call makes it. Nothing is reported from inside one: the
+        call sites re-report it at the same span, and an uncalled process has
+        nothing to report about."""
+        if self.silent:
+            return False
+        return super()._error(message, span)
+
+    def _substitute(self, node: Name) -> Expression | None:
+        if node.resolved_symbol is not self.loop_var:
+            return None
+        # The reference's own span, not the loop header's: a diagnostic about
+        # the substituted value points at where the variable is written.
+        return Literal(span=node.span, value=self.value)
+
+    def _unroll(self, node: For) -> list[Statement]:
+        for statement in node.body.statements:
+            if isinstance(statement, Declaration):
+                # The same failure as a declaration in a process body: the
+                # second iteration claims a register name the first one took.
+                self._error(
+                    "a declaration inside a loop body is not implemented yet; "
+                    "this is a limitation of the compiler, not an error in the "
+                    "program",
+                    statement.span,
+                )
+                return []
+
+        values = self._iteration_values(node)
+        if values is None:
+            return []
+        if len(values) == 0 and self.copied == 0 and not self.silent:
+            self.bag.warning(
+                "this loop runs zero times, so nothing in its body is compiled",
+                line=node.span.start_line,
+                column=node.span.start_col,
             )
-            self.invalid = True
-        elif isinstance(copied, Call) and not isinstance(copied.callee, Name):
-            self._error("a process parameter cannot be called", node.span)
-            self.invalid = True
-        return copied
+            return []
+        if len(values) == 0:
+            return []
 
-    def _error(self, message: str, span: Span) -> None:
-        self.bag.error(message, line=span.start_line, column=span.start_col)
+        # Charged before anything is copied: an iteration count large enough to
+        # exhaust memory must not be reached one statement at a time. An empty
+        # body still costs one per iteration, so it cannot spin for free.
+        cost = len(values) * max(1, len(node.body.statements))
+        if not self._charge(cost, "unrolling a for loop", node.span):
+            return []
+
+        body: list[Statement] = []
+        for value in values:
+            self.invalid = False
+            iteration = self._copy_iteration(node, value)
+            if self.invalid:
+                return []
+            body.extend(iteration)
+
+        self.copied += 1
+        expanded = self.rewrite(body)
+        self.copied -= 1
+        return expanded
+
+    def _iteration_values(self, node: For) -> range | None:
+        """The values the loop variable takes. A range rather than a list, so a
+        count too large to unroll can be measured without being built."""
+        iterable = node.iterable
+        if not (isinstance(iterable, Call) and iterable.callee.name == RANGE):
+            return None  # _ForChecker reports the iterable's shape
+        if not 1 <= len(iterable.args) <= 3:
+            return None  # and its argument count
+
+        bounds: list[int] = []
+        for argument in iterable.args:
+            value = self._bound(argument)
+            if value is None:
+                return None
+            bounds.append(value)
+
+        step = bounds[2] if len(bounds) == 3 else 1
+        if step == 0:
+            self._error(
+                "the step of a for loop must not be zero", iterable.args[2].span
+            )
+            return None
+        start, stop = (bounds[0], bounds[1]) if len(bounds) > 1 else (0, bounds[0])
+        return range(start, stop, step)
+
+    def _bound(self, argument: Expression) -> int | None:
+        """One `range` argument as a number. A circuit is built once, with a
+        fixed structure, so the count has to be known then; this is not a
+        limitation waiting to be lifted, since Qiskit's own `for_loop` takes a
+        concrete range too and rejects a `Parameter` as its index set."""
+        try:
+            value = const_value(argument)
+        except ConstEvalError as exc:
+            self._error(str(exc), argument.span)
+            return None
+        if value is None:
+            detail = ""
+            if isinstance(argument, Name) and isinstance(
+                argument.resolved_symbol, ParamDecl | ParamArrayDecl
+            ):
+                detail = f"; '{argument.name}' only gets its value at runtime"
+            self._error(
+                "a for loop needs an iteration count known when the circuit is "
+                f"built{detail}",
+                argument.span,
+            )
+            return None
+        if type(value) is not int:
+            self._error(
+                f"a for loop counts in whole numbers, so {RANGE}() cannot take "
+                f"{value!r}",
+                argument.span,
+            )
+            return None
+        return value
+
+    def _copy_iteration(self, node: For, value: int) -> list[Statement]:
+        self.loop_var = node.binding
+        self.value = value
+        copied: list[Statement] = []
+        for source in node.body.statements:
+            item = self._copy(source)
+            assert isinstance(item, Statement)
+            copied.append(item)
+        return copied
 
 
 def _child_blocks(statement: Statement) -> list[Block]:
@@ -226,4 +438,4 @@ def _child_blocks(statement: Statement) -> list[Block]:
     return blocks
 
 
-__all__ = ["expand_processes"]
+__all__ = ["expand_processes", "unroll_loops"]

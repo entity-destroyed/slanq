@@ -445,17 +445,18 @@ def test_param_array_indexed_angle_binds_at_runtime() -> None:
 
 
 def test_hello_example_reports_every_remaining_limitation(hello_source: str) -> None:
-    """Three limitations are left in hello.slanq: adding a runtime param to a
-    quantum variable, and the two still-fully-unlowered statement kinds it
-    uses. Its `process` -- defined AND called -- is no longer one of them;
-    lowering runs regardless of analysis errors, so all three surface together
-    instead of the first one hiding the rest."""
+    """Two limitations are left in hello.slanq: adding a runtime param to a
+    quantum variable, and the one still-unlowered statement kind it uses. Its
+    `process` and its `for` -- both defined AND used -- are no longer among
+    them; lowering runs regardless of analysis errors, so both surface together
+    instead of the first one hiding the other. The param-addend limitation is
+    inside the loop, so it is reported once rather than once per iteration."""
     result = compile_source(hello_source, source_name="hello.slanq")
     messages = [d.message for d in result.diagnostics.errors]
-    assert len(messages) == 3
+    assert len(messages) == 2
     assert any("runtime parameter" in message for message in messages)
     assert any("if statement" in message for message in messages)
-    assert any("for loop" in message for message in messages)
+    assert not any("for loop" in message for message in messages)
 
 
 def test_process_call_runs_the_body_on_the_arguments() -> None:
@@ -578,3 +579,96 @@ def test_qif_top_level_negation_composes_with_a_clause_ancilla() -> None:
             "qif(!(a == 2 && !(b == 3))) { X(out); }\nint result = measure(out);\n"
         )
         assert _counts(source) == {"1" if expected else "0": SHOTS}
+
+
+def test_a_loop_flips_every_qubit_it_indexes() -> None:
+    source = (
+        "qint<3> a = 0;\nfor(int i in range(3)) { X(a[i]); }\n"
+        "int result = measure(a);\n"
+    )
+    assert _counts(source) == {"111": SHOTS}
+
+
+def test_a_loop_is_equivalent_to_writing_the_body_out() -> None:
+    """Bit-identical circuits, which is why unrolling costs nothing the Qiskit
+    transpiler could have saved: it sees the same flat circuit either way."""
+    looped = _build_circuit("qint<3> a = 0;\nfor(int i in range(3)) { X(a[i]); }\n")
+    written = _build_circuit("qint<3> a = 0;\nX(a[0]);\nX(a[1]);\nX(a[2]);\n")
+    assert looped == written
+
+
+def test_arithmetic_accumulates_over_the_iterations() -> None:
+    source = (
+        "qint<4> num = 0;\nfor(int i in range(1, 4)) { num += i; }\n"
+        "int result = measure(num);\n"
+    )
+    assert _counts(source) == {"0110": SHOTS}
+
+
+def test_a_triangular_loop_repeats_the_right_number_of_times() -> None:
+    """i = 0 adds nothing, i = 1 flips a[0], i = 2 flips a[0] and a[1] -- so
+    a[0] is flipped twice and cancels, leaving the value 2."""
+    source = (
+        "qint<3> a = 0;\n"
+        "for(int i in range(3)) { for(int j in range(i)) { X(a[j]); } }\n"
+        "int result = measure(a);\n"
+    )
+    assert _counts(source) == {"010": SHOTS}
+
+
+def test_a_process_called_in_a_loop_runs_once_per_iteration() -> None:
+    source = (
+        "process bump(qint x) { x += 1; }\nqint<3> num = 0;\n"
+        "for(int i in range(2)) { bump(num); }\nint result = measure(num);\n"
+    )
+    assert _counts(source) == {"010": SHOTS}
+
+
+def test_a_loop_inside_a_process_body_reaches_the_circuit() -> None:
+    source = (
+        "process flip(qint x) { for(int i in range(3)) { X(x[i]); } }\n"
+        "qint<3> a = 0;\nflip(a);\nint result = measure(a);\n"
+    )
+    assert _counts(source) == {"111": SHOTS}
+
+
+def test_a_loop_in_a_qif_body_is_controlled_by_the_condition() -> None:
+    on = (
+        "qint<2> c = 3;\nqint<2> t = 0;\n"
+        "qif(c == 3) { for(int i in range(2)) { X(t[i]); } }\n"
+        "int result = measure(t);\n"
+    )
+    off = on.replace("qint<2> c = 3;", "qint<2> c = 1;")
+    assert _counts(on) == {"11": SHOTS}
+    assert _counts(off) == {"00": SHOTS}
+
+
+def test_the_loop_value_reaches_an_angle_unfolded() -> None:
+    """`i * PI / 8` keeps its shape in the generated file, the same way a
+    process argument does -- the compiler substitutes, it does not evaluate."""
+    result = compile_source("qbool q = false;\nfor(int i in range(3)) { RZ(i * PI / 8, q); }\n")
+    assert result.qiskit_source is not None
+    assert "circuit.rz(0 * np.pi / 8, q[0])" in result.qiskit_source
+    assert "circuit.rz(1 * np.pi / 8, q[0])" in result.qiskit_source
+    assert "circuit.rz(2 * np.pi / 8, q[0])" in result.qiskit_source
+
+
+def test_a_classical_parameter_can_drive_a_loop_in_a_process_body() -> None:
+    source = (
+        "process flip(int n, qint x) { for(int i in range(n)) { X(x[i]); } }\n"
+        "qint<3> a = 0;\nflip(3, a);\nint result = measure(a);\n"
+    )
+    assert _counts(source) == {"111": SHOTS}
+
+
+def test_two_calls_may_ask_for_different_iteration_counts() -> None:
+    """Each call site unrolls with its own count, which a single shared loop in
+    the generated circuit could not express. Slanq indexes big-endian, so one
+    flipped qubit is the most significant bit."""
+    source = (
+        "process flip(int n, qint x) { for(int i in range(n)) { X(x[i]); } }\n"
+        "qint<3> a = 0;\nqint<3> b = 0;\nflip(1, a);\nflip(3, b);\n"
+        "int result = measure(a);\nint other = measure(b);\n"
+    )
+    assert _counts(source) == {"100": SHOTS}
+    assert _counts(source, register="other") == {"111": SHOTS}

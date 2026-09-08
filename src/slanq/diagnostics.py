@@ -42,12 +42,24 @@ class DiagnosticBag:
     """Messages collected during a single compilation run."""
 
     items: list[Diagnostic] = field(default_factory=list)
+    _seen: set[Diagnostic] = field(
+        default_factory=set, init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        self._seen = set(self.items)
 
     def error(self, message: str, line: int | None = None, column: int | None = None) -> None:
-        self.items.append(Diagnostic(Severity.ERROR, message, line, column))
+        self._add(Diagnostic(Severity.ERROR, message, line, column))
 
     def warning(self, message: str, line: int | None = None, column: int | None = None) -> None:
-        self.items.append(Diagnostic(Severity.WARNING, message, line, column))
+        self._add(Diagnostic(Severity.WARNING, message, line, column))
+
+    def _add(self, diagnostic: Diagnostic) -> None:
+        if diagnostic in self._seen:
+            return
+        self._seen.add(diagnostic)
+        self.items.append(diagnostic)
 
     @property
     def errors(self) -> list[Diagnostic]:

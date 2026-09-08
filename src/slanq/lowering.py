@@ -13,6 +13,7 @@ from slanq.ast_nodes import (
     Expression,
     ExprStatement,
     FloatType,
+    For,
     Index,
     IntType,
     Literal,
@@ -76,7 +77,6 @@ UNIMPLEMENTED: dict[str, str] = {
     "Assign": "assignment",
     "If": "the if statement",
     "While": "the while loop",
-    "For": "the for loop",
 }
 
 # Additional phrases for statements that lower fine at the top level but a
@@ -189,16 +189,23 @@ class _Lowerer(NodeVisitor):
         # call site, so the definition itself contributes no operations.
         return
 
+    def visit_For(self, node: For) -> None:
+        self._unreachable("a for loop", node.span)
+
     def visit_ParamDecl(self, node: ParamDecl) -> None:
         type_name = _PARAM_TYPE_NAMES.get(type(node.declared_type))
-        assert type_name is not None, "analysis must reject a param type not in _PARAM_TYPE_NAMES"
+        if type_name is None:
+            self._unreachable("a param of an unsupported type", node.span)
+            return
         self.module.params.append(
             ParamInfo(name=node.name, kind="scalar", size=None, type_name=type_name)
         )
 
     def visit_ParamArrayDecl(self, node: ParamArrayDecl) -> None:
         type_name = _PARAM_TYPE_NAMES.get(type(node.declared_type))
-        assert type_name is not None, "analysis must reject a param type not in _PARAM_TYPE_NAMES"
+        if type_name is None:
+            self._unreachable("a param array of an unsupported type", node.span)
+            return
         self.module.params.append(
             ParamInfo(
                 name=node.name,
@@ -209,7 +216,9 @@ class _Lowerer(NodeVisitor):
         )
 
     def visit_AugAssign(self, node: AugAssign) -> None:
-        assert isinstance(node.target, Name)
+        if not isinstance(node.target, Name):
+            self._unreachable("an arithmetic target that is not a variable", node.span)
+            return
         target = self._register(node.target)
         if target is None:
             return
@@ -244,7 +253,9 @@ class _Lowerer(NodeVisitor):
             return
 
         constant = self._const_int(value)
-        assert constant is not None
+        if constant is None:
+            self._unreachable("an addend that is not a whole constant", node.span)
+            return
         ancilla = self._fresh_ancilla(node.span, size=target.size)
         if ancilla is None:
             return
@@ -457,7 +468,9 @@ class _Lowerer(NodeVisitor):
                 return None
             return [QubitBit(ref=ref, index=0)], [0 if negated else 1], None
 
-        assert isinstance(target, Index)
+        if not isinstance(target, Index):
+            self._unreachable("a qif condition that is not a qubit", target.span)
+            return None
         ref = self._register(target.base)
         if ref is None:
             return None
@@ -476,7 +489,11 @@ class _Lowerer(NodeVisitor):
         left, right = clause.left, clause.right
         name = left if isinstance(left, Name) else right
         literal = right if isinstance(left, Name) else left
-        assert isinstance(name, Name)
+        if not isinstance(name, Name):
+            self._unreachable(
+                "a qif equality test with no quantum operand", clause.span
+            )
+            return None
 
         ref = self._register(name)
         if ref is None:
@@ -537,8 +554,9 @@ class _Lowerer(NodeVisitor):
     def _lower_multiply_operands(
         self, span, left: Expression, right: Expression
     ) -> tuple[list[QubitOperand], list[QubitOperand]] | None:
-        assert isinstance(left, Name)
-        assert isinstance(right, Name)
+        if not (isinstance(left, Name) and isinstance(right, Name)):
+            self._unreachable("a product of something other than variables", span)
+            return None
         left_ref = self._register(left)
         right_ref = self._register(right)
         if left_ref is None or right_ref is None:
@@ -557,7 +575,9 @@ class _Lowerer(NodeVisitor):
         amplitudes: list[complex | float] = []
         for element in initializer.elements:
             value = self._const_value(element)
-            assert value is not None and not isinstance(value, bool)
+            if value is None or isinstance(value, bool):
+                self._unreachable("an amplitude that is not a number", element.span)
+                return
             amplitudes.append(value)
 
         ref = QubitRef(name=node.name, size=size)
@@ -743,6 +763,18 @@ class _Lowerer(NodeVisitor):
 
     def _error(self, message: str, span) -> None:
         self.bag.error(message, line=span.start_line, column=span.start_col)
+
+    def _unreachable(self, what: str, span) -> None:
+        """A shape analysis rejects, reached anyway because lowering runs even
+        after an error. The diagnostic that rejected it already stands, so
+        nothing is added -- unless the bag is empty, which means analysis let
+        this through and the invariant is genuinely broken."""
+        if not self.bag.has_errors:
+            self._error(
+                f"internal error: {what} reached lowering. This is a bug in "
+                "the compiler, not in the source program.",
+                span,
+            )
 
 
 def _broadcast(

@@ -15,6 +15,7 @@ from slanq.ast_nodes import (
     ExprStatement,
     For,
     Index,
+    IntType,
     Name,
     Node,
     ParamArrayDecl,
@@ -41,7 +42,7 @@ from slanq.builtin import (
     const_value,
 )
 from slanq.diagnostics import DiagnosticBag
-from slanq.passes import expand_processes
+from slanq.passes import expand_processes, unroll_loops
 from slanq.visitor import NodeVisitor, iter_child_nodes
 
 Scope = dict[str, Symbol]
@@ -52,6 +53,8 @@ def analyze(ast: Program, bag: DiagnosticBag) -> None:
     _resolve_names(ast, bag, scope)
     _check_process_calls(ast, bag)
     expand_processes(ast, bag)
+    _check_loops(ast, bag)
+    unroll_loops(ast, bag)
     _check_types(ast, bag)
     _check_affine(ast, bag)
 
@@ -204,12 +207,6 @@ class _Checker(NodeVisitor):
 
 
 class _IndexChecker(_Checker):
-    def visit_For(self, node: For) -> None:
-        # The body is skipped: the loop itself is not lowered yet, so a loop
-        # variable has no compile-time value and every index in the body would
-        # be reported as non-constant. That message would hide the real one.
-        self.visit(node.iterable)
-
     def visit_Index(self, node: Index) -> None:
         self.generic_visit(node)
 
@@ -368,8 +365,20 @@ class _AmplitudeListChecker(_Checker):
 
 
 class _ForChecker(_Checker):
+    """The parts of a loop header that mean the same before and after
+    substitution. What the iteration count actually is belongs to unrolling
+    instead: a nested loop's range may name the variable of the loop around it
+    (`range(i)`), which is only a constant once that one is unrolled."""
+
     def visit_For(self, node: For) -> None:
         self.generic_visit(node)
+
+        if not isinstance(node.binding.declared_type, IntType):
+            self._reject(
+                f"a loop variable counts iterations, so it is an int; "
+                f"'{node.binding.name}' cannot be another type",
+                node.binding,
+            )
 
         iterable = node.iterable
         if not (isinstance(iterable, Call) and iterable.callee.name == RANGE):
@@ -384,8 +393,7 @@ class _ForChecker(_Checker):
             )
             return
 
-        if len(iterable.args) == 3 and self._value(iterable.args[2]) == 0:
-            self._reject("the step of a for loop must not be zero", iterable.args[2])
+
 
 
 class _ArithmeticChecker(_Checker):
@@ -572,17 +580,6 @@ class _CallChecker(_Checker):
         self.statement_call = node.expr
         self.generic_visit(node)
         self.statement_call = previous
-
-    def visit_For(self, node: For) -> None:
-        # `range(...)` is checked by _ForChecker, but its arguments are ordinary
-        # expressions and may contain calls of their own.
-        iterable = node.iterable
-        if isinstance(iterable, Call) and iterable.callee.name == RANGE:
-            for argument in iterable.args:
-                self.visit(argument)
-        else:
-            self.visit(iterable)
-        self.visit(node.body)
 
     def visit_Call(self, node: Call) -> None:
         self.generic_visit(node)
@@ -922,9 +919,12 @@ def _check_process_calls(ast: Program, bag: DiagnosticBag) -> None:
     _ProcessCallChecker(bag).visit(ast)
 
 
+def _check_loops(ast: Program, bag: DiagnosticBag) -> None:
+    _ForChecker(bag).visit(ast)
+
+
 def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _IndexChecker(bag).visit(ast)
-    _ForChecker(bag).visit(ast)
     _CallChecker(bag).visit(ast)
     _ProbListChecker(bag).visit(ast)
     _AmplitudeListChecker(bag).visit(ast)

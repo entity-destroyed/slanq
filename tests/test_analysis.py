@@ -252,9 +252,11 @@ def test_fractional_index_is_reported(diagnostics_of: DiagnosticsOf) -> None:
 
 
 def test_classical_array_index_is_not_restricted(diagnostics_of: DiagnosticsOf) -> None:
-    """The literal-only rule applies to qubit registers, not classical arrays."""
-    source = "param int gamma[4]; for(int i in range(4)) { int x = gamma[i]; }"
-    assert not diagnostics_of(source).has_errors
+    """Bounds checking applies to qubit registers, not classical arrays: a
+    param array is a plain Python list in the generated file."""
+    loop = "param float gamma[4]; qbool q = false; for(int i in range(4)) { RX(gamma[i], q); }"
+    assert not diagnostics_of(loop).has_errors
+    assert not diagnostics_of("param int gamma[4]; int x = gamma[99];").has_errors
 
 
 def test_initializer_too_large_is_reported(diagnostics_of: DiagnosticsOf) -> None:
@@ -815,3 +817,17 @@ def test_param_complex_array_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
     bag = diagnostics_of("param complex gamma[3];")
     assert bag.has_errors
     assert "complex is not supported" in bag.errors[0].message
+
+
+@pytest.mark.parametrize("declared", ["float", "bool", "complex"])
+def test_a_loop_variable_must_be_an_int(
+    diagnostics_of: DiagnosticsOf, declared: str
+) -> None:
+    bag = diagnostics_of(f"qbool q = false;\nfor({declared} i in range(2)) {{ X(q); }}\n")
+    assert any("so it is an int" in error.message for error in bag.errors)
+
+
+def test_an_int_loop_variable_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
+    assert not diagnostics_of(
+        "qbool q = false;\nfor(int i in range(2)) { X(q); }\n"
+    ).has_errors
