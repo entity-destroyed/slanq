@@ -251,12 +251,74 @@ def test_fractional_index_is_reported(diagnostics_of: DiagnosticsOf) -> None:
     assert not diagnostics_of("qint<4> q = 0; H(q[floor(3 / 2)]);").has_errors
 
 
-def test_classical_array_index_is_not_restricted(diagnostics_of: DiagnosticsOf) -> None:
-    """Bounds checking applies to qubit registers, not classical arrays: a
-    param array is a plain Python list in the generated file."""
+def test_a_param_array_index_within_bounds_is_accepted(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
     loop = "param float gamma[4]; qbool q = false; for(int i in range(4)) { RX(gamma[i], q); }"
     assert not diagnostics_of(loop).has_errors
-    assert not diagnostics_of("param int gamma[4]; int x = gamma[99];").has_errors
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "param int gamma[4]; int x = gamma[99];",
+        "param float gamma[2]; qbool q = false; RX(gamma[2], q);",
+        "param float gamma[2]; qbool q = false; RX(gamma[-1], q);",
+        "param float gamma[3]; qbool q = false;"
+        " for(int i in range(4)) { RX(gamma[i], q); }",
+    ],
+)
+def test_a_param_array_index_out_of_bounds_is_rejected(
+    diagnostics_of: DiagnosticsOf, source: str
+) -> None:
+    """A param array reaches the generated file as a Python list, so an index
+    past its end raises IndexError there -- on the user's machine, long after
+    the compiler said yes. Unrolling has made every index a constant by this
+    point, so the check is complete."""
+    bag = diagnostics_of(source)
+    assert bag.has_errors
+    assert "is out of range for 'gamma'" in bag.errors[0].message
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("qint<2> a = 2; qint<4> c = a * a;", "for both operands"),
+        ("qint<2> a = 2; qint<4> c = 0; c += a * a;", "for both operands"),
+        (
+            "qint<2> a = 2; qint<2> b = 3; qint<1> c = a * b;",
+            "at least as many qubits as its widest operand",
+        ),
+        (
+            "qint<3> a = 2; qint<2> b = 3; qint<2> c = a * b;",
+            "at least as many qubits as its widest operand",
+        ),
+    ],
+)
+def test_a_product_the_multiplier_cannot_take_is_rejected(
+    diagnostics_of: DiagnosticsOf, source: str, expected: str
+) -> None:
+    bag = diagnostics_of(source)
+    assert bag.has_errors
+    assert expected in bag.errors[0].message
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "qint<2> a = 2; qint<2> b = 3; qint<2> c = a * b;",
+        "qint<2> a = 2; qint<2> b = 3; qint<4> c = a * b;",
+        "qint<3> a = 2; qint<2> b = 3; qint<3> c = a * b;",
+        "qint<2> a = 2; qint<2> b = 3; qint<1> c = 0; c += a * b;",
+    ],
+)
+def test_a_product_at_least_as_wide_as_its_operands_is_accepted(
+    diagnostics_of: DiagnosticsOf, source: str
+) -> None:
+    """The width rule is the declaration's, not the `+=`'s: a `c += a * b`
+    computes the product at full width in a temporary first, so any target
+    width works there and truncates mod 2^size like every other assignment."""
+    assert not diagnostics_of(source).has_errors
 
 
 def test_initializer_too_large_is_reported(diagnostics_of: DiagnosticsOf) -> None:

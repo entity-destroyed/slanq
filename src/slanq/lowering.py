@@ -431,10 +431,33 @@ class _Lowerer(NodeVisitor):
             if result is None:
                 return None
             clause_qubits, clause_bits, clause_ancilla = result
+            if clause_ancilla is not None:
+                twin = next(
+                    (
+                        existing
+                        for existing in clause_ancillas
+                        if existing.qubits == clause_ancilla.qubits
+                        and existing.ctrl_state == clause_ancilla.ctrl_state
+                    ),
+                    None,
+                )
+                if twin is None:
+                    clause_ancillas.append(clause_ancilla)
+                else:
+                    # The same negated test twice: one ancilla already holds
+                    # the answer, so this clause points at that one and the
+                    # merge below drops it as a repetition.
+                    self._discard_ancilla(clause_ancilla.ancilla)
+                    clause_qubits = [QubitBit(ref=twin.ancilla, index=0)]
             qubits.extend(clause_qubits)
             bits.extend(clause_bits)
-            if clause_ancilla is not None:
-                clause_ancillas.append(clause_ancilla)
+
+        merged = self._merge_condition(
+            qubits, bits, clause_ancillas, condition.span, negated=negated
+        )
+        if merged is None:
+            return None
+        qubits, bits = merged
 
         if negated and len(bits) == 1:
             bits[0] = 1 - bits[0]
@@ -445,6 +468,101 @@ class _Lowerer(NodeVisitor):
             ctrl_state |= bit << position
 
         return qubits, ctrl_state, clause_ancillas, negated
+
+    def _merge_condition(
+        self,
+        qubits: list[QubitOperand],
+        bits: list[int],
+        clause_ancillas: list[QIfClauseAncilla],
+        span,
+        *,
+        negated: bool,
+    ) -> tuple[list[QubitOperand], list[int]] | None:
+        """One entry per physical qubit. Two clauses can land on the same qubit
+        -- the same test written twice, or `a == 2 && a[0]` -- and then either
+        they agree, in which case the second says nothing, or they disagree, in
+        which case no state satisfies the condition."""
+        required: dict[tuple[str, int], int] = {}
+        kept: list[tuple[QubitOperand, list[int]]] = []
+        repeated = False
+
+        position = 0
+        for operand in qubits:
+            physical = _condition_qubits(operand)
+            wanted = bits[position : position + len(physical)]
+            position += len(physical)
+
+            for qubit, bit in zip(physical, wanted, strict=True):
+                if required.get(qubit, bit) != bit:
+                    self._reject_impossible(
+                        f"'{qubit[0]}' would have to hold two different values "
+                        "at once",
+                        span,
+                        negated=negated,
+                    )
+                    return None
+
+            seen = {qubit for qubit in physical if qubit in required}
+            if seen:
+                repeated = True
+                if len(seen) == len(physical):
+                    continue
+                kept = [
+                    (entry, entry_bits)
+                    for entry, entry_bits in kept
+                    if not seen & set(_condition_qubits(entry))
+                ]
+
+            required.update(zip(physical, wanted, strict=True))
+            kept.append((operand, wanted))
+
+        # A negated clause excludes exactly one combination of its register,
+        # so it fixes no single qubit and cannot be part of the map above --
+        # but if the rest of the condition forces precisely the combination it
+        # excludes, nothing is left to satisfy it.
+        for clause_ancilla in clause_ancillas:
+            excluded = [
+                (qubit, (clause_ancilla.ctrl_state >> position) & 1)
+                for entry in clause_ancilla.qubits
+                for position, qubit in enumerate(_condition_qubits(entry))
+            ]
+            if all(required.get(qubit) == bit for qubit, bit in excluded):
+                name = excluded[0][0][0]
+                self._reject_impossible(
+                    f"'{name}' is required to hold exactly the value another "
+                    "part of the condition excludes",
+                    span,
+                    negated=negated,
+                )
+                return None
+
+        if repeated:
+            self._warn(
+                "this qif condition tests the same qubit more than once; the "
+                "repeated test is dropped",
+                span,
+            )
+        return (
+            [operand for operand, _ in kept],
+            [bit for _, entry_bits in kept for bit in entry_bits],
+        )
+
+    def _reject_impossible(self, detail: str, span, *, negated: bool) -> None:
+        if negated:
+            self._error(
+                f"this qif condition is always true, because the test it "
+                f"negates can never be: {detail}",
+                span,
+            )
+            return
+        self._error(f"this qif condition can never be true: {detail}", span)
+
+    def _discard_ancilla(self, ref: QubitRef) -> None:
+        self.module.body.ops = [
+            op
+            for op in self.module.body.ops
+            if not (isinstance(op, DeclareAncillaOp) and op.ref is ref)
+        ]
 
     def _lower_qif_clause(
         self, clause: Expression
@@ -769,6 +887,9 @@ class _Lowerer(NodeVisitor):
     def _error(self, message: str, span) -> None:
         self.bag.error(message, line=span.start_line, column=span.start_col)
 
+    def _warn(self, message: str, span) -> None:
+        self.bag.warning(message, line=span.start_line, column=span.start_col)
+
     def _unreachable(self, what: str, span) -> None:
         """A shape analysis rejects, reached anyway because lowering runs even
         after an error. The diagnostic that rejected it already stands, so
@@ -809,6 +930,18 @@ def _flatten_and_chain(condition: Expression) -> list[Expression]:
     if isinstance(condition, BinaryOp) and condition.op == "&&":
         return [*_flatten_and_chain(condition.left), condition.right]
     return [condition]
+
+
+def _condition_qubits(operand: QubitOperand) -> list[tuple[str, int]]:
+    """`operand`'s physical qubits, in the order its condition bits are listed.
+    A whole register contributes its qubits in Qiskit order; a `QubitBit` holds
+    a Slanq index, which counts from the most significant qubit, so it mirrors
+    -- each shape the same way the code generator reads it."""
+    if isinstance(operand, QubitBit):
+        return [(operand.ref.name, operand.ref.size - 1 - operand.index)]
+    if isinstance(operand, QubitSlice):
+        return [(operand.ref.name, index) for index in range(operand.size)]
+    return [(operand.name, index) for index in range(operand.size)]
 
 
 def _operand_width(operand: QubitOperand) -> int:

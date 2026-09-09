@@ -677,6 +677,72 @@ def _referenced_refs(op: Op) -> list[QubitRef]:
     return refs
 
 
+@pytest.mark.parametrize(
+    ("condition", "controls"),
+    [
+        # The repeated test says nothing the first one did not.
+        ("a == 2 && a == 2", 2),
+        ("a[0] && a[0]", 1),
+        # Same qubit reached two ways: the register test already fixes a[0].
+        ("a == 2 && a[0]", 2),
+        ("a[0] && a == 2", 2),
+        # The same negated test twice needs one ancilla, not two.
+        ("!(a == 2) && !(a == 2)", 1),
+    ],
+)
+def test_a_repeated_qif_test_is_dropped(
+    lower: LowerSource, condition: str, controls: int
+) -> None:
+    """A qubit tested twice would reach the same append list twice, which
+    Qiskit rejects as duplicate bit arguments when the generated file runs."""
+    module, bag = lower(f"qint<2> a = 2; qbool t = false; qif({condition}) {{ X(t); }}")
+    assert not bag.has_errors
+    assert any("tests the same qubit more than once" in d.message for d in bag.warnings)
+
+    (qif,) = [op for op in _computation_ops(module) if isinstance(op, QIfOp)]
+    physical = [
+        qubit
+        for operand in qif.direct_qubits
+        for qubit in (
+            [(operand.name, index) for index in range(operand.size)]
+            if isinstance(operand, QubitRef)
+            else [(operand.ref.name, operand.index)]
+        )
+    ]
+    assert len(physical) == len(set(physical))
+    assert len(physical) == controls
+
+
+@pytest.mark.parametrize(
+    ("condition", "expected"),
+    [
+        ("a == 2 && a == 3", "can never be true"),
+        ("a[0] && !(a[0])", "can never be true"),
+        ("a == 2 && !(a == 2)", "can never be true"),
+        ("!(a == 2 && a == 3)", "is always true"),
+    ],
+)
+def test_a_qif_condition_no_state_can_satisfy_is_rejected(
+    lower: LowerSource, condition: str, expected: str
+) -> None:
+    """Under a top-level negation the same finding flips meaning: the body is
+    not conditional at all. Neither is representable as a ctrl_state, which
+    names one basis pattern."""
+    _, bag = lower(f"qint<2> a = 2; qbool t = false; qif({condition}) {{ X(t); }}")
+    assert bag.has_errors
+    assert expected in bag.errors[0].message
+
+
+def test_a_dropped_clause_ancilla_leaves_no_declaration(lower: LowerSource) -> None:
+    """The repeated negated test allocated an ancilla before it turned out to
+    be a repetition; an ancilla nothing uses would still take a qubit."""
+    module, bag = lower(
+        "qint<2> a = 2; qbool t = false; qif(!(a == 2) && !(a == 2)) { X(t); }"
+    )
+    assert not bag.has_errors
+    assert len(_declared_ancillas(module)) == 1
+
+
 def test_augassign_equal_width_needs_no_padding(lower: LowerSource) -> None:
     module, bag = lower("qint<2> a = 0; qint<2> b = 0; a += b;")
     assert not bag.has_errors

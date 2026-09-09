@@ -212,7 +212,7 @@ class _IndexChecker(_Checker):
 
         size = _quantum_size_of(node.base)
         if size is None:
-            # Not a quantum register; classical arrays (`gamma[i]`) come later.
+            self._check_param_array_index(node)
             return
 
         index = self._int(node.index)
@@ -222,7 +222,22 @@ class _IndexChecker(_Checker):
             )
             return
 
-        if not 0 <= index < size:
+        self._check_bounds(node, size)
+
+    def _check_param_array_index(self, node: Index) -> None:
+        symbol = node.base.resolved_symbol
+        if not isinstance(symbol, ParamArrayDecl):
+            return
+        if self._int(node.index) is None:
+            self._reject(
+                "a param array index must be a compile-time integer", node.index
+            )
+            return
+        self._check_bounds(node, symbol.size)
+
+    def _check_bounds(self, node: Index, size: int) -> None:
+        index = self._int(node.index)
+        if index is not None and not 0 <= index < size:
             self._reject(
                 f"index {index} is out of range for '{node.base.name}' of size {size}",
                 node.index,
@@ -422,9 +437,31 @@ class _ArithmeticChecker(_Checker):
 
         initializer = node.initializer
         if isinstance(initializer, BinaryOp) and initializer.op == "*":
-            # A fresh declaration can never alias an operand by name, so
-            # there is no self-reference to check here, unlike AugAssign.
-            self._check_multiply_operands(initializer)
+            # A fresh declaration cannot alias an operand by name, so there is
+            # no self-reference to check here, unlike AugAssign -- but the two
+            # operands can still alias each other, which is checked below.
+            operands = self._check_multiply_operands(initializer)
+            if operands is not None:
+                self._check_product_width(node, operands)
+
+    def _check_product_width(
+        self, node: QuantumDecl, operands: tuple[Name, Name]
+    ) -> None:
+        """A product is at least as wide as its widest factor. The multiplier
+        pads both factors to their common width and writes into the target, and
+        Qiskit's HRS refuses a target narrower than that"""
+        size = qubit_count(node.declared_type)
+        widths = [(_quantum_size_of(operand), operand) for operand in operands]
+        if size is None or any(width is None for width, _ in widths):
+            return
+        widest, operand = max(widths, key=lambda pair: pair[0] or 0)
+        if widest is None or size >= widest:
+            return
+        self._reject(
+            f"a product needs at least as many qubits as its widest operand; "
+            f"'{node.name}' holds {size}, but '{operand.name}' holds {widest}",
+            node,
+        )
 
     def _check_value_shape(self, value: Expression, target: Name) -> None:
         if isinstance(value, Name):
@@ -492,7 +529,16 @@ class _ArithmeticChecker(_Checker):
             if self._require_quantum(operand) is None:
                 return None
             operands.append(operand)
-        return operands[0], operands[1]
+
+        left, right = operands
+        if left.name == right.name:
+            self._reject(
+                f"a product cannot use '{left.name}' for both operands -- the "
+                "same qubits would enter the multiplier twice",
+                right,
+            )
+            return None
+        return left, right
 
     def _require_quantum(self, name: Name) -> Type | None:
         declared = _declared_type(name)
