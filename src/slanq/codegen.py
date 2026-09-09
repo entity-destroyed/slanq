@@ -66,12 +66,15 @@ QISKIT_METHODS: dict[str, str] = {
     "CX": "cx", "CY": "cy", "CZ": "cz", "CH": "ch", "SWAP": "swap", "CCX": "ccx",
 }
 
-# `round` is not Python's: Slanq rounds a half away from zero, Python to even.
+# Two of these are not Python's. Slanq rounds a half away from zero, Python to
+# even; and Slanq's sqrt takes a negative input to a complex result, which an
+# amplitude list may legitimately hold, while math.sqrt raises there. Both are
+# emitted as helpers so the generated file computes what the compiler did.
 PYTHON_FUNCTIONS: dict[str, str] = {
     "floor": "math.floor",
     "ceil": "math.ceil",
     "round": "_round",
-    "sqrt": "math.sqrt",
+    "sqrt": "_sqrt",
 }
 
 # Matches analysis.py's NORMALIZATION_TOLERANCE: below this, a `{}` amplitude
@@ -83,6 +86,15 @@ ROUND_HELPER = [
     "def _round(value: float) -> int:",
     INDENT + '"""Slanq rounds a half away from zero; Python\'s round() rounds to even."""',
     INDENT + "return math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5)",
+]
+
+SQRT_HELPER = [
+    "def _sqrt(value: float | complex) -> float | complex:",
+    INDENT + '"""A negative real or complex input promotes to a complex result',
+    INDENT + '(with the expected i); a nonnegative real input stays a float."""',
+    INDENT + "if isinstance(value, complex) or value < 0:",
+    INDENT * 2 + "return cmath.sqrt(value)",
+    INDENT + "return math.sqrt(value)",
 ]
 
 
@@ -98,6 +110,8 @@ def generate_qiskit(module: IRModule, *, source_name: str) -> str:
     lines += generator.import_lines(module)
     if generator.needs_round:
         lines += ["", ""] + ROUND_HELPER
+    if generator.needs_sqrt:
+        lines += ["", ""] + SQRT_HELPER
     if module.params:
         lines += ["", ""] + _param_object_lines(module)
     lines += [
@@ -179,6 +193,7 @@ class _Generator:
         self.needs_numpy = False
         self.needs_math = False
         self.needs_round = False
+        self.needs_sqrt = False
         self.needs_state_preparation = False
         self.needs_xgate = False
         self.needs_cdkm_adder = False
@@ -187,8 +202,10 @@ class _Generator:
 
     def import_lines(self, module: IRModule) -> list[str]:
         standard = ["import sys"]
-        if self.needs_math or self.needs_round:
+        if self.needs_math or self.needs_round or self.needs_sqrt:
             standard.insert(0, "import math")
+        if self.needs_sqrt:
+            standard.insert(0, "import cmath")
 
         qiskit_names = ["QuantumCircuit", "QuantumRegister"]
         if module.clbits:
@@ -586,6 +603,8 @@ class _Generator:
         name = expression.callee.name
         if name == "round":
             self.needs_round = True
+        elif name == "sqrt":
+            self.needs_sqrt = True
         else:
             self.needs_math = True
         rendered = ", ".join(self.expression(argument) for argument in expression.args)

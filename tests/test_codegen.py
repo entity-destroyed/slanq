@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import math
 import sys
+from typing import Any
 
 import numpy
 import pytest
 
 from slanq.analysis import analyze
 from slanq.ast_nodes import Literal, Span
-from slanq.builtin import _round_half_away, const_value
+from slanq.builtin import _round_half_away, _sqrt, const_value
 from slanq.codegen import _Generator, generate_qiskit
 from slanq.compiler import compile_source
 from slanq.diagnostics import DiagnosticBag, SlanqError
@@ -231,9 +232,9 @@ def test_floor_and_ceil_map_to_math() -> None:
     assert "circuit.rx(math.floor(7 / 2) * math.ceil(1.2), q[0])" in source
 
 
-def test_sqrt_maps_to_math_as_an_angle_expression() -> None:
+def test_sqrt_maps_to_the_helper_as_an_angle_expression() -> None:
     source = _param_source("sqrt(2)")
-    assert "circuit.rx(math.sqrt(2), q[0])" in source
+    assert "circuit.rx(_sqrt(2), q[0])" in source
     assert "import math" in source
 
 
@@ -973,6 +974,53 @@ def test_declare_ancilla_op_is_the_only_thing_that_declares(span: Span) -> None:
     source = _generate(module)
     assert '_ancilla_0 = QuantumRegister(3, "_ancilla_0")' in source
     assert "circuit.add_register(_ancilla_0)" in source
+
+
+def _generated_helper(name: str, call: str) -> Any:
+    """The helper as the generated file itself defines it -- reached through a
+    real compilation, so a missing import shows up here too."""
+    result = compile_source(f"qbool q = false;\nRX({call}, q);\n", source_name="t.slanq")
+    assert not result.diagnostics.has_errors
+    assert result.qiskit_source is not None
+    namespace: dict[str, Any] = {}
+    exec(result.qiskit_source, namespace)  # noqa: S102
+    return namespace[name]
+
+
+@pytest.mark.parametrize(
+    "value", [-4.0, -1.0, -0.25, 0.0, 0.25, 1.0, 2.0, 1e-12, 1e12, 1 + 2j, -1j]
+)
+def test_the_generated_sqrt_agrees_with_the_compile_time_one(
+    value: float | complex,
+) -> None:
+    """Slanq's sqrt is not math.sqrt: a negative input gives a complex result,
+    which an amplitude list may hold. The compiler evaluates one of these at
+    compile time and the generated file the other, and nothing but this test
+    keeps the two from drifting -- `math.sqrt(-1)` in a generated file raised
+    at runtime for a program the compiler had accepted."""
+    generated = _generated_helper("_sqrt", "sqrt(2)")
+    assert generated(value) == _sqrt(value)
+    assert type(generated(value)) is type(_sqrt(value))
+
+
+@pytest.mark.parametrize(
+    "value", [-2.5, -1.5, -0.5, 0.0, 0.5, 1.5, 2.5, 3.49, -3.49, 1e15 + 0.5]
+)
+def test_the_generated_round_agrees_with_the_compile_time_one(value: float) -> None:
+    generated = _generated_helper("_round", "round(1.5)")
+    assert generated(value) == _round_half_away(value)
+
+
+def test_a_generated_sqrt_helper_brings_its_own_imports() -> None:
+    result = compile_source("qbool q = false;\nRX(sqrt(2), q);\n", source_name="t.slanq")
+    assert "import cmath" in result.qiskit_source
+    assert "import math" in result.qiskit_source
+
+
+def test_no_sqrt_helper_without_a_sqrt() -> None:
+    result = compile_source("qbool q = false;\nRX(1.5, q);\n", source_name="t.slanq")
+    assert "_sqrt" not in result.qiskit_source
+    assert "import cmath" not in result.qiskit_source
 
 
 def test_param_object_lines_for_scalar_and_array() -> None:
