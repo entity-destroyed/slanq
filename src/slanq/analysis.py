@@ -894,6 +894,18 @@ def _quantum_size_of(base: Name) -> int | None:
     return qubit_count(symbol.declared_type)
 
 
+class _QIfBodyChecker(_Checker):
+    """Runs after process expansion and loop unrolling, so a body that only
+    ever contained a call to an empty process, or a loop that turned out to
+    run zero times, is empty here too -- and an empty body is the one shape
+    that makes the whole qif, condition included, generate nothing."""
+
+    def visit_QIf(self, node: QIf) -> None:
+        self.generic_visit(node)
+        if not node.body.statements:
+            self._warn("this qif body is empty, so nothing is conditional", node.body)
+
+
 class _ParamTypeChecker(_Checker):
     """No Qiskit gate-synthesis primitive ever consumes a `Parameter` except as
     an already-present, real-valued angle or time -- never as a complex value
@@ -929,6 +941,7 @@ def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _ProbListChecker(bag).visit(ast)
     _AmplitudeListChecker(bag).visit(ast)
     _QIfConditionChecker(bag).visit(ast)
+    _QIfBodyChecker(bag).visit(ast)
     _ArithmeticChecker(bag).visit(ast)
     _ParamTypeChecker(bag).visit(ast)
 

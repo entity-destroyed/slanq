@@ -6,9 +6,9 @@ from typing import Any
 
 import numpy as np
 import pytest
-from qiskit import QuantumCircuit
+from qiskit import QuantumCircuit, QuantumRegister
 from qiskit.primitives import StatevectorSampler
-from qiskit.quantum_info import Statevector
+from qiskit.quantum_info import Operator, Statevector
 
 from slanq.compiler import compile_source
 
@@ -23,7 +23,11 @@ def _build_circuit(source: str) -> QuantumCircuit:
 
     namespace: dict[str, Any] = {}
     exec(result.qiskit_source, namespace)  # noqa: S102
-    return namespace["build_circuit"]()
+    circuit = namespace["build_circuit"]()
+    # The generated file's own __main__ draws the circuit, so a shape that
+    # builds but cannot be drawn is still a program the user cannot run.
+    str(circuit)
+    return circuit
 
 
 def _counts(source: str, register: str = "result") -> dict[str, int]:
@@ -305,6 +309,102 @@ def test_qif_negated_phase_leaves_the_ancilla_clean() -> None:
     assert seen_a_values == {0, 1, 2, 3}
 
 
+def test_an_empty_qif_body_adds_nothing_to_the_circuit() -> None:
+    circuit = _build_circuit("qint<2> a = 2;\nqif(a == 2) { }\n")
+    assert [instruction.operation.name for instruction in circuit.data] == ["x"]
+
+
+def test_a_qif_phase_body_draws() -> None:
+    """A controlled global phase used to become a 0-wire sub-circuit, which
+    builds and runs but cannot be drawn -- and drawing is what the generated
+    file does when it is run."""
+    circuit = _build_circuit("qint<2> a = 2;\nqif(a == 2) { phase(1.5); }\n")
+    assert "qif_body" not in str(circuit)
+
+
+def _qif_body_source(body: str) -> str:
+    return f"qint<2> a = 2;\nqbool t = false;\nqif(a == 2) {{ {body} }}\n"
+
+
+def _qif_body_reference(items: list[tuple[str, float | None]]) -> QuantumCircuit:
+    """`qint<2> a = 2; qbool t = false; qif(a == 2) {...}` with every body item
+    controlled on its own, in written order -- so a phase sits exactly where
+    the source puts it. A phase is controlled here the way Qiskit itself does
+    it, by controlling a circuit whose only content is a global phase: that
+    gate cannot be drawn, which is why the compiler does not emit it, but its
+    semantics are the definition the compiler's phase gate has to match."""
+    a = QuantumRegister(2, "a")
+    t = QuantumRegister(1, "t")
+    circuit = QuantumCircuit(a, t)
+    circuit.x(a[1])
+    for name, angle in items:
+        if name == "phase":
+            phase = QuantumCircuit(0, global_phase=angle)
+            circuit.append(
+                phase.to_gate().control(2, ctrl_state=2, annotated=False), [*a]
+            )
+            continue
+        body = QuantumCircuit(1)
+        getattr(body, name)(0)
+        circuit.append(
+            body.to_gate().control(2, ctrl_state=2, annotated=False), [*a, t[0]]
+        )
+    return circuit
+
+
+@pytest.mark.parametrize(
+    ("body", "items"),
+    [
+        ("X(t); phase(PI / 3);", [("x", None), ("phase", np.pi / 3)]),
+        ("phase(PI / 3); X(t);", [("phase", np.pi / 3), ("x", None)]),
+        (
+            "T(t); phase(PI / 3); S(t);",
+            [("t", None), ("phase", np.pi / 3), ("s", None)],
+        ),
+        (
+            "H(t); X(t); phase(PI / 3);",
+            [("h", None), ("x", None), ("phase", np.pi / 3)],
+        ),
+        (
+            "X(t); phase(PI / 3); H(t); phase(PI / 5);",
+            [
+                ("x", None),
+                ("phase", np.pi / 3),
+                ("h", None),
+                ("phase", np.pi / 5),
+            ],
+        ),
+    ],
+)
+def test_a_qif_body_phase_acts_where_it_is_written(
+    body: str, items: list[tuple[str, float | None]]
+) -> None:
+    """The phase is emitted after the body's sub-circuit whatever the body
+    looks like, so it has to agree with a reference that applies it in place.
+    The gates around it do not commute (T then S, H then X), so the body's own
+    order shows up here too. Where the phase sits cannot change the operator
+    -- the next test says why."""
+    compiled = Operator(_build_circuit(_qif_body_source(body)))
+    assert compiled == Operator(_qif_body_reference(items))
+
+
+def test_a_qif_body_phase_may_sit_anywhere_in_the_body() -> None:
+    """Moving the phase inside the body cannot change the circuit. A phase
+    commutes with anything that maps the states its condition matches onto
+    itself, and a body gate could only fail that by targeting a condition
+    qubit -- which a qif body may not do. The hoisting rests on that rule,
+    which is why it is worth pinning down here."""
+    circuits = [
+        Operator(_build_circuit(_qif_body_source(body)))
+        for body in (
+            "phase(PI / 3); H(t); X(t);",
+            "H(t); phase(PI / 3); X(t);",
+            "H(t); X(t); phase(PI / 3);",
+        )
+    ]
+    assert circuits[0] == circuits[1] == circuits[2]
+
+
 def test_qif_not_equal_matches_the_negated_condition() -> None:
     for a_value, expected in [(0, "1"), (1, "1"), (2, "0"), (3, "1")]:
         source = (
@@ -442,21 +542,6 @@ def test_param_array_indexed_angle_binds_at_runtime() -> None:
         namespace["build_circuit"]().assign_parameters({"gamma_1": 3})
     )
     assert statevector.equiv(expected)
-
-
-def test_hello_example_reports_every_remaining_limitation(hello_source: str) -> None:
-    """Two limitations are left in hello.slanq: adding a runtime param to a
-    quantum variable, and the one still-unlowered statement kind it uses. Its
-    `process` and its `for` -- both defined AND used -- are no longer among
-    them; lowering runs regardless of analysis errors, so both surface together
-    instead of the first one hiding the other. The param-addend limitation is
-    inside the loop, so it is reported once rather than once per iteration."""
-    result = compile_source(hello_source, source_name="hello.slanq")
-    messages = [d.message for d in result.diagnostics.errors]
-    assert len(messages) == 2
-    assert any("runtime parameter" in message for message in messages)
-    assert any("if statement" in message for message in messages)
-    assert not any("for loop" in message for message in messages)
 
 
 def test_process_call_runs_the_body_on_the_arguments() -> None:

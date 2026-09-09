@@ -476,12 +476,149 @@ def test_qif_negated_uses_an_ancilla(span: Span) -> None:
     )
     assert "circuit.x(_ancilla_0[0])" in source
     assert (
-        "circuit.append(_qif_body_1.to_gate().control(1, annotated=False), "
-        "[_ancilla_0[0], out[0]])" in source
+        "circuit.append(_qif_body_1.to_gate().control(1, ctrl_state=1, "
+        "annotated=False), [_ancilla_0[0], out[0]])" in source
     )
 
 
-def test_qif_phase_only_body_needs_no_local_registers(span: Span) -> None:
+def _phase_only_qif(span: Span, ctrl_state: int) -> IRModule:
+    condition = QubitRef(name="a", size=2)
+    return IRModule(
+        qubits=[condition],
+        body=IRBlock(
+            ops=[
+                QIfOp(
+                    span=span,
+                    direct_qubits=[condition],
+                    ctrl_state=ctrl_state,
+                    clause_ancillas=[],
+                    negated=False,
+                    ancilla=None,
+                    body=IRBlock(
+                        ops=[PhaseOp(span=span, angle=Literal(span=span, value=1.5))]
+                    ),
+                )
+            ]
+        ),
+    )
+
+
+def test_qif_phase_only_body_becomes_a_phase_gate_on_the_condition(span: Span) -> None:
+    """A controlled global phase is a phase gate on the control qubits, so no
+    sub-circuit is built at all -- a 0-wire one cannot be drawn once
+    controlled, and drawing is what the generated file's __main__ does."""
+    source = _generate(_phase_only_qif(span, ctrl_state=2))
+    assert "QuantumCircuit(0" not in source
+    assert "qif_body" not in source
+    assert "circuit.mcp(1.5, [a[0]], a[1])" in source
+
+
+def test_qif_phase_only_body_conjugates_the_zero_controls(span: Span) -> None:
+    """A phase gate fires on |1...1>, so every control the condition wants at
+    zero -- here a[0], since ctrl_state 2 is 0b10 -- is X-conjugated."""
+    source = _generate(_phase_only_qif(span, ctrl_state=2))
+    lines = [line.strip() for line in source.splitlines()]
+    phase = lines.index("circuit.mcp(1.5, [a[0]], a[1])")
+    assert lines[phase - 1] == "circuit.x(a[0])"
+    assert lines[phase + 1] == "circuit.x(a[0])"
+
+
+def test_qif_phase_only_body_needs_no_conjugation_on_an_all_ones_condition(
+    span: Span,
+) -> None:
+    source = _generate(_phase_only_qif(span, ctrl_state=3))
+    assert "circuit.x(" not in source
+    assert "circuit.mcp(1.5, [a[0]], a[1])" in source
+
+
+def test_qif_single_qubit_condition_takes_a_plain_phase_gate(span: Span) -> None:
+    condition = QubitRef(name="a", size=1)
+    module = IRModule(
+        qubits=[condition],
+        body=IRBlock(
+            ops=[
+                QIfOp(
+                    span=span,
+                    direct_qubits=[condition],
+                    ctrl_state=1,
+                    clause_ancillas=[],
+                    negated=False,
+                    ancilla=None,
+                    body=IRBlock(
+                        ops=[PhaseOp(span=span, angle=Literal(span=span, value=1.5))]
+                    ),
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert "circuit.p(1.5, a[0])" in source
+
+
+def test_qif_phases_are_summed_into_one_gate(span: Span) -> None:
+    condition = QubitRef(name="a", size=1)
+    module = IRModule(
+        qubits=[condition],
+        body=IRBlock(
+            ops=[
+                QIfOp(
+                    span=span,
+                    direct_qubits=[condition],
+                    ctrl_state=1,
+                    clause_ancillas=[],
+                    negated=False,
+                    ancilla=None,
+                    body=IRBlock(
+                        ops=[
+                            PhaseOp(span=span, angle=Literal(span=span, value=1.5)),
+                            PhaseOp(span=span, angle=Literal(span=span, value=0.25)),
+                        ]
+                    ),
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert "circuit.p(1.5 + 0.25, a[0])" in source
+
+
+def test_qif_mixed_body_keeps_the_gates_in_a_sub_circuit(span: Span) -> None:
+    """The phase leaves the sub-circuit even when the body has gates too, so
+    there is one rule for a body phase and not two."""
+    condition = QubitRef(name="a", size=2)
+    body_target = QubitRef(name="out", size=1)
+    module = IRModule(
+        qubits=[condition, body_target],
+        body=IRBlock(
+            ops=[
+                QIfOp(
+                    span=span,
+                    direct_qubits=[condition],
+                    ctrl_state=2,
+                    clause_ancillas=[],
+                    negated=False,
+                    ancilla=None,
+                    body=IRBlock(
+                        ops=[
+                            PhaseOp(span=span, angle=Literal(span=span, value=1.5)),
+                            GateOp(span=span, name="X", targets=[body_target]),
+                        ]
+                    ),
+                )
+            ]
+        ),
+    )
+    source = _generate(module)
+    assert "global_phase" not in source
+    assert '_qif_body_1 = QuantumCircuit(1, name="qif_body")' in source
+    assert (
+        "circuit.append(_qif_body_1.to_gate().control(2, ctrl_state=2, "
+        "annotated=False), [*a, out[0]])" in source
+    )
+    assert "circuit.mcp(1.5, [a[0]], a[1])" in source
+
+
+def test_qif_empty_body_generates_nothing(span: Span) -> None:
     condition = QubitRef(name="a", size=2)
     module = IRModule(
         qubits=[condition],
@@ -494,16 +631,15 @@ def test_qif_phase_only_body_needs_no_local_registers(span: Span) -> None:
                     clause_ancillas=[],
                     negated=False,
                     ancilla=None,
-                    body=IRBlock(
-                        ops=[PhaseOp(span=span, angle=Literal(span=span, value=1.5))]
-                    ),
+                    body=IRBlock(ops=[]),
                 )
             ]
         ),
     )
     source = _generate(module)
-    assert '_qif_body_1 = QuantumCircuit(0, name="qif_body")' in source
-    assert "_qif_body_1.global_phase += 1.5" in source
+    assert "qif_body" not in source
+    assert "circuit.x(" not in source
+    assert "circuit.p(" not in source
 
 
 def test_qif_indexed_condition_qubit_mirrors(span: Span) -> None:

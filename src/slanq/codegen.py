@@ -383,24 +383,47 @@ class _Generator:
         return [f"{circuit_var}.append(StatePreparation([{rendered}]), {op.target.name})"]
 
     def _qif_lines(self, op: QIfOp, circuit_var: str) -> list[str]:
-        self._qif_counter += 1
-        body_var = f"_qif_body_{self._qif_counter}"
+        # A global phase gets no wire in the sub-circuit, because controlling
+        # one is exactly a phase gate on the control qubits themselves. A body
+        # made only of phases therefore needs no sub-circuit at all.
+        phases = [sub_op for sub_op in op.body.ops if isinstance(sub_op, PhaseOp)]
+        gates = [sub_op for sub_op in op.body.ops if not isinstance(sub_op, PhaseOp)]
+        if not phases and not gates:
+            return []
 
-        # The sub-circuit gets one wire per qubit the body actually touches,
-        # never a whole register: a register would drag in its untouched
-        # qubits too, and if one of those is a condition qubit it would then
-        # appear twice in the append list below -- `CircuitError: duplicate
-        # bit arguments` at generated-file runtime, for a program whose
-        # condition and body do touch different qubits (`qif(a[0]) { X(a[1]); }`).
-        body_qubits = _body_qubits(op.body)
-        local = {
-            qubit: f"{body_var}.qubits[{wire}]"
-            for wire, qubit in enumerate(body_qubits)
-        }
-        lines = [f'{body_var} = QuantumCircuit({len(body_qubits)}, name="qif_body")']
-        for sub_op in op.body.ops:
-            lines += self.op_lines(sub_op, body_var, qubits=local)
-        body_sources = [f"{name}[{index}]" for name, index in body_qubits]
+        lines: list[str] = []
+        body_var = ""
+        body_sources: list[str] = []
+        if gates:
+            self._qif_counter += 1
+            body_var = f"_qif_body_{self._qif_counter}"
+
+            # The sub-circuit gets one wire per qubit the body actually
+            # touches, never a whole register: a register would drag in its
+            # untouched qubits too, and if one of those is a condition qubit
+            # it would then appear twice in the append list below --
+            # `CircuitError: duplicate bit arguments` at generated-file
+            # runtime, for a program whose condition and body do touch
+            # different qubits (`qif(a[0]) { X(a[1]); }`).
+            body_qubits = _body_qubits(op.body)
+            local = {
+                qubit: f"{body_var}.qubits[{wire}]"
+                for wire, qubit in enumerate(body_qubits)
+            }
+            lines.append(
+                f'{body_var} = QuantumCircuit({len(body_qubits)}, name="qif_body")'
+            )
+            for sub_op in gates:
+                lines += self.op_lines(sub_op, body_var, qubits=local)
+            body_sources = [f"{name}[{index}]" for name, index in body_qubits]
+
+        angle = (
+            " + ".join(
+                self._wrapped(phase.angle, BINARY_PRECEDENCE["+"]) for phase in phases
+            )
+            if phases
+            else None
+        )
 
         # Each wide-negated clause needs its own ancilla, computed before
         # everything else and uncomputed after everything else -- proper
@@ -426,12 +449,17 @@ class _Generator:
         total_controls = sum(_operand_width(entry) for entry in op.direct_qubits)
 
         if not op.negated:
-            controlled = (
-                f"{body_var}.to_gate().control({total_controls}, "
-                f"ctrl_state={op.ctrl_state}, annotated=False)"
+            lines += self._controlled_body_lines(
+                circuit_var,
+                controls=condition_sources,
+                control_bits=[
+                    bit for entry in op.direct_qubits for bit in _operand_bits(entry)
+                ],
+                ctrl_state=op.ctrl_state,
+                body_var=body_var,
+                body_sources=body_sources,
+                angle=angle,
             )
-            qubits = ", ".join([*condition_sources, *body_sources])
-            lines.append(f"{circuit_var}.append({controlled}, [{qubits}])")
         else:
             # Negated, spanning more than one qubit: compute the positive
             # match into a fresh ancilla, flip it, run the body controlled by
@@ -449,10 +477,14 @@ class _Generator:
             lines.append(f"{circuit_var}.append({compute}, [{compute_qubits}])")
             lines.append(f"{circuit_var}.x({ancilla}[0])")
 
-            controlled_body = f"{body_var}.to_gate().control(1, annotated=False)"
-            controlled_qubits = ", ".join([f"{ancilla}[0]", *body_sources])
-            lines.append(
-                f"{circuit_var}.append({controlled_body}, [{controlled_qubits}])"
+            lines += self._controlled_body_lines(
+                circuit_var,
+                controls=[f"{ancilla}[0]"],
+                control_bits=[f"{ancilla}[0]"],
+                ctrl_state=1,
+                body_var=body_var,
+                body_sources=body_sources,
+                angle=angle,
             )
 
             lines.append(f"{circuit_var}.x({ancilla}[0])")
@@ -466,6 +498,56 @@ class _Generator:
             lines.append(f"{circuit_var}.x({name}[0])")
             lines.append(f"{circuit_var}.append({compute}, [{compute_qubits}])")
 
+        return lines
+
+    def _controlled_body_lines(
+        self,
+        circuit_var: str,
+        *,
+        controls: list[str],
+        control_bits: list[str],
+        ctrl_state: int,
+        body_var: str,
+        body_sources: list[str],
+        angle: str | None,
+    ) -> list[str]:
+        """The body under one control set: its gates as a controlled
+        sub-circuit, its phase as a phase gate on the controls themselves.
+        `control_bits` is that same control set one qubit at a time, which a
+        phase gate needs and a spread whole-register operand cannot give.
+
+        The phase is emitted after the gates whatever order the body was
+        written in. A phase commutes with exactly those operators that map the
+        set of states its condition matches onto itself; anything else would
+        have to move amplitude across that line, which takes a condition qubit
+        as a target. A qif body may not touch its own condition, so nothing in
+        one can. Loosening that rule breaks this."""
+        lines: list[str] = []
+        if body_sources:
+            controlled = (
+                f"{body_var}.to_gate().control({len(control_bits)}, "
+                f"ctrl_state={ctrl_state}, annotated=False)"
+            )
+            qubits = ", ".join([*controls, *body_sources])
+            lines.append(f"{circuit_var}.append({controlled}, [{qubits}])")
+
+        if angle is None:
+            return lines
+
+        # A phase gate fires on |1...1>, so a control the condition wants at
+        # zero is conjugated into that basis first.
+        zeros = [
+            bit
+            for position, bit in enumerate(control_bits)
+            if not (ctrl_state >> position) & 1
+        ]
+        lines += [f"{circuit_var}.x({bit})" for bit in zeros]
+        if len(control_bits) == 1:
+            lines.append(f"{circuit_var}.p({angle}, {control_bits[0]})")
+        else:
+            rest = ", ".join(control_bits[:-1])
+            lines.append(f"{circuit_var}.mcp({angle}, [{rest}], {control_bits[-1]})")
+        lines += [f"{circuit_var}.x({bit})" for bit in zeros]
         return lines
 
     def expression(self, expression: Expression) -> str:
@@ -558,6 +640,15 @@ def _spread_source(operand: QubitOperand) -> str:
 
 def _operand_width(operand: QubitOperand) -> int:
     return 1 if isinstance(operand, QubitBit) else operand.size
+
+
+def _operand_bits(operand: QubitOperand) -> list[str]:
+    """`operand` as one source per qubit, in the same order `_spread_source`
+    unpacks it in."""
+    if isinstance(operand, QubitBit):
+        return [_operand_source(operand)]
+    name = operand.ref.name if isinstance(operand, QubitSlice) else operand.name
+    return [f"{name}[{index}]" for index in range(operand.size)]
 
 
 def _qiskit_index(bit: QubitBit) -> int:

@@ -668,6 +668,33 @@ def test_qif_body_may_touch_a_different_variable(diagnostics_of: DiagnosticsOf) 
     ).has_errors
 
 
+def test_an_empty_qif_body_is_warned_about(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of("qint<2> a = 0; qif(a == 2) { }")
+    assert not bag.has_errors
+    assert "this qif body is empty" in bag.warnings[0].message
+
+
+def test_a_qif_body_emptied_by_unrolling_is_warned_about(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    """The body is written non-empty, so only the unrolled tree shows that
+    nothing is left in it."""
+    bag = diagnostics_of(
+        "qint<2> a = 0; qbool t = false;"
+        " qif(a == 2) { for(int i in range(0)) { X(t); } }"
+    )
+    assert not bag.has_errors
+    assert any("this qif body is empty" in d.message for d in bag.warnings)
+
+
+def test_a_qif_body_holding_only_a_phase_is_not_empty(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    bag = diagnostics_of("qint<2> a = 0; qif(a == 2) { phase(1.5); }")
+    assert not bag.has_errors
+    assert not bag.warnings
+
+
 def test_qif_negated_wide_equality_combines_with_and(
     diagnostics_of: DiagnosticsOf,
 ) -> None:
