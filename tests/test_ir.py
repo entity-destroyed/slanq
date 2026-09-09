@@ -36,11 +36,6 @@ def test_qubit_bit_compares_by_value() -> None:
     assert QubitBit(ref=ref, index=0) != QubitBit(ref=ref, index=1)
 
 
-def test_origin_defaults_to_user() -> None:
-    assert QubitRef(name="q", size=1).origin == "user"
-    assert QubitRef(name="$ancilla_0", size=1, origin="ancilla").origin == "ancilla"
-
-
 def test_ops_compare_by_identity(span: Span) -> None:
     ref = QubitRef(name="q", size=1)
     first = GateOp(span=span, name="H", targets=[QubitBit(ref=ref, index=0)])
@@ -58,7 +53,7 @@ def test_ops_are_hashable_so_analyses_can_key_on_them(span: Span) -> None:
 
 def test_ops_are_mutable_so_passes_can_rewrite_operands(span: Span) -> None:
     original = QubitRef(name="q", size=1)
-    replacement = QubitRef(name="$ancilla_0", size=1, origin="ancilla")
+    replacement = QubitRef(name="$ancilla_0", size=1)
     op = GateOp(span=span, name="H", targets=[QubitBit(ref=original, index=0)])
 
     op.targets[0] = QubitBit(ref=replacement, index=0)

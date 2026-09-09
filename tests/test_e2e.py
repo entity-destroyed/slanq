@@ -519,6 +519,30 @@ def test_multiply_accumulate_leaves_the_temp_register_clean() -> None:
     assert remainder == 0, "every ancilla (multiplier temp and both helpers) must be |0>"
 
 
+@pytest.mark.parametrize("width", [2, 3, 4, 5])
+def test_multiply_accumulate_works_at_every_target_width(width: int) -> None:
+    program = (
+        f"qint<2> a = 2;\nqint<2> b = 3;\nqint<{width}> c = 0;\n"
+        "c += a * b;\nint result = measure(c);\n"
+    )
+    expected = format((2 * 3) % (1 << width), f"0{width}b")
+    assert _counts(program) == {expected: SHOTS}
+
+
+def test_repeated_multiply_accumulate_reuses_its_registers() -> None:
+    """The second `c += a * b` allocates its own ancillas; nothing may be
+    declared twice, and every temporary must still come back to |0>."""
+    circuit = _build_circuit(
+        "qint<1> a = 1;\nqint<1> b = 1;\nqint<2> c = 0;\nc += a * b;\nc += a * b;\n"
+    )
+    statevector = Statevector.from_instruction(circuit)
+    (index,) = [i for i, amp in enumerate(statevector.data) if abs(amp) > 1e-9]
+    assert index & 0b1 == 1
+    assert (index >> 1) & 0b1 == 1
+    assert (index >> 2) & 0b11 == 2
+    assert index >> 4 == 0, "every ancilla of both statements must be |0>"
+
+
 def test_param_scalar_angle_binds_at_runtime() -> None:
     source = "param float theta;\nqbool q = false;\nRX(theta, q);\n"
     namespace: dict[str, Any] = {}

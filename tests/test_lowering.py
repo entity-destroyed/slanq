@@ -29,12 +29,15 @@ from slanq.diagnostics import DiagnosticBag
 from slanq.ir import (
     ArithmeticOp,
     ClbitRef,
+    DeclareAncillaOp,
     GateOp,
     InitOp,
     IRModule,
     MeasurementOp,
     MultiplyOp,
+    Op,
     PhaseOp,
+    QIfClauseAncilla,
     QIfOp,
     QubitBit,
     QubitRef,
@@ -448,7 +451,7 @@ def test_qif_negated_multi_qubit_equality_needs_an_ancilla(lower: LowerSource) -
     assert isinstance(qif, QIfOp)
     assert qif.ctrl_state == 2
     assert qif.negated is True
-    assert qif.ancilla == QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    assert qif.ancilla == QubitRef(name="_ancilla_0", size=1)
 
 
 def test_qif_ancilla_name_collision_is_reported(lower: LowerSource) -> None:
@@ -606,6 +609,74 @@ def test_mvp_c_lowers_completely(lower: LowerSource, mvp_c_source: str) -> None:
     ]
 
 
+def _computation_ops(module: IRModule) -> list[Op]:
+    """The module's operations without the ancilla declarations, which sit
+    wherever a register is allocated rather than in one block."""
+    return [op for op in module.body.ops if not isinstance(op, DeclareAncillaOp)]
+
+
+def _declared_ancillas(module: IRModule) -> list[QubitRef]:
+    return [
+        op.ref for op in module.body.ops if isinstance(op, DeclareAncillaOp)
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "qint<2> a = 0; qint<2> b = 0; a += b;",
+        "qint<3> a = 0; qint<2> b = 0; a += b;",
+        "qint<2> a = 0; a += 3;",
+        "qint<2> a = 0; qint<2> b = 0; qint<4> c = a * b;",
+        "qint<2> a = 0; qint<2> b = 0; qint<2> c = 0; c += a * b;",
+        "qint<2> a = 0; qint<2> b = 0; qint<3> c = 0; c += a * b;",
+        "qint<2> a = 0; qint<2> b = 0; qint<4> c = 0; c += a * b;",
+        "qint<2> a = 0; qint<2> b = 0; qint<5> c = 0; c += a * b;",
+        "qint<2> a = 0; qint<2> b = 0; qint<4> c = 0; c += a * b; c += a * b;",
+        "qint<2> a = 2; qbool t = false; qif(!(a == 2)) { X(t); }",
+        "qint<2> a = 2; qint<2> b = 3; qbool t = false;"
+        " qif(!(a == 2) && !(b == 3)) { X(t); }",
+    ],
+)
+def test_every_ancilla_is_declared_exactly_once(
+    lower: LowerSource, source: str
+) -> None:
+    """The invariant the declaration op exists for. `c += a * b` used to
+    declare the product register twice -- once for the multiply, once again
+    because the addend looked like an undeclared ancilla."""
+    module, bag = lower(source)
+    assert not bag.has_errors
+
+    declared = _declared_ancillas(module)
+    names = [ref.name for ref in declared]
+    assert len(names) == len(set(names))
+
+    used = {
+        ref.name
+        for op in _computation_ops(module)
+        for ref in _referenced_refs(op)
+        if ref.name.startswith("_ancilla_")
+    }
+    assert used == set(names)
+
+
+def _referenced_refs(op: Op) -> list[QubitRef]:
+    refs: list[QubitRef] = []
+    for value in vars(op).values():
+        for item in value if isinstance(value, list) else [value]:
+            if isinstance(item, QubitRef):
+                refs.append(item)
+            elif isinstance(item, QubitBit | QubitSlice):
+                refs.append(item.ref)
+            elif isinstance(item, QIfClauseAncilla):
+                refs.append(item.ancilla)
+                refs += [
+                    entry if isinstance(entry, QubitRef) else entry.ref
+                    for entry in item.qubits
+                ]
+    return refs
+
+
 def test_augassign_equal_width_needs_no_padding(lower: LowerSource) -> None:
     module, bag = lower("qint<2> a = 0; qint<2> b = 0; a += b;")
     assert not bag.has_errors
@@ -616,7 +687,7 @@ def test_augassign_equal_width_needs_no_padding(lower: LowerSource) -> None:
     assert arithmetic.addend == [module.qubits[1]]
     assert arithmetic.subtract is False
     assert arithmetic.encode_constant is None
-    assert arithmetic.helper == QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    assert arithmetic.helper == QubitRef(name="_ancilla_0", size=1)
 
 
 def test_augassign_subtract_sets_the_flag(lower: LowerSource) -> None:
@@ -636,7 +707,7 @@ def test_augassign_narrower_addend_gets_a_padding_ancilla(lower: LowerSource) ->
     # _ancilla_0 is the adder's own helper, allocated before the padding.
     assert arithmetic.addend == [
         module.qubits[1],
-        QubitRef(name="_ancilla_1", size=1, origin="ancilla"),
+        QubitRef(name="_ancilla_1", size=1),
     ]
 
 
@@ -662,7 +733,7 @@ def test_augassign_constant_addend_encodes_into_a_fresh_ancilla(
     assert arithmetic.encode_constant == 3
     (ancilla,) = arithmetic.addend
     # _ancilla_0 is the adder's own helper, allocated before the encoding ancilla.
-    assert ancilla == QubitRef(name="_ancilla_1", size=2, origin="ancilla")
+    assert ancilla == QubitRef(name="_ancilla_1", size=2)
 
 
 def test_augassign_constant_addend_wraps_modulo_the_target_width(
@@ -697,7 +768,7 @@ def test_quantum_decl_multiply_pads_the_narrower_operand(lower: LowerSource) -> 
     assert multiply.left == [module.qubits[0]]
     assert multiply.right == [
         module.qubits[1],
-        QubitRef(name="_ancilla_0", size=1, origin="ancilla"),
+        QubitRef(name="_ancilla_0", size=1),
     ]
 
 
@@ -710,7 +781,7 @@ def test_multiply_accumulate_uses_a_temp_and_uncomputes_it(
     module, bag = lower("qint<2> a = 0; qint<2> b = 0; qint<3> d = 0; d += a * b;")
     assert not bag.has_errors
 
-    ops = module.body.ops[-3:]
+    ops = _computation_ops(module)[-3:]
     assert [type(op).__name__ for op in ops] == ["MultiplyOp", "ArithmeticOp", "MultiplyOp"]
     forward, arithmetic, backward = ops
     assert isinstance(forward, MultiplyOp)

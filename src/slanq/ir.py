@@ -12,7 +12,6 @@ class QubitRef:
 
     name: str
     size: int
-    origin: Literal["user", "ancilla"] = "user"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -51,6 +50,16 @@ class Op:
     """
 
     span: Span
+
+
+@dataclass(kw_only=True, eq=False)
+class DeclareAncillaOp(Op):
+    """Brings a compiler-allocated register into the circuit. Emitted once,
+    where the register is allocated, so no later phase has to work out from an
+    operand whether it has been declared yet -- guessing that from the operand
+    is how the same register came to be declared twice."""
+
+    ref: QubitRef
 
 
 @dataclass(kw_only=True, eq=False)
@@ -199,6 +208,7 @@ class IRModule:
 __all__ = [
     "ArithmeticOp",
     "ClbitRef",
+    "DeclareAncillaOp",
     "GateOp",
     "IRBlock",
     "IRModule",

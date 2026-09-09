@@ -20,6 +20,7 @@ from slanq.builtin import BUILTIN_CONSTANTS, BUILTIN_FUNCTIONS, const_int
 from slanq.diagnostics import SlanqError
 from slanq.ir import (
     ArithmeticOp,
+    DeclareAncillaOp,
     GateOp,
     InitOp,
     IRBlock,
@@ -279,16 +280,16 @@ class _Generator:
         if isinstance(op, MultiplyOp):
             return self._multiply_lines(op, circuit_var)
 
+        if isinstance(op, DeclareAncillaOp):
+            return [
+                f'{op.ref.name} = QuantumRegister({op.ref.size}, "{op.ref.name}")',
+                f"{circuit_var}.add_register({op.ref.name})",
+            ]
+
         raise NotImplementedError(f"no code generation for {type(op).__name__}")
 
-    def _declare_ancilla(self, ref: QubitRef, circuit_var: str) -> list[str]:
-        return [
-            f'{ref.name} = QuantumRegister({ref.size}, "{ref.name}")',
-            f"{circuit_var}.add_register({ref.name})",
-        ]
-
     def _arithmetic_lines(self, op: ArithmeticOp, circuit_var: str) -> list[str]:
-        lines = self._declare_ancilla(op.helper, circuit_var)
+        lines: list[str] = []
 
         constant_ancilla: QubitRef | None = None
         encode_bits: list[int] = []
@@ -296,7 +297,6 @@ class _Generator:
             (addend_ancilla,) = op.addend
             assert isinstance(addend_ancilla, QubitRef)
             constant_ancilla = addend_ancilla
-            lines += self._declare_ancilla(constant_ancilla, circuit_var)
             encode_bits = [
                 bit
                 for bit in range(constant_ancilla.size)
@@ -304,10 +304,6 @@ class _Generator:
             ]
             for bit in encode_bits:
                 lines.append(f"{circuit_var}.x({constant_ancilla.name}[{bit}])")
-        else:
-            for operand in op.addend:
-                if isinstance(operand, QubitRef) and operand.origin == "ancilla":
-                    lines += self._declare_ancilla(operand, circuit_var)
 
         self.needs_cdkm_adder = True
         adder = f"CDKMRippleCarryAdder({op.target.size}, kind='fixed')"
@@ -329,14 +325,6 @@ class _Generator:
 
     def _multiply_lines(self, op: MultiplyOp, circuit_var: str) -> list[str]:
         lines: list[str] = []
-        if not op.inverse:
-            lines += self._declare_ancilla(op.helper, circuit_var)
-            for operand in [*op.left, *op.right]:
-                if isinstance(operand, QubitRef) and operand.origin == "ancilla":
-                    lines += self._declare_ancilla(operand, circuit_var)
-            if op.product.origin == "ancilla":
-                lines += self._declare_ancilla(op.product, circuit_var)
-
         self.needs_hrs_multiplier = True
         width = sum(_operand_width(operand) for operand in op.left)
         multiplier = (
@@ -432,8 +420,6 @@ class _Generator:
         for clause_ancilla in op.clause_ancillas:
             self.needs_xgate = True
             name = clause_ancilla.ancilla.name
-            lines += self._declare_ancilla(clause_ancilla.ancilla, circuit_var)
-
             clause_sources = [_spread_source(q) for q in clause_ancilla.qubits]
             clause_controls = sum(_operand_width(q) for q in clause_ancilla.qubits)
             compute = (
@@ -467,8 +453,6 @@ class _Generator:
             self.needs_xgate = True
             assert op.ancilla is not None
             ancilla = op.ancilla.name
-            lines += self._declare_ancilla(op.ancilla, circuit_var)
-
             compute = (
                 f"XGate().control({total_controls}, ctrl_state={op.ctrl_state}, "
                 "annotated=False)"

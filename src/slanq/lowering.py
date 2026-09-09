@@ -43,6 +43,7 @@ from slanq.diagnostics import DiagnosticBag
 from slanq.ir import (
     ArithmeticOp,
     ClbitRef,
+    DeclareAncillaOp,
     GateOp,
     InitOp,
     IRBlock,
@@ -523,6 +524,8 @@ class _Lowerer(NodeVisitor):
         )
 
     def _fresh_ancilla(self, span, size: int = 1) -> QubitRef | None:
+        """Allocates a register and declares it in the same breath, so the
+        declaration exists exactly once and stands before every use."""
         name = f"_ancilla_{self._ancilla_counter}"
         self._ancilla_counter += 1
         if name in self._declared_names:
@@ -533,7 +536,9 @@ class _Lowerer(NodeVisitor):
             )
             return None
         self._declared_names.add(name)
-        return QubitRef(name=name, size=size, origin="ancilla")
+        ref = QubitRef(name=name, size=size)
+        self.module.body.ops.append(DeclareAncillaOp(span=span, ref=ref))
+        return ref
 
     def _pad_to_width(
         self, ref: QubitRef, width: int, span

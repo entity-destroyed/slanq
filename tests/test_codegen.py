@@ -15,6 +15,7 @@ from slanq.diagnostics import DiagnosticBag, SlanqError
 from slanq.ir import (
     ArithmeticOp,
     ClbitRef,
+    DeclareAncillaOp,
     GateOp,
     InitOp,
     IRBlock,
@@ -447,7 +448,7 @@ def test_qif_direct_control_when_not_negated(span: Span) -> None:
 def test_qif_negated_uses_an_ancilla(span: Span) -> None:
     condition = QubitRef(name="a", size=2)
     body_target = QubitRef(name="out", size=1)
-    ancilla = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    ancilla = QubitRef(name="_ancilla_0", size=1)
     module = IRModule(
         qubits=[condition, body_target],
         body=IRBlock(
@@ -468,8 +469,6 @@ def test_qif_negated_uses_an_ancilla(span: Span) -> None:
     )
     source = _generate(module)
     assert "from qiskit.circuit.library import XGate" in source
-    assert '_ancilla_0 = QuantumRegister(1, "_ancilla_0")' in source
-    assert "circuit.add_register(_ancilla_0)" in source
     assert (
         "circuit.append(XGate().control(2, ctrl_state=2, annotated=False), "
         "[*a, _ancilla_0[0]])" in source
@@ -740,8 +739,8 @@ def test_qif_multiple_clause_ancillas_compute_and_uncompute_in_order(
     b = QubitRef(name="b", size=2)
     flag = QubitRef(name="flag", size=1)
     body_target = QubitRef(name="out", size=1)
-    ancilla_a = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
-    ancilla_b = QubitRef(name="_ancilla_1", size=1, origin="ancilla")
+    ancilla_a = QubitRef(name="_ancilla_0", size=1)
+    ancilla_b = QubitRef(name="_ancilla_1", size=1)
 
     module = IRModule(
         qubits=[a, b, flag, body_target],
@@ -779,14 +778,12 @@ def test_qif_multiple_clause_ancillas_compute_and_uncompute_in_order(
     # Computed a, then b, then the final combination, then uncomputed in the
     # reverse order: b first, then a -- proper LIFO nesting.
     assert compute_a < compute_b < final < uncompute_b < uncompute_a
-    assert "circuit.add_register(_ancilla_0)" in source
-    assert "circuit.add_register(_ancilla_1)" in source
 
 
 def test_arithmetic_op_renders_the_adder_call(span: Span) -> None:
     a = QubitRef(name="a", size=2)
     b = QubitRef(name="b", size=2)
-    helper = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    helper = QubitRef(name="_ancilla_0", size=1)
     module = IRModule(
         qubits=[a, b],
         body=IRBlock(
@@ -804,8 +801,6 @@ def test_arithmetic_op_renders_the_adder_call(span: Span) -> None:
     )
     source = _generate(module)
     assert "from qiskit.circuit.library import CDKMRippleCarryAdder" in source
-    assert '_ancilla_0 = QuantumRegister(1, "_ancilla_0")' in source
-    assert "circuit.add_register(_ancilla_0)" in source
     assert (
         "circuit.append(CDKMRippleCarryAdder(2, kind='fixed'), "
         "[*b, *a, _ancilla_0[0]])" in source
@@ -815,7 +810,7 @@ def test_arithmetic_op_renders_the_adder_call(span: Span) -> None:
 def test_arithmetic_op_subtract_uses_inverse(span: Span) -> None:
     a = QubitRef(name="a", size=2)
     b = QubitRef(name="b", size=2)
-    helper = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    helper = QubitRef(name="_ancilla_0", size=1)
     module = IRModule(
         qubits=[a, b],
         body=IRBlock(
@@ -838,11 +833,11 @@ def test_arithmetic_op_subtract_uses_inverse(span: Span) -> None:
     )
 
 
-def test_arithmetic_op_declares_a_padding_ancilla(span: Span) -> None:
+def test_arithmetic_op_pads_the_addend_with_an_ancilla(span: Span) -> None:
     a = QubitRef(name="a", size=3)
     b = QubitRef(name="b", size=2)
-    padding = QubitRef(name="_ancilla_1", size=1, origin="ancilla")
-    helper = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    padding = QubitRef(name="_ancilla_1", size=1)
+    helper = QubitRef(name="_ancilla_0", size=1)
     module = IRModule(
         qubits=[a, b],
         body=IRBlock(
@@ -859,8 +854,6 @@ def test_arithmetic_op_declares_a_padding_ancilla(span: Span) -> None:
         ),
     )
     source = _generate(module)
-    assert '_ancilla_1 = QuantumRegister(1, "_ancilla_1")' in source
-    assert "circuit.add_register(_ancilla_1)" in source
     assert (
         "circuit.append(CDKMRippleCarryAdder(3, kind='fixed'), "
         "[*b, *_ancilla_1, *a, _ancilla_0[0]])" in source
@@ -870,7 +863,7 @@ def test_arithmetic_op_declares_a_padding_ancilla(span: Span) -> None:
 def test_arithmetic_op_wider_addend_is_sliced(span: Span) -> None:
     a = QubitRef(name="a", size=2)
     b = QubitRef(name="b", size=3)
-    helper = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    helper = QubitRef(name="_ancilla_0", size=1)
     module = IRModule(
         qubits=[a, b],
         body=IRBlock(
@@ -895,8 +888,8 @@ def test_arithmetic_op_wider_addend_is_sliced(span: Span) -> None:
 
 def test_arithmetic_op_encodes_and_decodes_a_constant(span: Span) -> None:
     a = QubitRef(name="a", size=2)
-    ancilla = QubitRef(name="_ancilla_1", size=2, origin="ancilla")
-    helper = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    ancilla = QubitRef(name="_ancilla_1", size=2)
+    helper = QubitRef(name="_ancilla_0", size=1)
     module = IRModule(
         qubits=[a],
         body=IRBlock(
@@ -926,7 +919,7 @@ def test_multiply_op_renders_the_multiplier_call(span: Span) -> None:
     a = QubitRef(name="a", size=2)
     b = QubitRef(name="b", size=2)
     c = QubitRef(name="c", size=4)
-    helper = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    helper = QubitRef(name="_ancilla_0", size=1)
     module = IRModule(
         qubits=[a, b, c],
         body=IRBlock(
@@ -940,18 +933,17 @@ def test_multiply_op_renders_the_multiplier_call(span: Span) -> None:
     )
     source = _generate(module)
     assert "from qiskit.circuit.library import HRSCumulativeMultiplier" in source
-    assert '_ancilla_0 = QuantumRegister(1, "_ancilla_0")' in source
     assert (
         "circuit.append(HRSCumulativeMultiplier(2, num_result_qubits=4), "
         "[*a, *b, *c, _ancilla_0[0]])" in source
     )
 
 
-def test_multiply_op_inverse_does_not_redeclare_registers(span: Span) -> None:
+def test_multiply_op_inverse_renders_the_reversed_multiplier(span: Span) -> None:
     a = QubitRef(name="a", size=2)
     b = QubitRef(name="b", size=2)
-    temp = QubitRef(name="_ancilla_1", size=4, origin="ancilla")
-    helper = QubitRef(name="_ancilla_0", size=1, origin="ancilla")
+    temp = QubitRef(name="_ancilla_1", size=4)
+    helper = QubitRef(name="_ancilla_0", size=1)
     module = IRModule(
         qubits=[a, b],
         body=IRBlock(
@@ -964,11 +956,23 @@ def test_multiply_op_inverse_does_not_redeclare_registers(span: Span) -> None:
         ),
     )
     source = _generate(module)
-    assert "add_register" not in source
     assert (
         "circuit.append(HRSCumulativeMultiplier(2, num_result_qubits=4).inverse(), "
         "[*a, *b, *_ancilla_1, _ancilla_0[0]])" in source
     )
+
+
+def test_declare_ancilla_op_is_the_only_thing_that_declares(span: Span) -> None:
+    """No operation declares the registers it uses: an operand says nothing
+    about whether it has been brought into the circuit yet, and guessing that
+    from the operand is how one register came to be declared twice."""
+    ancilla = QubitRef(name="_ancilla_0", size=3)
+    module = IRModule(
+        body=IRBlock(ops=[DeclareAncillaOp(span=span, ref=ancilla)])
+    )
+    source = _generate(module)
+    assert '_ancilla_0 = QuantumRegister(3, "_ancilla_0")' in source
+    assert "circuit.add_register(_ancilla_0)" in source
 
 
 def test_param_object_lines_for_scalar_and_array() -> None:
