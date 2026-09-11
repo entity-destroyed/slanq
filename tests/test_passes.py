@@ -431,6 +431,31 @@ def test_a_loop_that_runs_zero_times_is_warned_about(expanded: Expanded) -> None
     assert len(ast.statements) == 1
 
 
+def test_an_empty_loop_body_is_warned_about(expanded: Expanded) -> None:
+    _, bag = expanded("qint<2> a = 0;\nfor(int i in range(3)) { }\nX(a[0]);\n")
+    assert not bag.has_errors
+    assert any("empty body" in message for message in _warnings(bag))
+
+
+def test_a_loop_that_runs_zero_times_with_an_empty_body_is_warned_about_once(
+    expanded: Expanded,
+) -> None:
+    """Both are true, and the iteration count is the more useful one to hear."""
+    _, bag = expanded("qint<2> a = 0;\nfor(int i in range(0)) { }\nX(a[0]);\n")
+    assert _warnings(bag) == [
+        "this loop runs zero times, so nothing in its body is compiled"
+    ]
+
+
+def test_an_empty_loop_body_in_a_template_is_not_warned_about(
+    expanded: Expanded,
+) -> None:
+    """Same rule as the zero-iteration warning: a process body is a template
+    until it is called, and the call sites are where anything is said."""
+    _, bag = expanded("process f(int n) { for(int i in range(n)) { } }\n")
+    assert not _warnings(bag)
+
+
 def test_an_empty_pass_of_a_nested_loop_is_not_warned_about(expanded: Expanded) -> None:
     """A triangular loop's first pass is legitimately empty; warning about it
     would fire on ordinary code."""

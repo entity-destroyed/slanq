@@ -25,6 +25,7 @@ from slanq.ast_nodes import (
     ProcParam,
     Program,
     QIf,
+    QIntType,
     QuantumDecl,
     Span,
     Symbol,
@@ -243,14 +244,31 @@ class _IndexChecker(_Checker):
                 node.index,
             )
 
+
+class _DeclarationChecker(_Checker):
     def visit_QuantumDecl(self, node: QuantumDecl) -> None:
         self.generic_visit(node)
 
         size = qubit_count(node.declared_type)
+        if size is not None and size < 1:
+            self._reject(
+                f"'{node.name}' needs at least one qubit; a register with none "
+                "holds no value",
+                node,
+            )
+            return
         if size is None or not isinstance(node.initializer, Expression):
             return
 
         value = self._value(node.initializer)
+        if isinstance(value, bool) and isinstance(node.declared_type, QIntType):
+            # `qbool q = 1` stays legal, because 0 and 1 are what one qubit holds
+            self._reject(
+                f"'{node.name}' is a qint, so it holds a number, not a "
+                "boolean",
+                node.initializer,
+            )
+            return
         if not isinstance(value, int):
             return
 
@@ -260,6 +278,15 @@ class _IndexChecker(_Checker):
                 f"{value} does not fit in '{node.name}', which holds {size} "
                 f"qubit(s) (allowed: 0..{largest})",
                 node.initializer,
+            )
+
+    def visit_ParamArrayDecl(self, node: ParamArrayDecl) -> None:
+        self.generic_visit(node)
+        if node.size < 1:
+            self._reject(
+                f"'{node.name}' needs at least one element; no index is in "
+                "range for an empty array",
+                node,
             )
 
 
@@ -982,6 +1009,7 @@ def _check_loops(ast: Program, bag: DiagnosticBag) -> None:
 
 
 def _check_types(ast: Program, bag: DiagnosticBag) -> None:
+    _DeclarationChecker(bag).visit(ast)
     _IndexChecker(bag).visit(ast)
     _CallChecker(bag).visit(ast)
     _ProbListChecker(bag).visit(ast)

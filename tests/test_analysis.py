@@ -321,6 +321,49 @@ def test_a_product_at_least_as_wide_as_its_operands_is_accepted(
     assert not diagnostics_of(source).has_errors
 
 
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("qint<0> a = 0;", "needs at least one qubit"),
+        ("param int g[0];", "needs at least one element"),
+    ],
+)
+def test_a_declared_size_of_zero_is_rejected(
+    diagnostics_of: DiagnosticsOf, source: str, expected: str
+) -> None:
+    """A register with no qubits holds no value, and an empty param array has
+    no index that could be in range -- both parse, and neither means
+    anything."""
+    bag = diagnostics_of(source)
+    assert bag.has_errors
+    assert expected in bag.errors[0].message
+
+
+@pytest.mark.parametrize("source", ["qint<1> a = 1;", "param int g[1];"])
+def test_a_declared_size_of_one_is_accepted(
+    diagnostics_of: DiagnosticsOf, source: str
+) -> None:
+    assert not diagnostics_of(source).has_errors
+
+
+@pytest.mark.parametrize("source", ["qint<2> a = true;", "qint<1> a = false;"])
+def test_a_boolean_does_not_initialize_a_qint(
+    diagnostics_of: DiagnosticsOf, source: str
+) -> None:
+    bag = diagnostics_of(source)
+    assert bag.has_errors
+    assert "holds a number, not a boolean" in bag.errors[0].message
+
+
+@pytest.mark.parametrize("source", ["qbool q = 1;", "qbool q = 0;", "qbool q = true;"])
+def test_a_qbool_takes_either_spelling_of_its_two_values(
+    diagnostics_of: DiagnosticsOf, source: str
+) -> None:
+    """The reverse of the rule above is not a type confusion: 0 and 1 are
+    exactly what one qubit holds."""
+    assert not diagnostics_of(source).has_errors
+
+
 def test_initializer_too_large_is_reported(diagnostics_of: DiagnosticsOf) -> None:
     bag = diagnostics_of("qint<2> a = 7;")
     assert bag.has_errors

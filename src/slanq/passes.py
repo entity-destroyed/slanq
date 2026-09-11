@@ -309,6 +309,19 @@ class _Unroller(_Copier):
             return False
         return super()._error(message, span)
 
+    def _warn_about_empty_loop(self, node: For, values: range) -> None:
+        if self.copied or self.silent:
+            return
+        if not values:
+            message = "this loop runs zero times, so nothing in its body is compiled"
+        elif not node.body.statements:
+            message = "this loop has an empty body, so it does nothing"
+        else:
+            return
+        self.bag.warning(
+            message, line=node.span.start_line, column=node.span.start_col
+        )
+
     def _substitute(self, node: Name) -> Expression | None:
         if node.resolved_symbol is not self.loop_var:
             return None
@@ -332,13 +345,7 @@ class _Unroller(_Copier):
         values = self._iteration_values(node)
         if values is None:
             return []
-        if len(values) == 0 and self.copied == 0 and not self.silent:
-            self.bag.warning(
-                "this loop runs zero times, so nothing in its body is compiled",
-                line=node.span.start_line,
-                column=node.span.start_col,
-            )
-            return []
+        self._warn_about_empty_loop(node, values)
         if len(values) == 0:
             return []
 

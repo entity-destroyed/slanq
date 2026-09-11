@@ -743,6 +743,32 @@ def test_a_dropped_clause_ancilla_leaves_no_declaration(lower: LowerSource) -> N
     assert len(_declared_ancillas(module)) == 1
 
 
+def test_a_circuit_a_simulator_cannot_hold_is_warned_about(
+    lower: LowerSource,
+) -> None:
+    _, bag = lower("qint<31> a = 0;")
+    assert not bag.has_errors
+    assert "needs 31 qubits" in bag.warnings[0].message
+
+
+def test_a_circuit_at_the_limit_is_not_warned_about(lower: LowerSource) -> None:
+    _, bag = lower("qint<30> a = 0;")
+    assert not bag.warnings
+
+
+def test_the_qubit_count_is_the_whole_circuit_including_ancillas(
+    lower: LowerSource,
+) -> None:
+    """Thirty declared qubits pass; the same program plus a `+=`, whose adder
+    needs one scratch qubit of its own, does not. What a simulator cannot hold
+    is the total, however the program divides it up."""
+    _, bag = lower("qint<10> a = 0; qint<10> b = 0; qint<10> c = 0;")
+    assert not bag.warnings
+
+    _, bag = lower("qint<10> a = 0; qint<10> b = 0; qint<10> c = 0; a += b;")
+    assert "needs 31 qubits" in bag.warnings[0].message
+
+
 def test_augassign_equal_width_needs_no_padding(lower: LowerSource) -> None:
     module, bag = lower("qint<2> a = 0; qint<2> b = 0; a += b;")
     assert not bag.has_errors

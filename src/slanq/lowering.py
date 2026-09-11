@@ -101,9 +101,16 @@ TOP_LEVEL_ONLY: dict[str, str] = {
 }
 
 
+# Above this many qubits a statevector simulator runs out of memory on an
+# ordinary machine. Only a warning: real hardware has far more, and a program
+# written for hardware is not wrong for being unsimulable.
+MAX_SIMULABLE_QUBITS = 30
+
+
 def lower_to_ir(ast: Program, bag: DiagnosticBag) -> IRModule:
     lowerer = _Lowerer(bag)
     lowerer.visit(ast)
+    lowerer.warn_if_unsimulable()
     return lowerer.module
 
 
@@ -883,6 +890,23 @@ class _Lowerer(NodeVisitor):
             "limitation of the compiler, not an error in the program",
             node.span,
         )
+
+    def warn_if_unsimulable(self) -> None:
+        """Counted here rather than in analysis because the ancillas the
+        compiler allocates are qubits too, and they exist only once lowering
+        has run. Counted over the whole circuit, not per register: what a
+        simulator cannot hold is the total, however it is divided up."""
+        total = sum(ref.size for ref in self.module.qubits) + sum(
+            op.ref.size
+            for op in self.module.body.ops
+            if isinstance(op, DeclareAncillaOp)
+        )
+        if total > MAX_SIMULABLE_QUBITS:
+            self.bag.warning(
+                f"this program needs {total} qubits, more than the "
+                f"{MAX_SIMULABLE_QUBITS} a simulator usually holds; it can "
+                "still be built and run on hardware"
+            )
 
     def _error(self, message: str, span) -> None:
         self.bag.error(message, line=span.start_line, column=span.start_col)
