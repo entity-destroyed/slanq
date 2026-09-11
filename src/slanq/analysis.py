@@ -91,13 +91,16 @@ def _shadowing_message(name: str) -> str:
 # break the generated file's syntax (a Python keyword) or shadow an internal
 # codegen name (silently breaking or crashing it at runtime, since it is a
 # plain identifier, not a string, and every occurrence in the emitted source
-# is this exact bare word). Must be kept in sync with codegen.py's literals.
+# is this exact bare word). Must be kept in sync with codegen.py's literals --
+# but only for the names that do not start with '_', since those the leading
+# underscore rule already reserves wholesale, however many of them appear
+# later (`_ancilla_N`, `_qif_body_N`, `_round`, `_sqrt`).
 _RESERVED_CODEGEN_NAMES = frozenset(
     {
-        "sys", "math", "np",
+        "sys", "math", "cmath", "np",
         "QuantumCircuit", "QuantumRegister", "ClassicalRegister", "Parameter",
         "StatePreparation", "XGate", "CDKMRippleCarryAdder", "HRSCumulativeMultiplier",
-        "circuit", "build_circuit", "build_bound_circuit", "bindings", "used", "_round",
+        "circuit", "build_circuit", "build_bound_circuit", "bindings", "used",
     }
 )
 
@@ -105,6 +108,7 @@ _RESERVED_CODEGEN_NAMES = frozenset(
 def _is_unusable_target_name(name: str) -> bool:
     return (
         keyword.iskeyword(name)
+        or name.startswith("_")
         or name in _RESERVED_CODEGEN_NAMES
         or not _survives_into_python(name)
     )
@@ -124,6 +128,11 @@ def _unusable_name_message(name: str) -> str:
         return (
             f"'{name}' is a reserved Python keyword and cannot be used as a "
             "Slanq name, because it would break the generated file"
+        )
+    if name.startswith("_"):
+        return (
+            f"'{name}' starts with '_', which is reserved for the compiler's "
+            "own generated names"
         )
     if not _survives_into_python(name):
         return (

@@ -538,6 +538,44 @@ def test_reserved_name_check_covers_nested_declarations(
     assert any("reserved for the compiler" in error.message for error in bag.errors)
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "qbool _x = false;",
+        "qint<2> _x = 0;",
+        "int _x = 1;",
+        "param float _x;",
+        "param int _x[2];",
+        "process _p(qint x) { X(x); }",
+        "process p(qint _x) { X(_x); }",
+        "qint<2> a = 0; for(int _i in range(2)) { X(a[_i]); }",
+        "qbool _ = false;",
+    ],
+)
+def test_a_name_starting_with_an_underscore_is_rejected(
+    diagnostics_of: DiagnosticsOf, source: str
+) -> None:
+    """The compiler's own generated names all start with an underscore, and
+    there are more of them every time the generator grows (`_ancilla_N`,
+    `_qif_body_N`, `_round`, `_sqrt`). Reserving the shape rather than listing
+    the names is what makes that list impossible to fall behind -- it had
+    already fallen behind on `_sqrt`. The rule covers every kind of
+    declaration, including the ones substituted away before code generation,
+    so there is no exception to remember."""
+    bag = diagnostics_of(source)
+    assert bag.has_errors
+    assert any("starts with '_'" in error.message for error in bag.errors)
+
+
+@pytest.mark.parametrize(
+    "source", ["qbool q_ = false;", "qbool a_b = false;", "int x2_ = 1;"]
+)
+def test_an_underscore_elsewhere_in_a_name_is_accepted(
+    diagnostics_of: DiagnosticsOf, source: str
+) -> None:
+    assert not diagnostics_of(source).has_errors
+
+
 def test_gate_used_as_a_value_is_reported(diagnostics_of: DiagnosticsOf) -> None:
     bag = diagnostics_of("qbool q = false; int x = H(q);")
     assert bag.has_errors

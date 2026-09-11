@@ -9,7 +9,6 @@ from slanq.ast_nodes import (
     BoolType,
     Call,
     ClassicalDecl,
-    Declaration,
     Expression,
     ExprStatement,
     FloatType,
@@ -119,18 +118,7 @@ class _Lowerer(NodeVisitor):
         self.bag = bag
         self.module = IRModule()
         self.qubits: dict[str, QubitRef] = {}
-        self._declared_names: set[str] = set()
         self._ancilla_counter = 0
-
-    def visit_Program(self, node: Program) -> None:
-        # Needed only to pick ancilla names that cannot collide with anything
-        # the program itself declares.
-        self._declared_names = {
-            statement.name
-            for statement in node.statements
-            if isinstance(statement, Declaration)
-        }
-        self.generic_visit(node)
 
     def generic_visit(self, node):
         if isinstance(node, Statement):
@@ -238,16 +226,12 @@ class _Lowerer(NodeVisitor):
             return
 
         helper = self._fresh_ancilla(node.span)
-        if helper is None:
-            return
 
         if isinstance(value, Name):
             addend_ref = self._register(value)
             if addend_ref is None:
                 return
             addend = self._pad_to_width(addend_ref, target.size, node.span)
-            if addend is None:
-                return
             self.module.body.ops.append(
                 ArithmeticOp(
                     span=node.span,
@@ -265,8 +249,6 @@ class _Lowerer(NodeVisitor):
             self._unreachable("an addend that is not a whole constant", node.span)
             return
         ancilla = self._fresh_ancilla(node.span, size=target.size)
-        if ancilla is None:
-            return
         self.module.body.ops.append(
             ArithmeticOp(
                 span=node.span,
@@ -287,8 +269,6 @@ class _Lowerer(NodeVisitor):
         top_ancilla = None
         if negated:
             top_ancilla = self._fresh_ancilla(node.span)
-            if top_ancilla is None:
-                return
 
         body = IRBlock()
         for statement in node.body.statements:
@@ -648,34 +628,24 @@ class _Lowerer(NodeVisitor):
         # The flipped ancilla is then just another 1-bit AND term -- negating
         # one clause needs no OR, only negating a whole subexpression does.
         ancilla = self._fresh_ancilla(clause.span)
-        if ancilla is None:
-            return None
         return (
             [QubitBit(ref=ancilla, index=0)],
             [1],
             QIfClauseAncilla(qubits=[ref], ctrl_state=constant, ancilla=ancilla),
         )
 
-    def _fresh_ancilla(self, span, size: int = 1) -> QubitRef | None:
+    def _fresh_ancilla(self, span, size: int = 1) -> QubitRef:
         """Allocates a register and declares it in the same breath, so the
         declaration exists exactly once and stands before every use."""
         name = f"_ancilla_{self._ancilla_counter}"
         self._ancilla_counter += 1
-        if name in self._declared_names:
-            self._error(
-                f"internal name '{name}' collides with a declaration in this "
-                "program; rename it to compile this",
-                span,
-            )
-            return None
-        self._declared_names.add(name)
         ref = QubitRef(name=name, size=size)
         self.module.body.ops.append(DeclareAncillaOp(span=span, ref=ref))
         return ref
 
     def _pad_to_width(
         self, ref: QubitRef, width: int, span
-    ) -> list[QubitOperand] | None:
+    ) -> list[QubitOperand]:
         """`ref`'s bits, concatenated with a fresh 0-ancilla if it is
         narrower than `width`, or sliced to its low bits if it is wider --
         the CDKM/HRS adder and multiplier both preserve their `a`/`b`
@@ -685,8 +655,6 @@ class _Lowerer(NodeVisitor):
         if ref.size > width:
             return [QubitSlice(ref=ref, size=width)]
         padding = self._fresh_ancilla(span, size=width - ref.size)
-        if padding is None:
-            return None
         return [ref, padding]
 
     def _lower_multiply_operands(
@@ -701,11 +669,10 @@ class _Lowerer(NodeVisitor):
             return None
 
         width = max(left_ref.size, right_ref.size)
-        left_operand = self._pad_to_width(left_ref, width, span)
-        right_operand = self._pad_to_width(right_ref, width, span)
-        if left_operand is None or right_operand is None:
-            return None
-        return left_operand, right_operand
+        return (
+            self._pad_to_width(left_ref, width, span),
+            self._pad_to_width(right_ref, width, span),
+        )
 
     def _lower_amplitude_decl(
         self, node: QuantumDecl, size: int, initializer: AmplitudeList
@@ -741,8 +708,6 @@ class _Lowerer(NodeVisitor):
             return
         left, right = operands
         helper = self._fresh_ancilla(node.span)
-        if helper is None:
-            return
 
         ref = QubitRef(name=node.name, size=size)
         self.qubits[node.name] = ref
@@ -770,11 +735,7 @@ class _Lowerer(NodeVisitor):
         # Sized 2*width so the product is never truncated before the '+='
         # below applies target's own, possibly narrower, width rule to it.
         temp = self._fresh_ancilla(span, size=2 * width)
-        if temp is None:
-            return
         multiply_helper = self._fresh_ancilla(span)
-        if multiply_helper is None:
-            return
         self.module.body.ops.append(
             MultiplyOp(
                 span=span,
@@ -787,11 +748,7 @@ class _Lowerer(NodeVisitor):
         )
 
         add_helper = self._fresh_ancilla(span)
-        if add_helper is None:
-            return
         addend = self._pad_to_width(temp, target.size, span)
-        if addend is None:
-            return
         self.module.body.ops.append(
             ArithmeticOp(
                 span=span,

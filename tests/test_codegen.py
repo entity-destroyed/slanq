@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import math
 import sys
 from typing import Any
@@ -7,7 +8,7 @@ from typing import Any
 import numpy
 import pytest
 
-from slanq.analysis import analyze
+from slanq.analysis import _RESERVED_CODEGEN_NAMES, analyze
 from slanq.ast_nodes import Literal, Span
 from slanq.builtin import _round_half_away, _sqrt, const_value
 from slanq.codegen import _Generator, generate_qiskit
@@ -1021,6 +1022,73 @@ def test_no_sqrt_helper_without_a_sqrt() -> None:
     result = compile_source("qbool q = false;\nRX(1.5, q);\n", source_name="t.slanq")
     assert "_sqrt" not in result.qiskit_source
     assert "import cmath" not in result.qiskit_source
+
+
+_AUDIT_SOURCE = (
+    "param float theta;\nparam int gamma[3];\n"
+    "qint<3> a = 0;\nqint<2> b = 2;\nqint<4> c = 0;\nqbool flag = true;\n"
+    "qint<1> amp = {0.6, 0.8};\nqint<2> mix = [0, 0.5, 0.5, 0];\n"
+    "H(a);\nRX(theta, b[0]);\nRZ(gamma[1], b[1]);\n"
+    "RY(round(1.5) + sqrt(2), a[0]);\n"
+    "a += b;\na -= 1;\nc += a * b;\nphase(PI / 3);\n"
+    "qif(b == 2) { phase(PI / 5); X(flag); }\n"
+    "qif(!(b == 2)) { X(flag); }\n"
+    "for(int i in range(2)) { X(a[i]); }\n"
+    "process p(qint x, qint y) { x += y; }\np(a, b);\n"
+    "int result = measure(a);\n"
+)
+_AUDIT_DECLARED = {"theta", "gamma", "a", "b", "c", "flag", "amp", "mix", "result"}
+
+
+def _bound_names(tree: ast.Module) -> set[str]:
+    """Every name the generated file binds where the program's own names also
+    live. A comprehension has its own scope, and so does a helper function
+    whose body never contains anything from the program -- neither can
+    collide, so neither counts."""
+    private: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.comprehension):
+            private |= {
+                name.id for name in ast.walk(node.target) if isinstance(name, ast.Name)
+            }
+        elif isinstance(node, ast.FunctionDef) and node.name.startswith("_"):
+            private |= {argument.arg for argument in node.args.args}
+            private |= {
+                name.id
+                for name in ast.walk(node)
+                if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store)
+            }
+
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            bound.add(node.id)
+        elif isinstance(node, ast.FunctionDef):
+            bound.add(node.name)
+        elif isinstance(node, ast.alias):
+            bound.add((node.asname or node.name).split(".")[0])
+    return bound - private
+
+
+def test_every_name_the_generated_file_binds_is_accounted_for() -> None:
+    """`_RESERVED_CODEGEN_NAMES` is kept in sync with the generator by hand, and
+    a name the generator starts emitting without being added there collides
+    silently with a variable of the same name. This audit reads the generated
+    file back and insists every name it binds is either the program's own, or
+    reserved, or starts with an underscore -- which the language reserves
+    wholesale. It is how `cmath` turned up missing."""
+    result = compile_source(_AUDIT_SOURCE, source_name="audit.slanq")
+    assert not result.diagnostics.has_errors
+    assert result.qiskit_source is not None
+
+    unaccounted = {
+        name
+        for name in _bound_names(ast.parse(result.qiskit_source))
+        if not name.startswith("_")
+        and name not in _RESERVED_CODEGEN_NAMES
+        and name not in _AUDIT_DECLARED
+    }
+    assert unaccounted == set()
 
 
 def test_param_object_lines_for_scalar_and_array() -> None:
