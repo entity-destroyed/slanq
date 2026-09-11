@@ -35,6 +35,10 @@ packages = ["src/slanq"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = []
+# Skipped by default: these compile a file and run it in a fresh interpreter,
+# which costs seconds rather than milliseconds. Run them with `-m slow`.
+addopts = "-m 'not slow'"
+markers = ["slow: compiles and runs the generated file in a separate process"]
 
 [tool.ruff]
 line-length = 100

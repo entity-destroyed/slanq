@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -58,3 +61,66 @@ def test_missing_command_exits_with_usage_error() -> None:
     with pytest.raises(SystemExit) as excinfo:
         main([])
     assert excinfo.value.code == 2
+
+
+RUNNABLE_PROGRAMS = {
+    "gates and measurement": (
+        "qint<2> q = 0;\nH(q[0]);\nCX(q[0], q[1]);\nint result = measure(q);\n"
+    ),
+    "arithmetic": (
+        "qint<3> a = 1;\nqint<2> b = 2;\na += b;\na -= 1;\n"
+        "int result = measure(a);\n"
+    ),
+    "multiply accumulate": (
+        "qint<2> a = 2;\nqint<2> b = 3;\nqint<4> c = 0;\nc += a * b;\n"
+        "int result = measure(c);\n"
+    ),
+    "qif with a phase-only body": (
+        "qint<2> a = 2;\nqif(a == 2) { phase(PI / 3); }\nint result = measure(a);\n"
+    ),
+    "qif with a negated condition": (
+        "qint<2> a = 2;\nqbool t = false;\nqif(!(a == 2)) { X(t); }\n"
+        "int result = measure(t);\n"
+    ),
+    "loop and process": (
+        "process flip(qint x) { X(x); }\nqint<3> a = 0;\n"
+        "for(int i in range(3)) { flip(a[i]); }\nint result = measure(a);\n"
+    ),
+    "superposition and helpers": (
+        "qint<1> amp = {1 / sqrt(2), 1 / sqrt(2)};\nqbool q = false;\n"
+        "RX(round(1.5) * PI / 4, q);\nint result = measure(amp);\n"
+    ),
+    "runtime parameters": (
+        "param float theta;\nparam int gamma[2];\nqbool q = false;\n"
+        "RX(theta + gamma[1], q);\nint result = measure(q);\n"
+    ),
+}
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("program", sorted(RUNNABLE_PROGRAMS))
+def test_the_generated_file_runs_in_a_fresh_interpreter(program: str) -> None:
+    """Compiled through the command line into a file, then run the way a user
+    runs it. Nothing here touches the project's own output directory: the file
+    is written to a temporary one and deleted with it."""
+    with tempfile.TemporaryDirectory() as directory:
+        workspace = Path(directory)
+        source = workspace / "program.slanq"
+        source.write_text(RUNNABLE_PROGRAMS[program], encoding="utf-8")
+        generated = workspace / "program_slanq.py"
+
+        assert main(["compile", str(source), "-o", str(generated)]) == 0
+        assert generated.exists()
+
+        finished = subprocess.run(  # noqa: S603
+            [sys.executable, str(generated)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            check=False,
+        )
+
+    assert finished.returncode == 0, finished.stderr
+    assert finished.stdout.strip(), "the __main__ block prints the circuit"
+
