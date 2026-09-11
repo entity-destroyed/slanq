@@ -332,9 +332,6 @@ class _Lowerer(NodeVisitor):
             self._error(message, node.span)
             return None
 
-        if name == PHASE:
-            return self._lower_phase(expr, node.span)
-
         signature = BUILTIN_SIGNATURES.get(name)
         if signature is None:
             if isinstance(expr.callee.resolved_symbol, ProcessDef):
@@ -347,6 +344,17 @@ class _Lowerer(NodeVisitor):
             else:
                 self._error(f"'{name}' is not a gate", node.span)
             return None
+
+        if len(expr.args) != len(signature.args):
+            self._unreachable(
+                f"a call to '{name}' with {len(expr.args)} argument(s) instead "
+                f"of {len(signature.args)}",
+                node.span,
+            )
+            return None
+
+        if name == PHASE:
+            return self._lower_phase(expr, node.span)
 
         # Which argument is an angle and which is a qubit comes from the
         # signature, not from whether the argument happens to be constant: a
@@ -533,7 +541,7 @@ class _Lowerer(NodeVisitor):
                 for entry in clause_ancilla.qubits
                 for position, qubit in enumerate(_condition_qubits(entry))
             ]
-            if all(required.get(qubit) == bit for qubit, bit in excluded):
+            if excluded and all(required.get(qubit) == bit for qubit, bit in excluded):
                 name = excluded[0][0][0]
                 self._reject_impossible(
                     f"'{name}' is required to hold exactly the value another "

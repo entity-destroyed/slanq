@@ -954,6 +954,21 @@ def test_param_decl_inside_qif_body_is_a_top_level_only_error(
 # runs after an error by design: each one used to raise AssertionError, killing
 # the compiler on a program whose real error had already been reported.
 REJECTED_SHAPES = [
+    "qbool q = false;\nX();\n",
+    "qbool q = false;\nX(q, q);\n",
+    "qbool a = false;\nqbool b = false;\nCX(a);\n",
+    "qbool a = false;\nqbool b = false;\nCX(a, b, a);\n",
+    "qbool a = false;\nCCX(a, a);\n",
+    "qbool q = false;\nRX(q);\n",
+    "qbool q = false;\nRX(PI, q, q);\n",
+    "phase();\n",
+    "phase(PI, PI);\n",
+    "qint<2> a = 0;\nint r = measure();\n",
+    "qint<0> a = 0;\nqbool t = false;\nqif(!(a == 0) && a == 0) { X(t); }\n",
+    "qint<0> a = 0;\nqbool t = false;\nqif(a == 0 && a == 0) { X(t); }\n",
+    "qint<0> a = 0;\nqint<2> b = 0;\na += b;\n",
+    "qint<0> a = 0;\nint r = measure(a);\n",
+    "qint<2> a = 0;\nint r = measure(a, a);\n",
     "qint<2> a = 0;\nparam int g[2];\na += g[0];\n",
     "qint<2> a = 0;\nqint<2> b = 0;\na += b[0];\n",
     "qint<2> a = 0;\na += 1.5;\n",
@@ -977,6 +992,35 @@ def test_a_rejected_shape_does_not_crash_lowering(
     _, bag = lower(source)
     assert bag.has_errors
     assert not any("internal error" in error.message for error in bag.errors)
+
+
+def test_a_call_with_the_wrong_argument_count_is_an_internal_error(span: Span) -> None:
+    ast = Program(
+        span=span,
+        statements=[
+            QuantumDecl(
+                span=span,
+                name="q",
+                declared_type=QBoolType(),
+                initializer=Literal(span=span, value=False),
+            ),
+            ExprStatement(
+                span=span,
+                expr=Call(
+                    span=span,
+                    callee=Name(span=span, name="X"),
+                    args=[
+                        Name(span=span, name="q"),
+                        Name(span=span, name="q"),
+                    ],
+                ),
+            ),
+        ],
+    )
+    bag = DiagnosticBag()
+    lower_to_ir(ast, bag)
+    assert any("internal error" in error.message for error in bag.errors)
+    assert any("2 argument(s) instead of 1" in error.message for error in bag.errors)
 
 
 def test_an_unreachable_shape_with_no_error_is_an_internal_error(span: Span) -> None:
