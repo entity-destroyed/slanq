@@ -295,3 +295,9 @@ def test_unary_minus_becomes_a_unary_op(build_ast: BuildAst) -> None:
     (declaration,) = build_ast("int x = -a;").statements
     assert isinstance(declaration.initializer, UnaryOp)
     assert declaration.initializer.op == "-"
+
+def test_an_empty_program_gets_a_position(build_ast: Callable[[str], Program]) -> None:
+    program = build_ast("")
+    assert program.statements == []
+    assert program.span.start_line == 1
+    assert program.span.start_col == 1

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import keyword
+import unicodedata
 
 from slanq.ast_nodes import (
     AmplitudeList,
@@ -102,7 +103,20 @@ _RESERVED_CODEGEN_NAMES = frozenset(
 
 
 def _is_unusable_target_name(name: str) -> bool:
-    return keyword.iskeyword(name) or name in _RESERVED_CODEGEN_NAMES
+    return (
+        keyword.iskeyword(name)
+        or name in _RESERVED_CODEGEN_NAMES
+        or not _survives_into_python(name)
+    )
+
+
+def _survives_into_python(name: str) -> bool:
+    """Slanq names may use letters beyond ASCII, and so may Python -- but not
+    quite the same set, and Python also normalizes identifiers to NFKC, which
+    can silently merge two distinct names into one. A name that is already
+    normalized and is a Python identifier reaches the generated file as
+    itself."""
+    return name.isidentifier() and unicodedata.normalize("NFKC", name) == name
 
 
 def _unusable_name_message(name: str) -> str:
@@ -110,6 +124,11 @@ def _unusable_name_message(name: str) -> str:
         return (
             f"'{name}' is a reserved Python keyword and cannot be used as a "
             "Slanq name, because it would break the generated file"
+        )
+    if not _survives_into_python(name):
+        return (
+            f"'{name}' cannot be used as a Slanq name, because it would not "
+            "reach the generated file unchanged"
         )
     return f"'{name}' is reserved for the compiler's own generated code"
 
@@ -243,6 +262,17 @@ class _IndexChecker(_Checker):
                 f"index {index} is out of range for '{node.base.name}' of size {size}",
                 node.index,
             )
+
+
+class _ProgramChecker(_Checker):
+    """An empty file is a legal program -- it builds an empty circuit -- but it
+    is much more often a file that is not finished yet than one that is meant
+    to be empty."""
+
+    def visit_Program(self, node: Program) -> None:
+        self.generic_visit(node)
+        if not node.statements:
+            self._warn("this program is empty, so the circuit it builds is too", node)
 
 
 class _DeclarationChecker(_Checker):
@@ -1009,6 +1039,7 @@ def _check_loops(ast: Program, bag: DiagnosticBag) -> None:
 
 
 def _check_types(ast: Program, bag: DiagnosticBag) -> None:
+    _ProgramChecker(bag).visit(ast)
     _DeclarationChecker(bag).visit(ast)
     _IndexChecker(bag).visit(ast)
     _CallChecker(bag).visit(ast)

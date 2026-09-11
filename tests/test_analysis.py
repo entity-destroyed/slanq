@@ -364,6 +364,31 @@ def test_a_qbool_takes_either_spelling_of_its_two_values(
     assert not diagnostics_of(source).has_errors
 
 
+def test_an_empty_program_is_accepted_with_a_warning(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    bag = diagnostics_of("")
+    assert not bag.has_errors
+    assert "this program is empty" in bag.warnings[0].message
+
+
+@pytest.mark.parametrize(
+    "source", ["qbool ψ = false;", "qint<3> φ = 0;", "int θ = 1;"]
+)
+def test_a_name_with_letters_beyond_ascii_is_accepted(
+    diagnostics_of: DiagnosticsOf, source: str
+) -> None:
+    assert not diagnostics_of(source).has_errors
+
+
+def test_a_name_python_would_rewrite_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
+    """Python normalizes identifiers to NFKC, so `\ufb01x` would become `fix` in the
+    generated file -- and could silently merge with a different Slanq name."""
+    bag = diagnostics_of("qbool \ufb01x = false;")
+    assert bag.has_errors
+    assert "would not reach the generated file unchanged" in bag.errors[0].message
+
+
 def test_initializer_too_large_is_reported(diagnostics_of: DiagnosticsOf) -> None:
     bag = diagnostics_of("qint<2> a = 7;")
     assert bag.has_errors

@@ -543,6 +543,16 @@ def test_repeated_multiply_accumulate_reuses_its_registers() -> None:
     assert index >> 4 == 0, "every ancilla of both statements must be |0>"
 
 
+def test_a_non_ascii_name_survives_into_the_circuit() -> None:
+    """A name beyond ASCII has to reach the whole way: the registers in the
+    generated file are named exactly as the program wrote them."""
+    source = (
+        "qint<3> ψ = 5;\nfor(int i in range(3)) { X(ψ[i]); }\n"
+        "int result = measure(ψ);\n"
+    )
+    assert _counts(source) == {"010": SHOTS}
+
+
 def test_param_scalar_angle_binds_at_runtime() -> None:
     source = "param float theta;\nqbool q = false;\nRX(theta, q);\n"
     namespace: dict[str, Any] = {}

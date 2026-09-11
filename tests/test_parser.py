@@ -74,3 +74,69 @@ def test_double_slash_is_a_comment_not_integer_division() -> None:
 
 def test_mvp_c_parses(mvp_c_source: str) -> None:
     assert parse_source(mvp_c_source) is not None
+
+@pytest.mark.parametrize(
+    ("source", "line", "column", "found"),
+    [
+        ("qbool q = false;;\n", 1, 17, "';'"),
+        ("qint<-1> a = 0;\n", 1, 6, "'-'"),
+        ("qbool q = false;\nqif(1 < 2 < 3) { X(q); }\n", 2, 11, "'<'"),
+    ],
+)
+def test_a_syntax_error_names_what_it_found(
+    source: str, line: int, column: int, found: str
+) -> None:
+    with pytest.raises(SlanqError) as error:
+        parse_source(source)
+    assert f"line {line}, column {column}" in str(error.value)
+    assert f"unexpected {found}" in str(error.value)
+
+
+def test_running_out_of_input_points_at_the_end_of_the_text() -> None:
+    with pytest.raises(SlanqError) as error:
+        parse_source("qbool q = false\n")
+    assert "line 1, column 16: unexpected end of file" in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("source", "bracket", "line", "column"),
+    [
+        ("qint<2> a = 2;\nqif(a == 2) { X(a[0]);\n", "'{'", 2, 13),
+        ("qbool q = false;\nRX(1.5, q\n", "'('", 2, 3),
+        ("qint<2> a = 2;\nX(a[0\n", "'['", 2, 4),
+    ],
+)
+def test_an_unclosed_bracket_says_where_it_was_opened(
+    source: str, bracket: str, line: int, column: int
+) -> None:
+    with pytest.raises(SlanqError) as error:
+        parse_source(source)
+    assert f"{bracket} at line {line}, column {column} is never closed" in str(
+        error.value
+    )
+
+
+def test_a_bracket_inside_a_comment_is_not_counted() -> None:
+    with pytest.raises(SlanqError) as error:
+        parse_source("// {\nqbool q = false\n")
+    assert "is never closed" not in str(error.value)
+    assert "unexpected end of file" in str(error.value)
+
+
+def test_a_mismatched_bracket_does_not_claim_an_unclosed_one() -> None:
+    with pytest.raises(SlanqError) as error:
+        parse_source("qint<2> a = 2;\nX(a[0);\n")
+    assert "is never closed" not in str(error.value)
+
+
+@pytest.mark.parametrize("source", ["", "// nothing\n", "\n\n   \n"])
+def test_an_empty_program_parses(source: str) -> None:
+    assert parse_source(source) is not None
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["qbool ψ = false;", "qint<3> φ = 0;", "int θ = 1;"],
+)
+def test_a_name_may_use_letters_beyond_ascii(source: str) -> None:
+    assert parse_source(source) is not None

@@ -51,6 +51,9 @@ TYPE_BY_NAME: dict[str, type[Type]] = {
 }
 
 
+_EMPTY_FILE_SPAN = Span(start_line=1, start_col=1, end_line=1, end_col=1)
+
+
 def _span_from_meta(meta: Meta) -> Span:
     return Span(
         start_line=meta.line,
@@ -90,7 +93,11 @@ class SlanqTransformer(Transformer):
         )
 
     def start(self, meta: Meta, children: list[Statement]) -> Program:
-        return Program(span=_span_from_meta(meta), statements=list(children))
+        # An empty file gives a meta with no position at all, since there is no
+        # token to take one from. The program still exists -- it just builds an
+        # empty circuit -- so it gets the only position that file has.
+        span = _EMPTY_FILE_SPAN if meta.empty else _span_from_meta(meta)
+        return Program(span=span, statements=list(children))
 
     def block(self, meta: Meta, children: list[Statement]) -> Block:
         return Block(span=_span_from_meta(meta), statements=list(children))

@@ -142,7 +142,10 @@ CTYPE: "int" | "float" | "bool" | "complex"
 TYPE:  "qint" | "qbool" | "int" | "float" | "bool"
 BOOL:  "true" | "false"
 
-NAME:      /[A-Za-z_][A-Za-z0-9_]*/
+// `[^\W\d]` is a word character that is not a digit, i.e. any letter or
+// underscore, Unicode included. Analysis narrows this to the names Python
+// keeps unchanged, so every name reaches the generated file as itself.
+NAME:      /[^\W\d]\w*/
 NUMBER:    /\d+(\.\d+)?/
 IMAGINARY: /\d+(\.\d+)?i/
 INT:       /\d+/
