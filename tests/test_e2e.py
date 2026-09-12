@@ -810,3 +810,67 @@ def test_two_calls_may_ask_for_different_iteration_counts() -> None:
     )
     assert _counts(source) == {"100": SHOTS}
     assert _counts(source, register="other") == {"111": SHOTS}
+
+
+def test_the_taken_branch_is_the_only_one_built() -> None:
+    source = (
+        "qbool q = false;\nbool t = true;\n"
+        "if (t) { X(q); } else { H(q); }\nint result = measure(q);\n"
+    )
+    assert _counts(source) == {"1": SHOTS}
+
+
+def test_the_untaken_branch_contributes_nothing() -> None:
+    source = (
+        "qbool q = false;\nbool t = false;\n"
+        "if (t) { X(q); }\nint result = measure(q);\n"
+    )
+    assert _counts(source) == {"0": SHOTS}
+
+
+def test_an_else_if_chain_picks_one_branch() -> None:
+    source = (
+        "qint<2> a = 0;\nint n = 5;\n"
+        "if (n > 9) { X(a[0]); } else if (n > 3) { X(a[1]); } else { H(a); }\n"
+        "int result = measure(a);\n"
+    )
+    assert _counts(source) == {"01": SHOTS}
+
+
+_PHASE_DECLS = "qint<2> a = 0;\nqbool f = false;\nbool t = true;\n"
+
+
+@pytest.mark.parametrize(
+    ("written", "equivalent"),
+    [
+        (
+            "qif(a == 2) { if (t) { phase(PI/3); } }",
+            "qif(a == 2) { phase(PI/3); }",
+        ),
+        (
+            "qif(a == 2) { X(f); if (!t) { phase(PI/3); } }",
+            "qif(a == 2) { X(f); }",
+        ),
+        (
+            "qif(a == 2) { if (!t) { phase(PI/3); } else { phase(PI/4); } }",
+            "qif(a == 2) { phase(PI/4); }",
+        ),
+        (
+            "qif(a == 2) { phase(PI/6); if (t) { phase(PI/3); } }",
+            "qif(a == 2) { phase(PI/6 + PI/3); }",
+        ),
+        (
+            "qif(!(a == 2)) { X(f); if (t) { phase(PI/3); } }",
+            "qif(!(a == 2)) { X(f); phase(PI/3); }",
+        ),
+    ],
+    ids=["taken", "untaken", "else", "added to an unconditional one", "negated qif"],
+)
+def test_a_conditional_phase_matches_the_branch_it_describes(
+    written: str, equivalent: str
+) -> None:
+    """Exact operator equality, not equivalence: a phase inside a qif is a
+    relative phase, so an overall factor would be a different circuit."""
+    assert Operator(_build_circuit(_PHASE_DECLS + written + "\n")) == Operator(
+        _build_circuit(_PHASE_DECLS + equivalent + "\n")
+    )

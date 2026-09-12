@@ -175,6 +175,7 @@ class AugAssign(Statement):
 class If(Statement):
     condition: Expression
     body: Block
+    orelse: Block | None = None
 
 
 @dataclass(kw_only=True)

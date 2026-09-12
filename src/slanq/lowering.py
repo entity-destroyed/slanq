@@ -6,6 +6,7 @@ from slanq.ast_nodes import (
     AmplitudeList,
     AugAssign,
     BinaryOp,
+    Block,
     BoolType,
     Call,
     ClassicalDecl,
@@ -13,6 +14,7 @@ from slanq.ast_nodes import (
     ExprStatement,
     FloatType,
     For,
+    If,
     Index,
     IntType,
     Literal,
@@ -42,6 +44,7 @@ from slanq.builtin import (
 from slanq.diagnostics import DiagnosticBag
 from slanq.ir import (
     ArithmeticOp,
+    ClassicalIfOp,
     ClbitRef,
     DeclareAncillaOp,
     GateOp,
@@ -78,7 +81,6 @@ RESET = "reset"
 # the circuit without a word.
 UNIMPLEMENTED: dict[str, str] = {
     "Assign": "assignment",
-    "If": "the if statement",
     "While": "the while loop",
 }
 
@@ -120,6 +122,7 @@ class _Lowerer(NodeVisitor):
     def __init__(self, bag: DiagnosticBag) -> None:
         self.bag = bag
         self.module = IRModule()
+        self._block = self.module.body
         self.qubits: dict[str, QubitRef] = {}
         self._ancilla_counter = 0
 
@@ -160,7 +163,7 @@ class _Lowerer(NodeVisitor):
         ref = QubitRef(name=node.name, size=size)
         self.qubits[node.name] = ref
         self.module.qubits.append(ref)
-        self.module.body.ops.append(InitOp(span=node.span, target=ref, value=value))
+        self._block.ops.append(InitOp(span=node.span, target=ref, value=value))
 
     def visit_ClassicalDecl(self, node: ClassicalDecl) -> None:
         initializer = node.initializer
@@ -174,14 +177,36 @@ class _Lowerer(NodeVisitor):
 
         clbit = ClbitRef(name=node.name, size=source.size)
         self.module.clbits.append(clbit)
-        self.module.body.ops.append(
+        self._block.ops.append(
             MeasurementOp(span=node.span, source=source, target=clbit)
         )
 
     def visit_ExprStatement(self, node: ExprStatement) -> None:
         ops = self._lower_gate_statement(node, in_qif=False)
         if ops is not None:
-            self.module.body.ops.extend(ops)
+            self._block.ops.extend(ops)
+
+    def visit_If(self, node: If) -> None:
+        body = self._lower_block(node.body)
+        orelse = None if node.orelse is None else self._lower_block(node.orelse)
+        self._block.ops.append(
+            ClassicalIfOp(
+                span=node.span,
+                condition=node.condition,
+                body=body,
+                orelse=orelse,
+            )
+        )
+
+    def _lower_block(self, block: Block) -> IRBlock:
+        inner = IRBlock()
+        outer, self._block = self._block, inner
+        try:
+            for statement in block.statements:
+                self.visit(statement)
+        finally:
+            self._block = outer
+        return inner
 
     def visit_ProcessDef(self, node: ProcessDef) -> None:
         # A template, not code: the expansion pass copied its body into every
@@ -235,7 +260,7 @@ class _Lowerer(NodeVisitor):
             if addend_ref is None:
                 return
             addend = self._pad_to_width(addend_ref, target.size, node.span)
-            self.module.body.ops.append(
+            self._block.ops.append(
                 ArithmeticOp(
                     span=node.span,
                     target=target,
@@ -252,7 +277,7 @@ class _Lowerer(NodeVisitor):
             self._unreachable("an addend that is not a whole constant", node.span)
             return
         ancilla = self._fresh_ancilla(node.span, size=target.size)
-        self.module.body.ops.append(
+        self._block.ops.append(
             ArithmeticOp(
                 span=node.span,
                 target=target,
@@ -273,16 +298,9 @@ class _Lowerer(NodeVisitor):
         if negated:
             top_ancilla = self._fresh_ancilla(node.span)
 
-        body = IRBlock()
-        for statement in node.body.statements:
-            if isinstance(statement, ExprStatement):
-                ops = self._lower_gate_statement(statement, in_qif=True)
-                if ops is not None:
-                    body.ops.extend(ops)
-            else:
-                self._qif_body_unimplemented(statement)
+        body = self._lower_qif_body(node.body)
 
-        self.module.body.ops.append(
+        self._block.ops.append(
             QIfOp(
                 span=node.span,
                 direct_qubits=direct_qubits,
@@ -293,6 +311,27 @@ class _Lowerer(NodeVisitor):
                 body=body,
             )
         )
+
+    def _lower_qif_body(self, block: Block) -> IRBlock:
+        result = IRBlock()
+        for statement in block.statements:
+            if isinstance(statement, ExprStatement):
+                ops = self._lower_gate_statement(statement, in_qif=True)
+                if ops is not None:
+                    result.ops.extend(ops)
+            elif isinstance(statement, If):
+                branch = ClassicalIfOp(
+                    span=statement.span,
+                    condition=statement.condition,
+                    body=self._lower_qif_body(statement.body),
+                    orelse=None
+                    if statement.orelse is None
+                    else self._lower_qif_body(statement.orelse),
+                )
+                result.ops.append(branch)
+            else:
+                self._qif_body_unimplemented(statement)
+        return result
 
     def _lower_gate_statement(
         self, node: ExprStatement, *, in_qif: bool
@@ -702,7 +741,7 @@ class _Lowerer(NodeVisitor):
         ref = QubitRef(name=node.name, size=size)
         self.qubits[node.name] = ref
         self.module.qubits.append(ref)
-        self.module.body.ops.append(
+        self._block.ops.append(
             InitOp(
                 span=node.span,
                 target=ref,
@@ -726,7 +765,7 @@ class _Lowerer(NodeVisitor):
         ref = QubitRef(name=node.name, size=size)
         self.qubits[node.name] = ref
         self.module.qubits.append(ref)
-        self.module.body.ops.append(
+        self._block.ops.append(
             MultiplyOp(
                 span=node.span,
                 left=left,
@@ -750,7 +789,7 @@ class _Lowerer(NodeVisitor):
         # below applies target's own, possibly narrower, width rule to it.
         temp = self._fresh_ancilla(span, size=2 * width)
         multiply_helper = self._fresh_ancilla(span)
-        self.module.body.ops.append(
+        self._block.ops.append(
             MultiplyOp(
                 span=span,
                 left=left,
@@ -763,7 +802,7 @@ class _Lowerer(NodeVisitor):
 
         add_helper = self._fresh_ancilla(span)
         addend = self._pad_to_width(temp, target.size, span)
-        self.module.body.ops.append(
+        self._block.ops.append(
             ArithmeticOp(
                 span=span,
                 target=target,
@@ -776,7 +815,7 @@ class _Lowerer(NodeVisitor):
 
         # a and b (`left`/`right`) are untouched by the multiplier, so running
         # it again as its own inverse cleanly zeroes the temporary product.
-        self.module.body.ops.append(
+        self._block.ops.append(
             MultiplyOp(
                 span=span,
                 left=left,

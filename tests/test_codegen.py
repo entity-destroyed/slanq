@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import math
 import sys
+from collections.abc import Callable
 from typing import Any
 
 import numpy
@@ -1158,3 +1159,115 @@ def test_expression_renders_a_param_array_leaf(build_ast) -> None:
     (_, use) = ast.statements
     rendered = _Generator().expression(use.initializer)
     assert rendered == "gamma[2]"
+
+
+def _if_source(program: str) -> str:
+    result = compile_source(program)
+    assert not result.diagnostics.has_errors, [str(d) for d in result.diagnostics]
+    assert result.qiskit_source is not None
+    return result.qiskit_source
+
+
+_IF_DECLS = "qint<2> a = 0;\nqbool f = false;\nint n = 5;\nbool t = true;\n"
+
+
+@pytest.mark.parametrize(
+    ("condition", "rendered"),
+    [
+        ("n > 3", "5 > 3"),
+        ("n == 5 && t", "5 == 5 and True"),
+        ("n == 5 || t", "5 == 5 or True"),
+        ("!t", "not True"),
+        ("!(n > 3)", "not 5 > 3"),
+        ("!t && n > 3", "not True and 5 > 3"),
+        ("!(t && n > 3)", "not (True and 5 > 3)"),
+        ("(n > 3) == t", "(5 > 3) == True"),
+        ("n + 1 > 3", "5 + 1 > 3"),
+        ("~n > 3", "~5 > 3"),
+    ],
+)
+def test_a_condition_keeps_its_meaning_in_python(
+    condition: str, rendered: str
+) -> None:
+    """Slanq's `!` binds tighter than Python's `not`, and Python chains
+    comparisons where Slanq forbids them, so both need parentheses the source
+    did not have."""
+    source = _if_source(f"{_IF_DECLS}if ({condition}) {{ X(f); }}\n")
+    assert f"if {rendered}:" in source
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "!t && n > 3",
+        "!(t && n > 3)",
+        "n > 1 && n < 9 || t",
+        "!(n > 9) && (t || n == 5)",
+        "(n > 3) == t",
+        "~n > 3",
+    ],
+)
+def test_a_rendered_condition_means_what_slanq_evaluated(
+    build_ast: Callable[[str], Any], condition: str
+) -> None:
+    """The rendered form is run as Python and compared with the compiler's own
+    answer, so a precedence slip shows up as a difference in value."""
+    program = f"{_IF_DECLS}if ({condition}) {{ X(f); }}\n"
+    rendered = next(
+        line.strip()[3:-1]
+        for line in _if_source(program).splitlines()
+        if line.strip().startswith("if ")
+    )
+    ast = build_ast(program)
+    analyze(ast, DiagnosticBag())
+    assert eval(rendered) is const_value(ast.statements[-1].condition)  # noqa: S307
+
+
+def test_an_else_branch_is_emitted() -> None:
+    source = _if_source(f"{_IF_DECLS}if (t) {{ X(f); }} else {{ Y(f); }}\n")
+    assert "    if True:\n        circuit.x(f[0])\n    else:\n        circuit.y(f[0])" in source
+
+
+def test_an_else_if_nests() -> None:
+    source = _if_source(
+        f"{_IF_DECLS}if (n > 9) {{ X(f); }} else if (n > 3) {{ Y(f); }}\n"
+    )
+    assert "    else:\n        if 5 > 3:\n            circuit.y(f[0])" in source
+
+
+def test_an_empty_branch_becomes_pass() -> None:
+    """Python has no empty block, and dropping the branch would hide the
+    warning's subject from the generated file."""
+    source = _if_source(f"{_IF_DECLS}if (t) {{ }}\n")
+    assert "    if True:\n        pass" in source
+
+
+def test_an_ancilla_is_declared_outside_the_branch() -> None:
+    """add_register inside a branch would leave the register missing whenever
+    that branch is not taken, while every later reference still expects it."""
+    source = _if_source(f"{_IF_DECLS}qint<2> b = 1;\nif (t) {{ a += b; }}\n")
+    declaration = next(
+        index
+        for index, line in enumerate(source.splitlines())
+        if "add_register(_ancilla_0)" in line
+    )
+    branch = next(
+        index for index, line in enumerate(source.splitlines()) if line.strip() == "if True:"
+    )
+    assert declaration < branch
+
+
+def test_a_conditional_phase_becomes_a_build_time_total() -> None:
+    source = _if_source(f"{_IF_DECLS}qif(a == 2) {{ if (t) {{ phase(PI / 3); }} }}\n")
+    assert "_qif_phase_1 = 0.0" in source
+    assert "        _qif_phase_1 += np.pi / 3" in source
+    assert "if _qif_phase_1:" in source
+    assert "circuit.mcp(_qif_phase_1, [a[0]], a[1])" in source
+
+
+def test_an_unconditional_phase_still_renders_as_one_expression() -> None:
+    """The build-time total only appears when some phase depends on a branch;
+    a plain qif body keeps the shorter form."""
+    source = _if_source(f"{_IF_DECLS}qif(a == 2) {{ phase(PI / 3); }}\n")
+    assert "_qif_phase" not in source
+    assert "circuit.mcp(np.pi / 3, [a[0]], a[1])" in source

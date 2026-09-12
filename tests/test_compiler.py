@@ -56,10 +56,10 @@ def test_lowering_runs_despite_a_prior_analysis_error() -> None:
     each phase validates its own concerns, and gating lowering behind
     analysis would silently drop diagnostics that have nothing to do with
     the analysis error itself."""
-    result = compile_source("qbool q = false; H(unknown); if(1) { X(q); }")
+    result = compile_source("qbool q = false; H(unknown); while(true) { X(q); }")
     messages = [d.message for d in result.diagnostics.errors]
     assert any("undefined name" in message for message in messages)
-    assert any("if statement" in message for message in messages)
+    assert any("while loop" in message for message in messages)
 
 
 def test_reserved_name_never_reaches_codegen() -> None:

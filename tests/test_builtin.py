@@ -147,9 +147,20 @@ def test_param_name_is_not_a_compile_time_constant(last_value_of) -> None:
     assert last_value_of("param float p; float x = p;") is None
 
 
-def test_comparisons_are_not_constant_folded(value_of) -> None:
-    """Only what the code generator can print back out is evaluated here."""
-    assert value_of("1 < 2") is None
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("1 < 2", True),
+        ("2 == 3", False),
+        ("2 != 3", True),
+        ("3 >= 3", True),
+        ("1 < 2 && 3 > 4", False),
+        ("1 < 2 || 3 > 4", True),
+        ("!(1 < 2)", False),
+    ],
+)
+def test_comparisons_and_logic_are_evaluated(value_of, source, expected) -> None:
+    assert value_of(source) is expected
 
 
 def test_division_by_zero_is_an_error(expression_of) -> None:

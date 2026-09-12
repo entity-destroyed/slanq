@@ -204,8 +204,13 @@ class SlanqTransformer(Transformer):
         )
 
     def if_stmt(self, meta: Meta, children) -> If:
-        condition, body = children
-        return If(span=_span_from_meta(meta), condition=condition, body=body)
+        condition, body, *rest = children
+        orelse = rest[0] if rest else None
+        if isinstance(orelse, If):
+            orelse = Block(span=orelse.span, statements=[orelse])
+        return If(
+            span=_span_from_meta(meta), condition=condition, body=body, orelse=orelse
+        )
 
     def qif_stmt(self, meta: Meta, children) -> QIf:
         condition, body = children

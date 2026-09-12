@@ -99,6 +99,17 @@ class ResetOp(Op):
 
 
 @dataclass(kw_only=True, eq=False)
+class ClassicalIfOp(Op):
+    """A branch taken while the circuit is being built, so it becomes a Python
+    `if` in the generated file and the gates of the branch not taken are never
+    appended."""
+
+    condition: Expression
+    body: IRBlock
+    orelse: IRBlock | None = None
+
+
+@dataclass(kw_only=True, eq=False)
 class PhaseOp(Op):
     """`phase()`. Applied to a circuit's own `global_phase` directly; inside a
     `qif` body's sub-circuit this becomes a relative phase once that
@@ -212,6 +223,7 @@ class IRModule:
 
 __all__ = [
     "ArithmeticOp",
+    "ClassicalIfOp",
     "ClbitRef",
     "DeclareAncillaOp",
     "GateOp",

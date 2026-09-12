@@ -28,6 +28,7 @@ from slanq.builtin import const_value
 from slanq.diagnostics import DiagnosticBag
 from slanq.ir import (
     ArithmeticOp,
+    ClassicalIfOp,
     ClbitRef,
     DeclareAncillaOp,
     GateOp,
@@ -252,8 +253,8 @@ def test_unimplemented_statement_does_not_vanish(lower: LowerSource) -> None:
 
 
 def test_unimplemented_statement_names_the_construct(lower: LowerSource) -> None:
-    _, bag = lower("qbool q = false; if(1) { X(q); }")
-    assert "if statement" in bag.errors[0].message
+    _, bag = lower("qbool q = false; while(true) { X(q); }")
+    assert "while loop" in bag.errors[0].message
 
 
 def test_unimplemented_message_blames_the_compiler(lower: LowerSource) -> None:
@@ -1124,3 +1125,49 @@ def test_a_loop_lowers_to_its_unrolled_operations(lower: LowerSource) -> None:
     gates = [op for op in module.body.ops if isinstance(op, GateOp)]
     assert len(gates) == 3
     assert [gate.name for gate in gates] == ["X", "X", "X"]
+
+
+_IF_DECLS = "qint<2> a = 0; qbool f = false; int n = 5; bool t = true; "
+
+
+def test_an_if_becomes_one_op_holding_its_branches(lower: LowerSource) -> None:
+    module, bag = lower(f"{_IF_DECLS}if (t) {{ X(f); }} else {{ Y(f); }}")
+    assert not bag.has_errors
+
+    branch = module.body.ops[-1]
+    assert isinstance(branch, ClassicalIfOp)
+    assert [type(op).__name__ for op in branch.body.ops] == ["GateOp"]
+    assert branch.orelse is not None
+    assert [type(op).__name__ for op in branch.orelse.ops] == ["GateOp"]
+
+
+def test_an_if_without_else_has_no_else_block(lower: LowerSource) -> None:
+    module, bag = lower(f"{_IF_DECLS}if (t) {{ X(f); }}")
+    assert not bag.has_errors
+    branch = module.body.ops[-1]
+    assert isinstance(branch, ClassicalIfOp)
+    assert branch.orelse is None
+
+
+def test_an_ancilla_from_a_branch_is_declared_at_the_top_level(
+    lower: LowerSource,
+) -> None:
+    """The branch decides which gates run, not which registers exist: a
+    register only added when one branch is taken would be missing from the
+    circuit everywhere else."""
+    module, bag = lower(f"{_IF_DECLS}qint<2> b = 1; if (t) {{ a += b; }}")
+    assert not bag.has_errors
+
+    assert any(isinstance(op, DeclareAncillaOp) for op in module.body.ops)
+    branch = module.body.ops[-1]
+    assert isinstance(branch, ClassicalIfOp)
+    assert not any(isinstance(op, DeclareAncillaOp) for op in branch.body.ops)
+
+
+def test_an_if_inside_a_qif_body_stays_a_branch(lower: LowerSource) -> None:
+    module, bag = lower(f"{_IF_DECLS}qif(a == 2) {{ X(f); if (t) {{ Y(f); }} }}")
+    assert not bag.has_errors
+
+    qif = module.body.ops[-1]
+    assert isinstance(qif, QIfOp)
+    assert [type(op).__name__ for op in qif.body.ops] == ["GateOp", "ClassicalIfOp"]

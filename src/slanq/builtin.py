@@ -126,7 +126,7 @@ BUILTIN_SCOPE: dict[str, BuiltinDecl] = {
     RANGE: BuiltinDecl(span=BUILTIN_SPAN, name=RANGE),
 }
 
-BINARY_OPS: dict[str, Callable[[object, object], object]] = {
+BINARY_OPS: dict[str, Callable[..., object]] = {
     "+": operator.add,
     "-": operator.sub,
     "*": operator.mul,
@@ -136,11 +136,20 @@ BINARY_OPS: dict[str, Callable[[object, object], object]] = {
     "&": operator.and_,
     "|": operator.or_,
     "^": operator.xor,
+    "==": operator.eq,
+    "!=": operator.ne,
+    "<": operator.lt,
+    "<=": operator.le,
+    ">": operator.gt,
+    ">=": operator.ge,
+    "&&": lambda left, right: bool(left) and bool(right),
+    "||": lambda left, right: bool(left) or bool(right),
 }
 
-UNARY_OPS: dict[str, Callable[[object], object]] = {
+UNARY_OPS: dict[str, Callable[..., object]] = {
     "-": operator.neg,
     "~": operator.invert,
+    "!": operator.not_,
 }
 
 

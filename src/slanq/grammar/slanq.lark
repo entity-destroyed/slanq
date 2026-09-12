@@ -59,9 +59,13 @@ AUGOP: "+=" | "-="
 
 // --- Control structures ----------------------------------------------------
 
-if_stmt:    "if" "(" expr ")" block
+if_stmt:    "if" "(" expr ")" block ("else" else_branch)?
 qif_stmt:   "qif" "(" expr ")" block
 while_stmt: "while" "(" expr ")" block
+
+// `else if` is an else branch holding one if, the same shape Python's own ast
+// module uses.
+?else_branch: block | if_stmt
 
 // The iterable is an ordinary expression so that an unsupported one can be
 // rejected with a meaningful message; only `range(...)` is accepted today.

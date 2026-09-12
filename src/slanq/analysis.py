@@ -8,15 +8,19 @@ from slanq.ast_nodes import (
     AugAssign,
     BinaryOp,
     Block,
+    BoolType,
     BuiltinDecl,
     Call,
+    ClassicalDecl,
     ComplexType,
     Declaration,
     Expression,
     ExprStatement,
     For,
+    If,
     Index,
     IntType,
+    Literal,
     Name,
     Node,
     ParamArrayDecl,
@@ -1018,6 +1022,112 @@ class _QIfBodyChecker(_Checker):
             self._warn("this qif body is empty, so nothing is conditional", node.body)
 
 
+MEASURE = "measure"
+
+COMPARISONS: frozenset[str] = frozenset({"==", "!=", "<", "<=", ">", ">="})
+
+
+def _is_boolean(expression: Expression) -> bool:
+    """Whether `expression` denotes a truth value. Structural rather than
+    evaluated, so it still holds once a classical variable can be reassigned
+    and its value is no longer its initializer."""
+    if isinstance(expression, Literal):
+        return type(expression.value) is bool
+    if isinstance(expression, BinaryOp):
+        return expression.op in COMPARISONS or expression.op in ("&&", "||")
+    if isinstance(expression, UnaryOp):
+        return expression.op == "!"
+    if isinstance(expression, Name):
+        symbol = expression.resolved_symbol
+        return isinstance(symbol, ClassicalDecl | ParamDecl) and isinstance(
+            symbol.declared_type, BoolType
+        )
+    if isinstance(expression, Index):
+        symbol = expression.base.resolved_symbol
+        return isinstance(symbol, ParamArrayDecl) and isinstance(
+            symbol.declared_type, BoolType
+        )
+    return False
+
+
+def _is_measurement_result(symbol: Declaration) -> bool:
+    return (
+        isinstance(symbol, ClassicalDecl)
+        and isinstance(symbol.initializer, Call)
+        and symbol.initializer.callee.name == MEASURE
+    )
+
+
+def _declarations_in(expression: Expression) -> list[Declaration]:
+    found = []
+    for node in _walk(expression):
+        if isinstance(node, Name) and isinstance(node.resolved_symbol, Declaration):
+            found.append(node.resolved_symbol)
+    return found
+
+
+def _walk(node: Node):
+    yield node
+    for child in iter_child_nodes(node):
+        yield from _walk(child)
+
+
+class _IfChecker(_Checker):
+    """An `if` is resolved while the circuit is being built, so its condition
+    has to hold a value at that point: a quantum variable never does, and a
+    `param` is only bound afterwards."""
+
+    def visit_If(self, node: If) -> None:
+        self.generic_visit(node)
+
+        for symbol in _declarations_in(node.condition):
+            if isinstance(symbol, QuantumDecl):
+                self._reject(
+                    f"'{symbol.name}' is a quantum variable, so it cannot be an "
+                    "if condition; use qif",
+                    node.condition,
+                )
+                return
+            if isinstance(symbol, ParamDecl | ParamArrayDecl):
+                self._reject(
+                    f"'{symbol.name}' is a param, which has no value while the "
+                    "circuit is being built, so it cannot be an if condition",
+                    node.condition,
+                )
+                return
+            if _is_measurement_result(symbol):
+                self._reject(
+                    f"'{symbol.name}' is a measurement result, which has no "
+                    "value while the circuit is being built; branching on one "
+                    "is not implemented yet",
+                    node.condition,
+                )
+                return
+
+        if not _is_boolean(node.condition):
+            self._reject("an if condition must be a true/false value", node.condition)
+            return
+
+        self._value(node.condition)
+
+        self._check_no_declarations(node.body)
+        if node.orelse is not None:
+            self._check_no_declarations(node.orelse)
+
+        if not node.body.statements:
+            self._warn("this if body is empty", node.body)
+        if node.orelse is not None and not node.orelse.statements:
+            self._warn("this else body is empty", node.orelse)
+
+    def _check_no_declarations(self, block: Block) -> None:
+        for statement in block.statements:
+            if isinstance(statement, Declaration):
+                self._reject(
+                    f"'{statement.name}' cannot be declared inside an if body",
+                    statement,
+                )
+
+
 class _ParamTypeChecker(_Checker):
     """No Qiskit gate-synthesis primitive ever consumes a `Parameter` except as
     an already-present, real-valued angle or time -- never as a complex value
@@ -1056,6 +1166,7 @@ def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _AmplitudeListChecker(bag).visit(ast)
     _QIfConditionChecker(bag).visit(ast)
     _QIfBodyChecker(bag).visit(ast)
+    _IfChecker(bag).visit(ast)
     _ArithmeticChecker(bag).visit(ast)
     _ParamTypeChecker(bag).visit(ast)
 

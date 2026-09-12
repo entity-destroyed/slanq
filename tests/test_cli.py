@@ -98,6 +98,13 @@ RUNNABLE_PROGRAMS = {
         "qint<2> a = 3;\nH(a[1]);\nreset(a);\nX(a[0]);\n"
         "int result = measure(a);\n"
     ),
+    "build-time branches": (
+        "qint<3> a = 0;\nint n = 5;\nbool t = true;\n"
+        "if (n > 9) { X(a[0]); } else if (n > 3) { X(a[1]); } else { H(a); }\n"
+        "if (!t) { X(a[2]); }\n"
+        "qif(a == 2) { if (t) { phase(PI / 3); } }\n"
+        "int result = measure(a);\n"
+    ),
 }
 
 

@@ -20,6 +20,7 @@ from slanq.builtin import BUILTIN_CONSTANTS, BUILTIN_FUNCTIONS, const_int
 from slanq.diagnostics import SlanqError
 from slanq.ir import (
     ArithmeticOp,
+    ClassicalIfOp,
     DeclareAncillaOp,
     GateOp,
     InitOp,
@@ -45,14 +46,27 @@ INDENT = " " * 4
 Qubit = tuple[str, int]
 QubitMap = dict[Qubit, str]
 
+# Python's own precedence order, so an expression the user parenthesised the
+# way Slanq requires comes out meaning the same thing in the generated file.
 BINARY_PRECEDENCE: dict[str, int] = {
-    "|": 1, "^": 2, "&": 3,
-    "+": 4, "-": 4,
-    "*": 5, "/": 5, "%": 5,
-    "**": 7,
+    "||": 1,
+    "&&": 2,
+    "==": 4, "!=": 4, "<": 4, "<=": 4, ">": 4, ">=": 4,
+    "|": 5, "^": 6, "&": 7,
+    "+": 8, "-": 8,
+    "*": 9, "/": 9, "%": 9,
+    "**": 11,
 }
-UNARY_PRECEDENCE = 6
+NOT_PRECEDENCE = 3
+UNARY_PRECEDENCE = 10
 ATOM_PRECEDENCE = 99
+
+# Python chains `a == b == c` into `a == b and b == c`; Slanq's grammar makes
+# comparison non-associative, so a nested one was parenthesised in the source
+# and has to stay parenthesised here.
+NON_ASSOCIATIVE: frozenset[str] = frozenset({"==", "!=", "<", "<=", ">", ">="})
+
+PYTHON_BINARY_OPS: dict[str, str] = {"&&": "and", "||": "or"}
 
 PYTHON_CONSTANTS: dict[str, str] = {"PI": "np.pi"}
 
@@ -200,6 +214,8 @@ class _Generator:
         self.needs_cdkm_adder = False
         self.needs_hrs_multiplier = False
         self._qif_counter = 0
+        self._phase_counter = 0
+        self._phase_total: str | None = None
 
     def import_lines(self, module: IRModule) -> list[str]:
         standard = ["import sys"]
@@ -289,7 +305,17 @@ class _Generator:
         if isinstance(op, ResetOp):
             return [f"{circuit_var}.reset({_operand_source(op.target)})"]
 
+        if isinstance(op, ClassicalIfOp):
+            lines = [f"if {self.expression(op.condition)}:"]
+            lines += self._indented(op.body, circuit_var, qubits)
+            if op.orelse is not None:
+                lines.append("else:")
+                lines += self._indented(op.orelse, circuit_var, qubits)
+            return lines
+
         if isinstance(op, PhaseOp):
+            if self._phase_total is not None:
+                return [f"{self._phase_total} += {self.expression(op.angle)}"]
             return [f"{circuit_var}.global_phase += {self.expression(op.angle)}"]
 
         if isinstance(op, QIfOp):
@@ -395,15 +421,15 @@ class _Generator:
         # A global phase gets no wire in the sub-circuit, because controlling
         # one is exactly a phase gate on the control qubits themselves. A body
         # made only of phases therefore needs no sub-circuit at all.
-        phases = [sub_op for sub_op in op.body.ops if isinstance(sub_op, PhaseOp)]
-        gates = [sub_op for sub_op in op.body.ops if not isinstance(sub_op, PhaseOp)]
-        if not phases and not gates:
+        phases = _phases_only(op.body)
+        gates = _gates_only(op.body)
+        if not phases.ops and not gates.ops:
             return []
 
         lines: list[str] = []
         body_var = ""
         body_sources: list[str] = []
-        if gates:
+        if gates.ops:
             self._qif_counter += 1
             body_var = f"_qif_body_{self._qif_counter}"
 
@@ -414,7 +440,7 @@ class _Generator:
             # `CircuitError: duplicate bit arguments` at generated-file
             # runtime, for a program whose condition and body do touch
             # different qubits (`qif(a[0]) { X(a[1]); }`).
-            body_qubits = _body_qubits(op.body)
+            body_qubits = _body_qubits(gates)
             local = {
                 qubit: f"{body_var}.qubits[{wire}]"
                 for wire, qubit in enumerate(body_qubits)
@@ -422,17 +448,12 @@ class _Generator:
             lines.append(
                 f'{body_var} = QuantumCircuit({len(body_qubits)}, name="qif_body")'
             )
-            for sub_op in gates:
+            for sub_op in gates.ops:
                 lines += self.op_lines(sub_op, body_var, qubits=local)
             body_sources = [f"{name}[{index}]" for name, index in body_qubits]
 
-        angle = (
-            " + ".join(
-                self._wrapped(phase.angle, BINARY_PRECEDENCE["+"]) for phase in phases
-            )
-            if phases
-            else None
-        )
+        angle, angle_accumulated, angle_lines = self._qif_angle(phases, circuit_var)
+        lines = angle_lines + lines
 
         # Each wide-negated clause needs its own ancilla, computed before
         # everything else and uncomputed after everything else -- proper
@@ -466,6 +487,7 @@ class _Generator:
                 body_var=body_var,
                 body_sources=body_sources,
                 angle=angle,
+                angle_accumulated=angle_accumulated,
             )
         else:
             # Negated, spanning more than one qubit: compute the positive
@@ -490,6 +512,7 @@ class _Generator:
                 body_var=body_var,
                 body_sources=body_sources,
                 angle=angle,
+                angle_accumulated=angle_accumulated,
             )
 
             lines.append(f"{circuit_var}.x({ancilla}[0])")
@@ -505,6 +528,38 @@ class _Generator:
 
         return lines
 
+    def _qif_angle(
+        self, phases: IRBlock, circuit_var: str
+    ) -> tuple[str | None, bool, list[str]]:
+        """The phase gate's angle. Phases that always apply sum into one
+        expression the compiler writes out. A phase under a build-time branch
+        has no such expression -- which branch runs is only settled when the
+        generated file runs -- so all of them go into a running total the
+        generated file builds first, keeping the source's own if/else shape."""
+        if not phases.ops:
+            return None, False, []
+
+        if all(isinstance(sub_op, PhaseOp) for sub_op in phases.ops):
+            return (
+                " + ".join(
+                    self._wrapped(sub_op.angle, BINARY_PRECEDENCE["+"])
+                    for sub_op in cast(list[PhaseOp], phases.ops)
+                ),
+                False,
+                [],
+            )
+
+        self._phase_counter += 1
+        total = f"_qif_phase_{self._phase_counter}"
+        lines = [f"{total} = 0.0"]
+        outer, self._phase_total = self._phase_total, total
+        try:
+            for sub_op in phases.ops:
+                lines += self.op_lines(sub_op, circuit_var)
+        finally:
+            self._phase_total = outer
+        return total, True, lines
+
     def _controlled_body_lines(
         self,
         circuit_var: str,
@@ -515,6 +570,7 @@ class _Generator:
         body_var: str,
         body_sources: list[str],
         angle: str | None,
+        angle_accumulated: bool = False,
     ) -> list[str]:
         """The body under one control set: its gates as a controlled
         sub-circuit, its phase as a phase gate on the controls themselves.
@@ -546,14 +602,21 @@ class _Generator:
             for position, bit in enumerate(control_bits)
             if not (ctrl_state >> position) & 1
         ]
-        lines += [f"{circuit_var}.x({bit})" for bit in zeros]
+        phase_lines = [f"{circuit_var}.x({bit})" for bit in zeros]
         if len(control_bits) == 1:
-            lines.append(f"{circuit_var}.p({angle}, {control_bits[0]})")
+            phase_lines.append(f"{circuit_var}.p({angle}, {control_bits[0]})")
         else:
             rest = ", ".join(control_bits[:-1])
-            lines.append(f"{circuit_var}.mcp({angle}, [{rest}], {control_bits[-1]})")
-        lines += [f"{circuit_var}.x({bit})" for bit in zeros]
-        return lines
+            phase_lines.append(
+                f"{circuit_var}.mcp({angle}, [{rest}], {control_bits[-1]})"
+            )
+        phase_lines += [f"{circuit_var}.x({bit})" for bit in zeros]
+
+        if angle_accumulated:
+            # The angle is a build-time total, so whether there is any phase
+            # at all is only known once the generated file runs.
+            return lines + [f"if {angle}:"] + [INDENT + line for line in phase_lines]
+        return lines + phase_lines
 
     def expression(self, expression: Expression) -> str:
         if isinstance(expression, Literal):
@@ -585,6 +648,9 @@ class _Generator:
         if isinstance(expression, UnaryOp) and expression.op in ("-", "~"):
             return f"{expression.op}{self._wrapped(expression.operand, UNARY_PRECEDENCE)}"
 
+        if isinstance(expression, UnaryOp) and expression.op == "!":
+            return f"not {self._wrapped(expression.operand, NOT_PRECEDENCE)}"
+
         if isinstance(expression, BinaryOp) and expression.op in BINARY_PRECEDENCE:
             return self._binary(expression)
 
@@ -598,10 +664,16 @@ class _Generator:
 
     def _binary(self, expression: BinaryOp) -> str:
         precedence = BINARY_PRECEDENCE[expression.op]
-        right_associative = expression.op == "**"
-        left = self._wrapped(expression.left, precedence + int(right_associative))
-        right = self._wrapped(expression.right, precedence + int(not right_associative))
-        return f"{left} {expression.op} {right}"
+        if expression.op in NON_ASSOCIATIVE:
+            left_minimum = right_minimum = precedence + 1
+        else:
+            right_associative = expression.op == "**"
+            left_minimum = precedence + int(right_associative)
+            right_minimum = precedence + int(not right_associative)
+        left = self._wrapped(expression.left, left_minimum)
+        right = self._wrapped(expression.right, right_minimum)
+        op = PYTHON_BINARY_OPS.get(expression.op, expression.op)
+        return f"{left} {op} {right}"
 
     def _call(self, expression: Call) -> str:
         name = expression.callee.name
@@ -614,6 +686,16 @@ class _Generator:
         rendered = ", ".join(self.expression(argument) for argument in expression.args)
         return f"{PYTHON_FUNCTIONS[name]}({rendered})"
 
+    def _indented(
+        self, block: IRBlock, circuit_var: str, qubits: QubitMap | None
+    ) -> list[str]:
+        lines = [
+            INDENT + line
+            for op in block.ops
+            for line in self.op_lines(op, circuit_var, qubits)
+        ]
+        return lines or [INDENT + "pass"]
+
     def _wrapped(self, expression: Expression, minimum: int) -> str:
         rendered = self.expression(expression)
         return f"({rendered})" if _precedence(expression) < minimum else rendered
@@ -623,7 +705,7 @@ def _precedence(expression: Expression) -> int:
     if isinstance(expression, BinaryOp):
         return BINARY_PRECEDENCE.get(expression.op, ATOM_PRECEDENCE)
     if isinstance(expression, UnaryOp):
-        return UNARY_PRECEDENCE
+        return NOT_PRECEDENCE if expression.op == "!" else UNARY_PRECEDENCE
     return ATOM_PRECEDENCE
 
 
@@ -669,17 +751,65 @@ def _body_qubits(body: IRBlock) -> list[Qubit]:
     order -- one wire each in the sub-circuit, and, in this same order, the
     tail of the qubit list passed to circuit.append()."""
     seen: dict[Qubit, None] = {}
+    _collect_body_qubits(body, seen)
+    return list(seen)
+
+
+def _phases_only(block: IRBlock) -> IRBlock:
+    """The block's phases with its build-time branches kept around them, so the
+    running total is built under the same conditions the source wrote."""
+    return _filtered(block, keep_phases=True)
+
+
+def _gates_only(block: IRBlock) -> IRBlock:
+    return _filtered(block, keep_phases=False)
+
+
+def _filtered(block: IRBlock, *, keep_phases: bool) -> IRBlock:
+    result = IRBlock()
+    for op in block.ops:
+        if isinstance(op, PhaseOp):
+            if keep_phases:
+                result.ops.append(op)
+            continue
+        if isinstance(op, ClassicalIfOp):
+            body = _filtered(op.body, keep_phases=keep_phases)
+            orelse = (
+                None if op.orelse is None else _filtered(op.orelse, keep_phases=keep_phases)
+            )
+            if not body.ops and (orelse is None or not orelse.ops):
+                continue
+            result.ops.append(
+                ClassicalIfOp(
+                    span=op.span, condition=op.condition, body=body, orelse=orelse
+                )
+            )
+            continue
+        if not keep_phases:
+            result.ops.append(op)
+    return result
+
+
+def _collect_body_qubits(body: IRBlock, seen: dict[Qubit, None]) -> None:
+    """A build-time branch contributes the qubits of both arms: which arm
+    runs is decided when the circuit is built, and the sub-circuit's wire count
+    is fixed before that. A wire the chosen arm leaves alone stays identity."""
     for op in body.ops:
         if isinstance(op, PhaseOp):
             continue  # a global phase touches no qubit
+        if isinstance(op, ClassicalIfOp):
+            _collect_body_qubits(op.body, seen)
+            if op.orelse is not None:
+                _collect_body_qubits(op.orelse, seen)
+            continue
         assert isinstance(op, GateOp), (
-            "a qif body holds only gates and phases; a new op kind allowed "
-            "here must have its operands mapped into the sub-circuit too"
+            "a qif body holds only gates, phases and build-time branches; a "
+            "new op kind allowed here must have its operands mapped into the "
+            "sub-circuit too"
         )
         for target in op.targets:
             for qubit in _operand_qubits(target):
                 seen[qubit] = None
-    return list(seen)
 
 
 def _operand_qubits(operand: QubitOperand) -> list[Qubit]:

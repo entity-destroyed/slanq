@@ -1026,3 +1026,90 @@ def test_an_int_loop_variable_is_accepted(diagnostics_of: DiagnosticsOf) -> None
     assert not diagnostics_of(
         "qbool q = false;\nfor(int i in range(2)) { X(q); }\n"
     ).has_errors
+
+
+_DECLS = "qint<2> a = 0;\nqbool f = false;\nint n = 5;\nbool t = true;\n"
+
+
+@pytest.mark.parametrize(
+    ("condition", "message"),
+    [
+        ("a == 2", "'a' is a quantum variable, so it cannot be an if condition; use qif"),
+        ("a[0]", "'a' is a quantum variable, so it cannot be an if condition; use qif"),
+        ("n", "an if condition must be a true/false value"),
+        ("n + 1", "an if condition must be a true/false value"),
+        ("3.5", "an if condition must be a true/false value"),
+        ("n / 0 > 1", "division by zero"),
+    ],
+)
+def test_an_if_condition_is_checked(
+    diagnostics_of: DiagnosticsOf, condition: str, message: str
+) -> None:
+    bag = diagnostics_of(f"{_DECLS}if ({condition}) {{ X(f); }}\n")
+    (diagnostic,) = bag.errors
+    assert diagnostic.message == message
+
+
+def test_a_param_cannot_be_an_if_condition(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of(f"param int p;\n{_DECLS}if (p > 1) {{ X(f); }}\n")
+    (diagnostic,) = bag.errors
+    assert diagnostic.message == (
+        "'p' is a param, which has no value while the circuit is being built, "
+        "so it cannot be an if condition"
+    )
+
+
+def test_a_measurement_result_cannot_be_an_if_condition(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    bag = diagnostics_of(f"{_DECLS}int r = measure(a);\nif (r < 4) {{ X(f); }}\n")
+    (diagnostic,) = bag.errors
+    assert diagnostic.message == (
+        "'r' is a measurement result, which has no value while the circuit is "
+        "being built; branching on one is not implemented yet"
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "name"),
+    [
+        ("if (t) { qbool z = false; }", "z"),
+        ("if (t) { int k = 1; }", "k"),
+        ("if (t) { X(f); } else { qbool z = false; }", "z"),
+    ],
+    ids=["quantum", "classical", "in the else"],
+)
+def test_a_declaration_in_an_if_body_is_rejected(
+    diagnostics_of: DiagnosticsOf, body: str, name: str
+) -> None:
+    bag = diagnostics_of(_DECLS + body + "\n")
+    (diagnostic,) = bag.errors
+    assert diagnostic.message == f"'{name}' cannot be declared inside an if body"
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ("if (t) { }", "this if body is empty"),
+        ("if (t) { X(f); } else { }", "this else body is empty"),
+    ],
+    ids=["if", "else"],
+)
+def test_an_empty_branch_warns(
+    diagnostics_of: DiagnosticsOf, body: str, message: str
+) -> None:
+    bag = diagnostics_of(_DECLS + body + "\n")
+    assert not bag.has_errors
+    (warning,) = bag.warnings
+    assert warning.message == message
+
+
+@pytest.mark.parametrize(
+    "condition",
+    ["t", "!t", "n > 3", "n > 1 && n < 9", "n > 9 || t", "floor(n / 2) == 2"],
+)
+def test_a_boolean_condition_is_accepted(
+    diagnostics_of: DiagnosticsOf, condition: str
+) -> None:
+    bag = diagnostics_of(f"{_DECLS}if ({condition}) {{ X(f); }}\n")
+    assert not bag.has_errors
