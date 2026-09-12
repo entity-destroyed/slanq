@@ -8,13 +8,13 @@ from slanq.analysis import analyze
 from slanq.ast_nodes import (
     BuiltinDecl,
     Call,
-    ClassicalDecl,
     ExprStatement,
     If,
     IntType,
     Name,
     Program,
     QuantumDecl,
+    RealtimeDecl,
 )
 from slanq.diagnostics import DiagnosticBag
 
@@ -223,7 +223,7 @@ def test_non_constant_quantum_index_is_reported(diagnostics_of: DiagnosticsOf) -
     """A genuinely runtime value (a measurement result) stays rejected -- a
     classical constant, tested just below, is a different case now."""
     bag = diagnostics_of(
-        "qint<2> q = 0; qbool flag = false; int i = measure(flag); H(q[i]);"
+        "qint<2> q = 0; qbool flag = false; rt int<> i = measure(flag); H(q[i]);"
     )
     assert bag.has_errors
     assert "compile-time integer" in bag.errors[0].message
@@ -493,7 +493,7 @@ def test_aliased_qubit_arguments_are_rejected(
 
 
 def test_measure_rejects_a_single_qubit(diagnostics_of: DiagnosticsOf) -> None:
-    bag = diagnostics_of("qint<2> q = 0; int r = measure(q[0]);")
+    bag = diagnostics_of("qint<2> q = 0; rt int<> r = measure(q[0]);")
     assert bag.has_errors
     assert "whole quantum variable" in bag.errors[0].message
 
@@ -595,9 +595,9 @@ def test_range_outside_a_loop_is_reported(diagnostics_of: DiagnosticsOf) -> None
 
 
 def test_call_carries_its_return_type(analyzed_ast: AnalyzedAst) -> None:
-    ast = analyzed_ast("qbool q = false; int r = measure(q);")
+    ast = analyzed_ast("qbool q = false; rt int<> r = measure(q);")
     declaration = ast.statements[1]
-    assert isinstance(declaration, ClassicalDecl)
+    assert isinstance(declaration, RealtimeDecl)
     assert isinstance(declaration.initializer.inferred_type, IntType)
 
 
@@ -1059,14 +1059,14 @@ def test_a_param_cannot_be_an_if_condition(diagnostics_of: DiagnosticsOf) -> Non
     )
 
 
-def test_a_measurement_result_cannot_be_an_if_condition(
+def test_a_realtime_value_cannot_be_a_build_time_if_condition(
     diagnostics_of: DiagnosticsOf,
 ) -> None:
-    bag = diagnostics_of(f"{_DECLS}int r = measure(a);\nif (r < 4) {{ X(f); }}\n")
+    bag = diagnostics_of(f"{_DECLS}rt int<> r = measure(a);\nif (r < 4) {{ X(f); }}\n")
     (diagnostic,) = bag.errors
     assert diagnostic.message == (
-        "'r' is a measurement result, which has no value while the circuit is "
-        "being built; branching on one is not implemented yet"
+        "'r' is a real-time value, which has no value while the circuit is "
+        "being built; use rt if"
     )
 
 
@@ -1113,3 +1113,117 @@ def test_a_boolean_condition_is_accepted(
 ) -> None:
     bag = diagnostics_of(f"{_DECLS}if ({condition}) {{ X(f); }}\n")
     assert not bag.has_errors
+
+
+_RT_DECLS = (
+    "qint<3> a = [];\nqint<2> b = 0;\nqbool f = false;\nint n = 5;\nbool t = true;\n"
+    "rt int<> m = measure(a);\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("program", "message"),
+    [
+        (
+            "rt if (b == 2) { X(f); }",
+            "'b' is a quantum variable, so it cannot be an rt if condition; use qif",
+        ),
+        (
+            "rt if (n > 3) { X(f); }",
+            "an rt if condition must read a real-time value; use if",
+        ),
+        ("rt if (m) { X(f); }", "an rt if condition must be a true/false value"),
+        (
+            "rt if (m < 4) { qbool z = false; }",
+            "'z' cannot be declared inside an rt if body",
+        ),
+        (
+            "if (m < 4) { X(f); }",
+            "'m' is a real-time value, which has no value while the circuit is "
+            "being built; use rt if",
+        ),
+    ],
+    ids=["quantum", "no real-time value", "not boolean", "declaration", "wrong if"],
+)
+def test_an_rt_if_is_checked(
+    diagnostics_of: DiagnosticsOf, program: str, message: str
+) -> None:
+    (diagnostic,) = diagnostics_of(_RT_DECLS + program + "\n").errors
+    assert diagnostic.message == message
+
+
+def test_a_measurement_cannot_be_declared_build_time(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    (diagnostic,) = diagnostics_of("qbool q = false;\nint r = measure(q);\n").errors
+    assert diagnostic.message == (
+        "a measurement result is real-time; declare 'r' as rt int<>"
+    )
+
+
+@pytest.mark.parametrize(
+    ("declaration", "message"),
+    [
+        ("rt int<4> c = 1.5;", "a real-time variable holds a whole number or a "
+         "truth value, so 'c' cannot start from 1.5"),
+        ("rt int<4> c = 0 - 3;", "a real-time variable is unsigned, so 'c' cannot "
+         "start from -3"),
+        ("rt int<2> c = 12;", "12 does not fit in the 2 bits of 'c'"),
+        ("rt int<0> c = 0;", "'c' must be at least one bit wide"),
+        ("rt int<2> w = measure(a);", "'a' measures into 3 bits, not the 2 "
+         "declared for 'w'"),
+    ],
+    ids=["float", "negative", "too wide", "zero width", "measured width"],
+)
+def test_a_realtime_declaration_is_checked(
+    diagnostics_of: DiagnosticsOf, declaration: str, message: str
+) -> None:
+    (diagnostic,) = diagnostics_of(_RT_DECLS + declaration + "\n").errors
+    assert diagnostic.message == message
+
+
+@pytest.mark.parametrize(
+    ("declaration", "width"),
+    [
+        ("rt int<> c = measure(a);", 3),
+        ("rt int<> c = 12;", 4),
+        ("rt int<6> c = 12;", 6),
+        ("rt bool c = true;", 1),
+    ],
+    ids=["from a measurement", "from a value", "explicit", "bool"],
+)
+def test_a_realtime_width_is_settled_by_analysis(
+    analyzed_ast: AnalyzedAst, declaration: str, width: int
+) -> None:
+    """Empty angle brackets take the width from the initializer, the same way
+    the value's own size settles it elsewhere."""
+    ast = analyzed_ast(_RT_DECLS + declaration + "\n")
+    node = ast.statements[-1]
+    assert isinstance(node, RealtimeDecl)
+    assert node.width == width
+
+
+def test_a_realtime_variable_that_is_not_measured_warns(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    bag = diagnostics_of(_RT_DECLS + "rt int<2> c = 1;\n")
+    assert not bag.has_errors
+    assert any("Aer 0.17.2 crashes" in w.message for w in bag.warnings)
+
+
+def test_arithmetic_on_a_realtime_value_warns(diagnostics_of: DiagnosticsOf) -> None:
+    bag = diagnostics_of(_RT_DECLS + "rt if (m + 1 > 4) { X(f); }\n")
+    assert not bag.has_errors
+    assert any("cannot run arithmetic" in w.message for w in bag.warnings)
+
+
+@pytest.mark.parametrize(
+    ("condition", "answer"),
+    [("m < 100", "true"), ("m > 100", "false"), ("m >= 0", "true")],
+)
+def test_a_comparison_outside_the_width_warns(
+    diagnostics_of: DiagnosticsOf, condition: str, answer: str
+) -> None:
+    bag = diagnostics_of(f"{_RT_DECLS}rt if ({condition}) {{ X(f); }}\n")
+    assert not bag.has_errors
+    assert any(f"always {answer}" in w.message for w in bag.warnings)

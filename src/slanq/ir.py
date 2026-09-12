@@ -99,6 +99,30 @@ class ResetOp(Op):
 
 
 @dataclass(kw_only=True, eq=False)
+class DeclareRealtimeOp(Op):
+    """A classical variable on the processor beside the QPU, started from a
+    build-time value. A measurement's result needs no such op: its classical
+    register is already real-time."""
+
+    name: str
+    size: int
+    value: Expression
+    # `true`/`false` reach Qiskit as 1/0: every real-time value is a Uint, and
+    # a truth value is the one-bit case of that.
+    is_bool: bool = False
+
+
+@dataclass(kw_only=True, eq=False)
+class RealtimeIfOp(Op):
+    """A branch taken while the circuit runs, on a real-time classical value,
+    so it becomes a Qiskit `if_test` block."""
+
+    condition: Expression
+    body: IRBlock
+    orelse: IRBlock | None = None
+
+
+@dataclass(kw_only=True, eq=False)
 class ClassicalIfOp(Op):
     """A branch taken while the circuit is being built, so it becomes a Python
     `if` in the generated file and the gates of the branch not taken are never
@@ -226,6 +250,7 @@ __all__ = [
     "ClassicalIfOp",
     "ClbitRef",
     "DeclareAncillaOp",
+    "DeclareRealtimeOp",
     "GateOp",
     "IRBlock",
     "IRModule",
@@ -241,5 +266,6 @@ __all__ = [
     "QubitOperand",
     "QubitRef",
     "QubitSlice",
+    "RealtimeIfOp",
     "ResetOp",
 ]

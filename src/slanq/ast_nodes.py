@@ -122,6 +122,17 @@ class ClassicalDecl(Declaration):
 
 
 @dataclass(kw_only=True)
+class RealtimeDecl(Declaration):
+    """`rt int<N>` / `rt bool`: a classical value on the processor beside the
+    QPU, read and written while the circuit runs. `width` is None for the
+    `rt int<>` form, which takes it from the initializer."""
+
+    declared_type: Type
+    initializer: Expression
+    width: int | None = None
+
+
+@dataclass(kw_only=True)
 class ParamDecl(Declaration):
     declared_type: Type
 
@@ -173,6 +184,16 @@ class AugAssign(Statement):
 
 @dataclass(kw_only=True)
 class If(Statement):
+    condition: Expression
+    body: Block
+    orelse: Block | None = None
+
+
+@dataclass(kw_only=True)
+class RealtimeIf(Statement):
+    """`rt if`: the branch is taken while the circuit runs, on a measurement
+    result, so it becomes a Qiskit `if_test` block."""
+
     condition: Expression
     body: Block
     orelse: Block | None = None
@@ -276,6 +297,8 @@ __all__ = [
     "QIf",
     "QIntType",
     "QuantumDecl",
+    "RealtimeDecl",
+    "RealtimeIf",
     "Span",
     "Statement",
     "Symbol",

@@ -33,6 +33,8 @@ from slanq.ast_nodes import (
     QIf,
     QIntType,
     QuantumDecl,
+    RealtimeDecl,
+    RealtimeIf,
     Span,
     Statement,
     Type,
@@ -201,6 +203,35 @@ class SlanqTransformer(Transformer):
             target=target,
             op=str(op_token),
             value=value,
+        )
+
+    def rt_int_decl(self, meta: Meta, children) -> RealtimeDecl:
+        width_token, name_token, initializer = children
+        return RealtimeDecl(
+            span=_span_from_meta(meta),
+            name=str(name_token),
+            declared_type=IntType(),
+            initializer=initializer,
+            width=None if width_token is None else int(width_token),
+        )
+
+    def rt_bool_decl(self, meta: Meta, children) -> RealtimeDecl:
+        name_token, initializer = children
+        return RealtimeDecl(
+            span=_span_from_meta(meta),
+            name=str(name_token),
+            declared_type=BoolType(),
+            initializer=initializer,
+            width=1,
+        )
+
+    def rt_if_stmt(self, meta: Meta, children) -> RealtimeIf:
+        condition, body, *rest = children
+        orelse = rest[0] if rest else None
+        if isinstance(orelse, RealtimeIf):
+            orelse = Block(span=orelse.span, statements=[orelse])
+        return RealtimeIf(
+            span=_span_from_meta(meta), condition=condition, body=body, orelse=orelse
         )
 
     def if_stmt(self, meta: Meta, children) -> If:

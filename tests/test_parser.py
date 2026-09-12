@@ -15,7 +15,7 @@ from slanq.parser import parse_source
         "qbool flag = true;",
         "param float theta;",
         "param int gamma[4];",
-        "int r = measure(a);",
+        "rt int<> r = measure(a);",
         "a += b;",
         "X(a[1]);",
         "CX(b[2], a[0]);",

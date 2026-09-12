@@ -31,6 +31,7 @@ from slanq.ir import (
     ClassicalIfOp,
     ClbitRef,
     DeclareAncillaOp,
+    DeclareRealtimeOp,
     GateOp,
     InitOp,
     IRModule,
@@ -43,6 +44,7 @@ from slanq.ir import (
     QubitBit,
     QubitRef,
     QubitSlice,
+    RealtimeIfOp,
     ResetOp,
 )
 from slanq.lowering import lower_to_ir
@@ -93,7 +95,7 @@ def test_single_qubit_register_is_addressed_bitwise(lower: LowerSource) -> None:
 
 
 def test_measurement_creates_clbit_and_op(lower: LowerSource) -> None:
-    module, bag = lower("qbool q = false; int result = measure(q);")
+    module, bag = lower("qbool q = false; rt int<> result = measure(q);")
     assert not bag.has_errors
 
     (clbit,) = module.clbits
@@ -131,9 +133,15 @@ _NOT_UNITARY = "a qif body may only contain unitary operations; {} is not one"
     [
         ("reset(b);", _NOT_UNITARY.format("'reset'")),
         ("measure(b);", "the result of 'measure' must be assigned"),
+        ("rt int<> r = measure(b);", _NOT_UNITARY.format("measurement")),
         ("int r = measure(b);", _NOT_UNITARY.format("measurement")),
     ],
-    ids=["reset", "bare measure", "assigned measure"],
+    ids=[
+        "reset",
+        "bare measure",
+        "assigned measure",
+        "measure assigned build-time",
+    ],
 )
 def test_a_qif_body_rejects_a_non_unitary_operation(
     lower: LowerSource, body: str, message: str
@@ -219,7 +227,7 @@ def test_two_qubit_gate_keeps_operand_order(lower: LowerSource) -> None:
 
 
 def test_multi_qubit_measurement_sizes_the_register(lower: LowerSource) -> None:
-    module, bag = lower("qint<3> a = 0; int r = measure(a);")
+    module, bag = lower("qint<3> a = 0; rt int<> r = measure(a);")
     assert not bag.has_errors
     assert module.clbits[0] == ClbitRef(name="r", size=3)
 
@@ -310,7 +318,7 @@ def test_runtime_angle_is_reported_as_a_limitation(lower: LowerSource) -> None:
     """A classical constant (`float t = 1.0;`) is resolvable at compile time
     (see test_classical_name_is_a_renderable_angle below) -- a genuinely
     runtime value, like a measurement result, is what stays a limitation."""
-    _, bag = lower("qbool q = false; qbool q2 = false; int t = measure(q); RX(t, q2);")
+    _, bag = lower("qbool q = false; qbool q2 = false; rt int<> t = measure(q); RX(t, q2);")
     assert bag.has_errors
     assert "not known at compile time" in bag.errors[0].message
 
@@ -1005,12 +1013,12 @@ REJECTED_SHAPES = [
     "qbool q = false;\nRX(PI, q, q);\n",
     "phase();\n",
     "phase(PI, PI);\n",
-    "qint<2> a = 0;\nint r = measure();\n",
+    "qint<2> a = 0;\nrt int<> r = measure();\n",
     "qint<0> a = 0;\nqbool t = false;\nqif(!(a == 0) && a == 0) { X(t); }\n",
     "qint<0> a = 0;\nqbool t = false;\nqif(a == 0 && a == 0) { X(t); }\n",
     "qint<0> a = 0;\nqint<2> b = 0;\na += b;\n",
-    "qint<0> a = 0;\nint r = measure(a);\n",
-    "qint<2> a = 0;\nint r = measure(a, a);\n",
+    "qint<0> a = 0;\nrt int<> r = measure(a);\n",
+    "qint<2> a = 0;\nrt int<> r = measure(a, a);\n",
     "qint<2> a = 0;\nparam int g[2];\na += g[0];\n",
     "qint<2> a = 0;\nqint<2> b = 0;\na += b[0];\n",
     "qint<2> a = 0;\na += 1.5;\n",
@@ -1171,3 +1179,43 @@ def test_an_if_inside_a_qif_body_stays_a_branch(lower: LowerSource) -> None:
     qif = module.body.ops[-1]
     assert isinstance(qif, QIfOp)
     assert [type(op).__name__ for op in qif.body.ops] == ["GateOp", "ClassicalIfOp"]
+
+
+_RT_PRELUDE = (
+    "qint<3> a = []; qint<2> b = 0; qbool f = false; rt int<> m = measure(a); "
+)
+
+
+def test_an_rt_if_becomes_its_own_op(lower: LowerSource) -> None:
+    module, bag = lower(f"{_RT_PRELUDE}rt if (m < 4) {{ X(f); }} else {{ Y(f); }}")
+    assert not bag.has_errors
+
+    branch = module.body.ops[-1]
+    assert isinstance(branch, RealtimeIfOp)
+    assert [type(op).__name__ for op in branch.body.ops] == ["GateOp"]
+    assert branch.orelse is not None
+
+
+def test_a_measurement_declares_a_classical_register(lower: LowerSource) -> None:
+    """A measurement's result is already real-time, so it needs no variable of
+    its own on the control processor."""
+    module, bag = lower(f"{_RT_PRELUDE}")
+    assert not bag.has_errors
+    assert [ref.name for ref in module.clbits] == ["m"]
+    assert not any(isinstance(op, DeclareRealtimeOp) for op in module.body.ops)
+
+
+def test_a_realtime_variable_is_declared_on_the_control_processor(
+    lower: LowerSource,
+) -> None:
+    module, bag = lower(f"{_RT_PRELUDE}rt int<4> c = 3;")
+    assert not bag.has_errors
+    declaration = module.body.ops[-1]
+    assert isinstance(declaration, DeclareRealtimeOp)
+    assert (declaration.name, declaration.size, declaration.is_bool) == ("c", 4, False)
+
+
+def test_a_qif_body_rejects_a_real_time_branch(lower: LowerSource) -> None:
+    _, bag = lower(f"{_RT_PRELUDE}qif(b == 2) {{ rt if (m < 4) {{ X(f); }} }}")
+    (diagnostic,) = bag.errors
+    assert diagnostic.message == _NOT_UNITARY.format("a real-time branch")

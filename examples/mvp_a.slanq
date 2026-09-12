@@ -3,4 +3,4 @@
 
 qbool q = false;
 H(q);
-int result = measure(q);
+rt int<> result = measure(q);

@@ -1,4 +1,4 @@
 qint<2> q = 0;
 H(q[0]);
 CX(q[0], q[1]);
-int result = measure(q);
+rt int<> result = measure(q);

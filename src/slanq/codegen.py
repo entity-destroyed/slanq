@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import cast
 
 from slanq import __version__
@@ -14,14 +15,21 @@ from slanq.ast_nodes import (
     Name,
     ParamArrayDecl,
     ParamDecl,
+    RealtimeDecl,
     UnaryOp,
 )
-from slanq.builtin import BUILTIN_CONSTANTS, BUILTIN_FUNCTIONS, const_int
+from slanq.builtin import (
+    BUILTIN_CONSTANTS,
+    BUILTIN_FUNCTIONS,
+    const_int,
+    const_value,
+)
 from slanq.diagnostics import SlanqError
 from slanq.ir import (
     ArithmeticOp,
     ClassicalIfOp,
     DeclareAncillaOp,
+    DeclareRealtimeOp,
     GateOp,
     InitOp,
     IRBlock,
@@ -36,6 +44,7 @@ from slanq.ir import (
     QubitOperand,
     QubitRef,
     QubitSlice,
+    RealtimeIfOp,
     ResetOp,
 )
 
@@ -69,6 +78,18 @@ NON_ASSOCIATIVE: frozenset[str] = frozenset({"==", "!=", "<", "<=", ">", ">="})
 PYTHON_BINARY_OPS: dict[str, str] = {"&&": "and", "||": "or"}
 
 PYTHON_CONSTANTS: dict[str, str] = {"PI": "np.pi"}
+
+EXPR_BUILDERS: dict[str, str] = {
+    "==": "equal", "!=": "not_equal",
+    "<": "less", "<=": "less_equal", ">": "greater", ">=": "greater_equal",
+    "&&": "logic_and", "||": "logic_or", "!": "logic_not",
+    "&": "bit_and", "|": "bit_or", "^": "bit_xor", "~": "bit_not",
+    "+": "add", "-": "sub", "*": "mul", "/": "div",
+}
+
+COMPARISON_BUILDERS: frozenset[str] = frozenset(
+    {"equal", "not_equal", "less", "less_equal", "greater", "greater_equal"}
+)
 
 # Lower-casing the Slanq name happens to work for every gate today, but it
 # would silently emit `circuit.phase(...)` -- a method Qiskit does not have --
@@ -214,6 +235,9 @@ class _Generator:
         self.needs_cdkm_adder = False
         self.needs_hrs_multiplier = False
         self._qif_counter = 0
+        self._realtime_counter = 0
+        self.needs_expr = False
+        self._realtime_widths: dict[str, int] = {}
         self._phase_counter = 0
         self._phase_total: str | None = None
 
@@ -230,6 +254,10 @@ class _Generator:
         third_party = [f"from qiskit import {', '.join(sorted(qiskit_names))}"]
         if module.params:
             third_party.append("from qiskit.circuit import Parameter")
+        if self.needs_expr:
+            third_party.append(
+                "from qiskit.circuit.classical import expr, types"
+            )
 
         library_names = []
         if self.needs_state_preparation:
@@ -251,6 +279,8 @@ class _Generator:
         return standard + [""] + third_party
 
     def body_lines(self, module: IRModule) -> list[str]:
+        self._realtime_widths = {ref.name: ref.size for ref in module.clbits}
+        _collect_realtime_widths(module.body, self._realtime_widths)
         lines = [
             f'{ref.name} = QuantumRegister({ref.size}, "{ref.name}")' for ref in module.qubits
         ]
@@ -304,6 +334,32 @@ class _Generator:
 
         if isinstance(op, ResetOp):
             return [f"{circuit_var}.reset({_operand_source(op.target)})"]
+
+        if isinstance(op, DeclareRealtimeOp):
+            self.needs_expr = True
+            value = self.expression(op.value)
+            if op.is_bool:
+                value = f"int({value})"
+            return [
+                f'{op.name} = {circuit_var}.add_var("{op.name}", '
+                f"expr.lift({value}, types.Uint({op.size})))"
+            ]
+
+        if isinstance(op, RealtimeIfOp):
+            self.needs_expr = True
+            condition = _as_truth(self._realtime_expr(op.condition))
+            if op.orelse is None:
+                return [f"with {circuit_var}.if_test({condition}):"] + self._indented(
+                    op.body, circuit_var, qubits
+                )
+            self._realtime_counter += 1
+            handle = f"_else_{self._realtime_counter}"
+            return (
+                [f"with {circuit_var}.if_test({condition}) as {handle}:"]
+                + self._indented(op.body, circuit_var, qubits)
+                + [f"with {handle}:"]
+                + self._indented(op.orelse, circuit_var, qubits)
+            )
 
         if isinstance(op, ClassicalIfOp):
             lines = [f"if {self.expression(op.condition)}:"]
@@ -686,6 +742,55 @@ class _Generator:
         rendered = ", ".join(self.expression(argument) for argument in expression.args)
         return f"{PYTHON_FUNCTIONS[name]}({rendered})"
 
+    def _realtime_expr(self, expression: Expression) -> _RealtimeValue:
+        """One Slanq expression as a Qiskit `expr` tree. Every real-time value
+        is a Uint of its declared width; a part with no real-time value in it
+        keeps its build-time value until it meets a width."""
+        if not _touches_realtime(expression):
+            return _RealtimeValue(
+                code=self.expression(expression),
+                width=None,
+                constant=const_value(expression),
+                is_constant=True,
+            )
+
+        if isinstance(expression, Name):
+            symbol = expression.resolved_symbol
+            assert isinstance(symbol, RealtimeDecl), (
+                "a real-time condition holds real-time variables and build-time "
+                "constants; analysis rejects anything else"
+            )
+            return _RealtimeValue(
+                code=expression.name, width=self._realtime_widths[expression.name]
+            )
+
+        if isinstance(expression, UnaryOp):
+            builder = EXPR_BUILDERS[expression.op]
+            operand = self._realtime_expr(expression.operand)
+            if expression.op == "!":
+                return _RealtimeValue(
+                    code=f"expr.logic_not({_as_truth(operand)})", width=None
+                )
+            return _RealtimeValue(
+                code=f"expr.{builder}({operand.code})", width=operand.width
+            )
+
+        assert isinstance(expression, BinaryOp)
+        builder = EXPR_BUILDERS[expression.op]
+        left = self._realtime_expr(expression.left)
+        right = self._realtime_expr(expression.right)
+        if builder in ("logic_and", "logic_or"):
+            return _RealtimeValue(
+                code=f"expr.{builder}({_as_truth(left)}, {_as_truth(right)})",
+                width=None,
+            )
+
+        width = max(_operand_width_of(left), _operand_width_of(right))
+        return _RealtimeValue(
+            code=f"expr.{builder}({_widened(left, width)}, {_widened(right, width)})",
+            width=None if builder in COMPARISON_BUILDERS else width,
+        )
+
     def _indented(
         self, block: IRBlock, circuit_var: str, qubits: QubitMap | None
     ) -> list[str]:
@@ -753,6 +858,73 @@ def _body_qubits(body: IRBlock) -> list[Qubit]:
     seen: dict[Qubit, None] = {}
     _collect_body_qubits(body, seen)
     return list(seen)
+
+
+@dataclass(frozen=True, kw_only=True)
+class _RealtimeValue:
+    """A rendered piece of a real-time condition. `width` is the Uint width it
+    has, or None when it is already a truth value. A build-time part carries
+    its value instead, since what it renders as depends on what it meets."""
+
+    code: str
+    width: int | None
+    constant: object = None
+    is_constant: bool = False
+
+
+def _bits_for(value: int) -> int:
+    return max(1, int(value).bit_length())
+
+
+def _operand_width_of(value: _RealtimeValue) -> int:
+    if value.is_constant and isinstance(value.constant, int):
+        return _bits_for(value.constant)
+    return value.width or 1
+
+
+def _widened(value: _RealtimeValue, width: int) -> str:
+    """Qiskit refuses to mix widths: a narrower real-time value is cast up, a
+    build-time value is lifted at the width it has to meet."""
+    if value.is_constant:
+        literal = (
+            int(value.constant) if type(value.constant) is bool else value.code
+        )
+        return f"expr.lift({literal}, types.Uint({width}))"
+    if value.width is not None and value.width < width:
+        return f"expr.cast({value.code}, types.Uint({width}))"
+    return value.code
+
+
+def _as_truth(value: _RealtimeValue) -> str:
+    """Qiskit's if_test takes a Bool, and a one-bit real-time value is a Uint
+    until it is compared with something."""
+    if value.is_constant:
+        return f"expr.lift({bool(value.constant)})"
+    if value.width is None:
+        return value.code
+    return f"expr.equal({value.code}, 1)"
+
+
+def _touches_realtime(expression: Expression) -> bool:
+    if isinstance(expression, Name):
+        return isinstance(expression.resolved_symbol, RealtimeDecl)
+    if isinstance(expression, UnaryOp):
+        return _touches_realtime(expression.operand)
+    if isinstance(expression, BinaryOp):
+        return _touches_realtime(expression.left) or _touches_realtime(expression.right)
+    return False
+
+
+def _collect_realtime_widths(block: IRBlock, widths: dict[str, int]) -> None:
+    for op in block.ops:
+        if isinstance(op, DeclareRealtimeOp):
+            widths[op.name] = op.size
+        for nested in (
+            getattr(op, "body", None),
+            getattr(op, "orelse", None),
+        ):
+            if isinstance(nested, IRBlock):
+                _collect_realtime_widths(nested, widths)
 
 
 def _phases_only(block: IRBlock) -> IRBlock:

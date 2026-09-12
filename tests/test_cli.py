@@ -65,45 +65,52 @@ def test_missing_command_exits_with_usage_error() -> None:
 
 RUNNABLE_PROGRAMS = {
     "gates and measurement": (
-        "qint<2> q = 0;\nH(q[0]);\nCX(q[0], q[1]);\nint result = measure(q);\n"
+        "qint<2> q = 0;\nH(q[0]);\nCX(q[0], q[1]);\nrt int<> result = measure(q);\n"
     ),
     "arithmetic": (
         "qint<3> a = 1;\nqint<2> b = 2;\na += b;\na -= 1;\n"
-        "int result = measure(a);\n"
+        "rt int<> result = measure(a);\n"
     ),
     "multiply accumulate": (
         "qint<2> a = 2;\nqint<2> b = 3;\nqint<4> c = 0;\nc += a * b;\n"
-        "int result = measure(c);\n"
+        "rt int<> result = measure(c);\n"
     ),
     "qif with a phase-only body": (
-        "qint<2> a = 2;\nqif(a == 2) { phase(PI / 3); }\nint result = measure(a);\n"
+        "qint<2> a = 2;\nqif(a == 2) { phase(PI / 3); }\nrt int<> result = measure(a);\n"
     ),
     "qif with a negated condition": (
         "qint<2> a = 2;\nqbool t = false;\nqif(!(a == 2)) { X(t); }\n"
-        "int result = measure(t);\n"
+        "rt int<> result = measure(t);\n"
     ),
     "loop and process": (
         "process flip(qint x) { X(x); }\nqint<3> a = 0;\n"
-        "for(int i in range(3)) { flip(a[i]); }\nint result = measure(a);\n"
+        "for(int i in range(3)) { flip(a[i]); }\nrt int<> result = measure(a);\n"
     ),
     "superposition and helpers": (
         "qint<1> amp = {1 / sqrt(2), 1 / sqrt(2)};\nqbool q = false;\n"
-        "RX(round(1.5) * PI / 4, q);\nint result = measure(amp);\n"
+        "RX(round(1.5) * PI / 4, q);\nrt int<> result = measure(amp);\n"
     ),
     "runtime parameters": (
         "param float theta;\nparam int gamma[2];\nqbool q = false;\n"
-        "RX(theta + gamma[1], q);\nint result = measure(q);\n"
+        "RX(theta + gamma[1], q);\nrt int<> result = measure(q);\n"
     ),
     "reset": (
         "qint<2> a = 3;\nH(a[1]);\nreset(a);\nX(a[0]);\n"
-        "int result = measure(a);\n"
+        "rt int<> result = measure(a);\n"
     ),
     "build-time branches": (
         "qint<3> a = 0;\nint n = 5;\nbool t = true;\n"
         "if (n > 9) { X(a[0]); } else if (n > 3) { X(a[1]); } else { H(a); }\n"
         "if (!t) { X(a[2]); }\n"
         "qif(a == 2) { if (t) { phase(PI / 3); } }\n"
-        "int result = measure(a);\n"
+        "rt int<> result = measure(a);\n"
+    ),
+    "teleportation": (
+        "qbool msg = true;\nqbool alice = false;\nqbool bob = false;\n"
+        "H(alice);\nCX(alice, bob);\nCX(msg, alice);\nH(msg);\n"
+        "rt int<> m1 = measure(msg);\nrt int<> m2 = measure(alice);\n"
+        "rt if (m2 == 1) { X(bob); }\nrt if (m1 == 1) { Z(bob); }\n"
+        "rt int<> result = measure(bob);\n"
     ),
 }
 

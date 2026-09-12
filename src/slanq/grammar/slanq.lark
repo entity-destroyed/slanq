@@ -13,6 +13,7 @@ start: statement*
 ?statement: declaration
           | process_def
           | if_stmt
+          | rt_if_stmt
           | qif_stmt
           | for_stmt
           | while_stmt
@@ -26,11 +27,18 @@ start: statement*
 
 ?declaration: qint_decl
             | qbool_decl
+            | rt_int_decl
+            | rt_bool_decl
             | classical_decl
             | param_array_decl
             | param_decl
 
 qint_decl:        "qint" "<" INT ">" NAME "=" q_initializer ";"
+// A real-time classical variable: it lives on the processor beside the QPU,
+// where bits are scarce, so the width is written out. Empty angle brackets
+// take it from the initializer.
+rt_int_decl:      "rt" "int" "<" [INT] ">" NAME "=" expr ";"
+rt_bool_decl:     "rt" "bool" NAME "=" expr ";"
 qbool_decl:       "qbool" NAME "=" q_initializer ";"
 classical_decl:   CTYPE NAME "=" expr ";"
 param_decl:       "param" CTYPE NAME ";"
@@ -60,12 +68,14 @@ AUGOP: "+=" | "-="
 // --- Control structures ----------------------------------------------------
 
 if_stmt:    "if" "(" expr ")" block ("else" else_branch)?
+rt_if_stmt: "rt" "if" "(" expr ")" block ("else" rt_else_branch)?
 qif_stmt:   "qif" "(" expr ")" block
 while_stmt: "while" "(" expr ")" block
 
 // `else if` is an else branch holding one if, the same shape Python's own ast
 // module uses.
 ?else_branch: block | if_stmt
+?rt_else_branch: block | rt_if_stmt
 
 // The iterable is an ordinary expression so that an unsupported one can be
 // rejected with a meaningful message; only `range(...)` is accepted today.

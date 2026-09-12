@@ -229,10 +229,10 @@ def test_a_body_declaration_is_reported_even_if_never_called(expanded: Expanded)
 
 
 def test_a_measure_in_a_body_is_a_declaration_too(expanded: Expanded) -> None:
-    """`int r = measure(x)` is a declaration, so it hits the same limit -- and
+    """`rt int<> r = measure(x)` is a declaration, so it hits the same limit -- and
     it has the same failure mode, a second `r` register per extra call."""
     _, bag = expanded(
-        "process f(qint x) { int r = measure(x); }\nqint<2> a = 0;\nf(a);\n"
+        "process f(qint x) { rt int<> r = measure(x); }\nqint<2> a = 0;\nf(a);\n"
     )
     assert any("declaration inside a process body" in m for m in _messages(bag))
 
@@ -480,7 +480,7 @@ def test_a_declaration_in_a_loop_body_is_reported_as_a_limitation(
 
 
 def test_a_measure_in_a_loop_body_is_a_declaration_too(expanded: Expanded) -> None:
-    _, bag = expanded("qint<2> a = 0;\nfor(int i in range(2)) { int r = measure(a); }\n")
+    _, bag = expanded("qint<2> a = 0;\nfor(int i in range(2)) { rt int<> r = measure(a); }\n")
     assert any("inside a loop body" in message for message in _messages(bag))
 
 

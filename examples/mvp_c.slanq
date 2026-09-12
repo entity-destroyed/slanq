@@ -1,4 +1,4 @@
 qint<2> a = [];
 qbool out = false;
 qif(a == 2) { X(out); }
-int result = measure(out);
+rt int<> result = measure(out);

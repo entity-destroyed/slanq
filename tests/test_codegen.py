@@ -1056,7 +1056,7 @@ _AUDIT_SOURCE = (
     "qif(!(b == 2)) { X(flag); }\n"
     "for(int i in range(2)) { X(a[i]); }\n"
     "process p(qint x, qint y) { x += y; }\np(a, b);\n"
-    "int result = measure(a);\n"
+    "rt int<> result = measure(a);\n"
 )
 _AUDIT_DECLARED = {"theta", "gamma", "a", "b", "c", "flag", "amp", "mix", "result"}
 
@@ -1271,3 +1271,67 @@ def test_an_unconditional_phase_still_renders_as_one_expression() -> None:
     source = _if_source(f"{_IF_DECLS}qif(a == 2) {{ phase(PI / 3); }}\n")
     assert "_qif_phase" not in source
     assert "circuit.mcp(np.pi / 3, [a[0]], a[1])" in source
+
+
+_RT_SOURCE = (
+    "qint<3> a = [];\nqbool f = false;\nint n = 5;\nrt int<> m = measure(a);\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("condition", "rendered"),
+    [
+        ("m < 4", "expr.less(m, expr.lift(4, types.Uint(3)))"),
+        ("m == 3", "expr.equal(m, expr.lift(3, types.Uint(3)))"),
+        ("m < n", "expr.less(m, expr.lift(5, types.Uint(3)))"),
+        (
+            "m < 4 && m > 1",
+            "expr.logic_and(expr.less(m, expr.lift(4, types.Uint(3))), "
+            "expr.greater(m, expr.lift(1, types.Uint(3))))",
+        ),
+        ("!(m < 4)", "expr.logic_not(expr.less(m, expr.lift(4, types.Uint(3))))"),
+        (
+            "m < 4 && n > 2",
+            "expr.logic_and(expr.less(m, expr.lift(4, types.Uint(3))), expr.lift(True))",
+        ),
+    ],
+)
+def test_a_real_time_condition_becomes_an_expr_tree(
+    condition: str, rendered: str
+) -> None:
+    source = _if_source(f"{_RT_SOURCE}rt if ({condition}) {{ X(f); }}\n")
+    assert f"with circuit.if_test({rendered}):" in source
+
+
+def test_a_literal_wider_than_the_register_casts_it_up() -> None:
+    """Qiskit refuses `less(Uint(3), 100)` outright, so the value being
+    compared has to be widened rather than the comparison dropped."""
+    source = _if_source(f"{_RT_SOURCE}rt if (m < 100) {{ X(f); }}\n")
+    assert "expr.less(expr.cast(m, types.Uint(7)), expr.lift(100, types.Uint(7)))" in source
+
+
+def test_a_narrower_real_time_value_casts_up_to_the_wider_one() -> None:
+    source = _if_source(f"{_RT_SOURCE}rt int<5> c = 3;\nrt if (m < c) {{ X(f); }}\n")
+    assert "expr.less(expr.cast(m, types.Uint(5)), c)" in source
+
+
+def test_a_bare_real_time_bool_is_compared_with_one() -> None:
+    """if_test takes a Bool, and a one-bit real-time value is a Uint until it
+    is compared with something."""
+    source = _if_source(f"{_RT_SOURCE}rt bool g = true;\nrt if (g) {{ X(f); }}\n")
+    assert 'g = circuit.add_var("g", expr.lift(int(True), types.Uint(1)))' in source
+    assert "with circuit.if_test(expr.equal(g, 1)):" in source
+
+
+def test_an_rt_else_uses_the_context_manager_handle() -> None:
+    source = _if_source(f"{_RT_SOURCE}rt if (m < 4) {{ X(f); }} else {{ Y(f); }}\n")
+    assert "with circuit.if_test(" in source
+    assert ") as _else_1:" in source
+    assert "    with _else_1:" in source
+
+
+def test_expr_is_imported_only_when_a_condition_needs_it() -> None:
+    with_condition = _if_source(f"{_RT_SOURCE}rt if (m < 4) {{ X(f); }}\n")
+    without = _if_source("qbool q = false;\nH(q);\n")
+    assert "from qiskit.circuit.classical import expr, types" in with_condition
+    assert "expr" not in without

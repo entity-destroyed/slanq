@@ -26,6 +26,8 @@ from slanq.ast_nodes import (
     Program,
     QIf,
     QuantumDecl,
+    RealtimeDecl,
+    RealtimeIf,
     Statement,
     Type,
     UnaryOp,
@@ -47,6 +49,7 @@ from slanq.ir import (
     ClassicalIfOp,
     ClbitRef,
     DeclareAncillaOp,
+    DeclareRealtimeOp,
     GateOp,
     InitOp,
     IRBlock,
@@ -62,6 +65,7 @@ from slanq.ir import (
     QubitOperand,
     QubitRef,
     QubitSlice,
+    RealtimeIfOp,
     ResetOp,
 )
 from slanq.visitor import NodeVisitor
@@ -171,6 +175,7 @@ class _Lowerer(NodeVisitor):
             # A compile-time classical constant; it has no circuit representation.
             return
 
+        self._unreachable("a measurement assigned to a build-time variable", node.span)
         source = self._measure_source(initializer)
         if source is None:
             return
@@ -185,6 +190,41 @@ class _Lowerer(NodeVisitor):
         ops = self._lower_gate_statement(node, in_qif=False)
         if ops is not None:
             self._block.ops.extend(ops)
+
+    def visit_RealtimeDecl(self, node: RealtimeDecl) -> None:
+        initializer = node.initializer
+        if isinstance(initializer, Call) and initializer.callee.name == MEASURE:
+            source = self._measure_source(initializer)
+            if source is None:
+                return
+            clbit = ClbitRef(name=node.name, size=source.size)
+            self.module.clbits.append(clbit)
+            self._block.ops.append(
+                MeasurementOp(span=node.span, source=source, target=clbit)
+            )
+            return
+
+        if node.width is None:
+            self._unreachable("a real-time variable of unknown width", node.span)
+            return
+        self._block.ops.append(
+            DeclareRealtimeOp(
+                span=node.span,
+                name=node.name,
+                size=node.width,
+                value=initializer,
+                is_bool=isinstance(node.declared_type, BoolType),
+            )
+        )
+
+    def visit_RealtimeIf(self, node: RealtimeIf) -> None:
+        body = self._lower_block(node.body)
+        orelse = None if node.orelse is None else self._lower_block(node.orelse)
+        self._block.ops.append(
+            RealtimeIfOp(
+                span=node.span, condition=node.condition, body=body, orelse=orelse
+            )
+        )
 
     def visit_If(self, node: If) -> None:
         body = self._lower_block(node.body)
@@ -448,6 +488,9 @@ class _Lowerer(NodeVisitor):
 
     def _qif_body_unimplemented(self, statement: Statement) -> None:
         kind = type(statement).__name__
+        if isinstance(statement, RealtimeIf):
+            self._error(_not_unitary("a real-time branch"), statement.span)
+            return
         if _measured_initializer(statement):
             self._error(_not_unitary("measurement"), statement.span)
             return
@@ -961,7 +1004,9 @@ def _measured_initializer(node: Statement) -> bool:
     """A classical declaration whose value comes from a non-unitary quantum
     builtin. Its statement kind says `ClassicalDecl`, but what a qif body
     rejects about it is the measurement, not the declaration."""
-    if not isinstance(node, ClassicalDecl) or not isinstance(node.initializer, Call):
+    if not isinstance(node, ClassicalDecl | RealtimeDecl) or not isinstance(
+        node.initializer, Call
+    ):
         return False
     signature = BUILTIN_SIGNATURES.get(node.initializer.callee.name)
     return signature is not None and _is_non_unitary_quantum(

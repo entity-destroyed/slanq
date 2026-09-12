@@ -32,6 +32,8 @@ from slanq.ast_nodes import (
     QIf,
     QIntType,
     QuantumDecl,
+    RealtimeDecl,
+    RealtimeIf,
     Span,
     Symbol,
     Type,
@@ -1039,9 +1041,9 @@ def _is_boolean(expression: Expression) -> bool:
         return expression.op == "!"
     if isinstance(expression, Name):
         symbol = expression.resolved_symbol
-        return isinstance(symbol, ClassicalDecl | ParamDecl) and isinstance(
-            symbol.declared_type, BoolType
-        )
+        return isinstance(
+            symbol, ClassicalDecl | ParamDecl | RealtimeDecl
+        ) and isinstance(symbol.declared_type, BoolType)
     if isinstance(expression, Index):
         symbol = expression.base.resolved_symbol
         return isinstance(symbol, ParamArrayDecl) and isinstance(
@@ -1050,11 +1052,13 @@ def _is_boolean(expression: Expression) -> bool:
     return False
 
 
-def _is_measurement_result(symbol: Declaration) -> bool:
-    return (
-        isinstance(symbol, ClassicalDecl)
-        and isinstance(symbol.initializer, Call)
-        and symbol.initializer.callee.name == MEASURE
+def _is_measurement(expression: Expression) -> bool:
+    return isinstance(expression, Call) and expression.callee.name == MEASURE
+
+
+def _touches_realtime(expression: Expression) -> bool:
+    return any(
+        isinstance(symbol, RealtimeDecl) for symbol in _declarations_in(expression)
     )
 
 
@@ -1070,6 +1074,234 @@ def _walk(node: Node):
     yield node
     for child in iter_child_nodes(node):
         yield from _walk(child)
+
+
+class _MeasurementDeclChecker(_Checker):
+    """Inside a qif body the declaration form is beside the point -- a
+    measurement cannot stand there at all -- so the rule that says so reports
+    alone."""
+
+    def __init__(self, bag: DiagnosticBag) -> None:
+        super().__init__(bag)
+        self._in_qif = False
+
+    def visit_QIf(self, node: QIf) -> None:
+        outer, self._in_qif = self._in_qif, True
+        try:
+            self.generic_visit(node)
+        finally:
+            self._in_qif = outer
+
+    def visit_ClassicalDecl(self, node: ClassicalDecl) -> None:
+        if _is_measurement(node.initializer) and not self._in_qif:
+            self._reject(
+                f"a measurement result is real-time; declare '{node.name}' as "
+                "rt int<>",
+                node,
+            )
+
+
+class _RealtimeDeclChecker(_Checker):
+
+    def visit_RealtimeDecl(self, node: RealtimeDecl) -> None:
+        self.generic_visit(node)
+
+        if _is_measurement(node.initializer):
+            self._check_measured_width(node)
+            return
+
+        self._warn(
+            f"'{node.name}' is a real-time variable that is not a measurement "
+            "result; Aer 0.17.2 crashes on reading one in a condition",
+            node,
+        )
+        value = self._value(node.initializer)
+        if value is None:
+            self._reject(
+                f"'{node.name}' must start from a measurement or a value known "
+                "while the circuit is being built",
+                node,
+            )
+            return
+        if not isinstance(value, int):
+            self._reject(
+                f"a real-time variable holds a whole number or a truth value, "
+                f"so '{node.name}' cannot start from {value!r}",
+                node,
+            )
+            return
+        if value < 0:
+            self._reject(
+                f"a real-time variable is unsigned, so '{node.name}' cannot "
+                f"start from {value}",
+                node,
+            )
+            return
+        needed = max(1, int(value).bit_length())
+        if node.width is None:
+            node.width = needed
+        elif node.width < 1:
+            self._reject(f"'{node.name}' must be at least one bit wide", node)
+        elif needed > node.width:
+            self._reject(
+                f"{value} does not fit in the {node.width} bits of '{node.name}'",
+                node,
+            )
+
+    def _check_measured_width(self, node: RealtimeDecl) -> None:
+        call = node.initializer
+        assert isinstance(call, Call)
+        if len(call.args) != 1 or not isinstance(call.args[0], Name):
+            return
+        symbol = call.args[0].resolved_symbol
+        if not isinstance(symbol, QuantumDecl):
+            return
+        measured = qubit_count(symbol.declared_type)
+        if measured is None:
+            return
+        if node.width is None:
+            node.width = measured
+        elif node.width != measured:
+            self._reject(
+                f"'{symbol.name}' measures into {measured} bits, not the "
+                f"{node.width} declared for '{node.name}'",
+                node,
+            )
+
+
+class _RealtimeIfChecker(_Checker):
+    """`rt if`. The branch is taken while the circuit runs, so its condition
+    has to name something that exists then."""
+
+    def visit_RealtimeIf(self, node: RealtimeIf) -> None:
+        self.generic_visit(node)
+
+        for symbol in _declarations_in(node.condition):
+            if isinstance(symbol, QuantumDecl):
+                self._reject(
+                    f"'{symbol.name}' is a quantum variable, so it cannot be an "
+                    "rt if condition; use qif",
+                    node.condition,
+                )
+                return
+            if isinstance(symbol, ParamDecl | ParamArrayDecl):
+                self._reject(
+                    f"'{symbol.name}' is a param, which is bound after the "
+                    "circuit is built, so it cannot be an rt if condition",
+                    node.condition,
+                )
+                return
+
+        if not _is_boolean(node.condition):
+            self._reject(
+                "an rt if condition must be a true/false value", node.condition
+            )
+            return
+
+        if not _touches_realtime(node.condition):
+            self._reject(
+                "an rt if condition must read a real-time value; use if",
+                node.condition,
+            )
+            return
+
+        self._check_arithmetic(node.condition)
+        self._check_range(node.condition)
+        _check_no_declarations(self, node.body, "rt if")
+        if node.orelse is not None:
+            _check_no_declarations(self, node.orelse, "rt if")
+
+        if not node.body.statements:
+            self._warn("this rt if body is empty", node.body)
+        if node.orelse is not None and not node.orelse.statements:
+            self._warn("this else body is empty", node.orelse)
+
+    def _check_arithmetic(self, expression: Expression) -> None:
+        if isinstance(expression, BinaryOp):
+            if expression.op in ("+", "-", "*", "/", "%", "**") and _touches_realtime(
+                expression
+            ):
+                self._warn(
+                    "Aer 0.17.2 cannot run arithmetic on a real-time value",
+                    expression,
+                )
+            self._check_arithmetic(expression.left)
+            self._check_arithmetic(expression.right)
+        elif isinstance(expression, UnaryOp):
+            self._check_arithmetic(expression.operand)
+
+    def _check_range(self, expression: Expression) -> None:
+        """A real-time value of N bits holds 0..2**N-1, so a comparison against
+        a constant outside that range has one answer for every run."""
+        if not isinstance(expression, BinaryOp):
+            if isinstance(expression, UnaryOp):
+                self._check_range(expression.operand)
+            return
+        if expression.op in ("&&", "||"):
+            self._check_range(expression.left)
+            self._check_range(expression.right)
+            return
+        if expression.op not in COMPARISONS:
+            return
+
+        for side, other in (
+            (expression.left, expression.right),
+            (expression.right, expression.left),
+        ):
+            width = _realtime_width(side)
+            if width is None:
+                continue
+            value = self._value(other)
+            if type(value) is not int:
+                continue
+            answer = _constant_answer(expression.op, width, value, side is expression.left)
+            if answer is not None:
+                self._warn(
+                    f"this comparison is always {str(answer).lower()}: a "
+                    f"{width}-bit real-time value is between 0 and "
+                    f"{2**width - 1}",
+                    expression,
+                )
+            return
+
+
+def _realtime_width(expression: Expression) -> int | None:
+    if not isinstance(expression, Name):
+        return None
+    symbol = expression.resolved_symbol
+    if isinstance(symbol, RealtimeDecl):
+        return symbol.width
+    return None
+
+
+def _constant_answer(op: str, width: int, value: int, realtime_on_left: bool) -> bool | None:
+    low, high = 0, 2**width - 1
+    if not realtime_on_left:
+        op = {"<": ">", ">": "<", "<=": ">=", ">=": "<="}.get(op, op)
+    outcomes = {_compare(op, candidate, value) for candidate in (low, high)}
+    if len(outcomes) == 1 and _compare(op, (low + high) // 2, value) in outcomes:
+        return outcomes.pop()
+    return None
+
+
+def _compare(op: str, left: int, right: int) -> bool:
+    return {
+        "==": left == right,
+        "!=": left != right,
+        "<": left < right,
+        "<=": left <= right,
+        ">": left > right,
+        ">=": left >= right,
+    }[op]
+
+
+def _check_no_declarations(checker: _Checker, block: Block, construct: str) -> None:
+    for statement in block.statements:
+        if isinstance(statement, Declaration):
+            checker._reject(
+                f"'{statement.name}' cannot be declared inside an {construct} body",
+                statement,
+            )
 
 
 class _IfChecker(_Checker):
@@ -1095,11 +1327,10 @@ class _IfChecker(_Checker):
                     node.condition,
                 )
                 return
-            if _is_measurement_result(symbol):
+            if isinstance(symbol, RealtimeDecl):
                 self._reject(
-                    f"'{symbol.name}' is a measurement result, which has no "
-                    "value while the circuit is being built; branching on one "
-                    "is not implemented yet",
+                    f"'{symbol.name}' is a real-time value, which has no value "
+                    "while the circuit is being built; use rt if",
                     node.condition,
                 )
                 return
@@ -1110,22 +1341,16 @@ class _IfChecker(_Checker):
 
         self._value(node.condition)
 
-        self._check_no_declarations(node.body)
+        _check_no_declarations(self, node.body, "if")
         if node.orelse is not None:
-            self._check_no_declarations(node.orelse)
+            _check_no_declarations(self, node.orelse, "if")
 
         if not node.body.statements:
             self._warn("this if body is empty", node.body)
         if node.orelse is not None and not node.orelse.statements:
             self._warn("this else body is empty", node.orelse)
 
-    def _check_no_declarations(self, block: Block) -> None:
-        for statement in block.statements:
-            if isinstance(statement, Declaration):
-                self._reject(
-                    f"'{statement.name}' cannot be declared inside an if body",
-                    statement,
-                )
+
 
 
 class _ParamTypeChecker(_Checker):
@@ -1167,6 +1392,9 @@ def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _QIfConditionChecker(bag).visit(ast)
     _QIfBodyChecker(bag).visit(ast)
     _IfChecker(bag).visit(ast)
+    _MeasurementDeclChecker(bag).visit(ast)
+    _RealtimeDeclChecker(bag).visit(ast)
+    _RealtimeIfChecker(bag).visit(ast)
     _ArithmeticChecker(bag).visit(ast)
     _ParamTypeChecker(bag).visit(ast)
 

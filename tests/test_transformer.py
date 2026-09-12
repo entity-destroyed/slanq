@@ -33,6 +33,7 @@ from slanq.ast_nodes import (
     QIf,
     QIntType,
     QuantumDecl,
+    RealtimeDecl,
     UnaryOp,
     While,
 )
@@ -132,9 +133,9 @@ def test_assignment_and_compound_assignment(build_ast: BuildAst) -> None:
     assert compound.op == "+="
 
 
-def test_classical_decl_with_measurement(build_ast: BuildAst) -> None:
-    (declaration,) = build_ast("int result = measure(q);").statements
-    assert isinstance(declaration, ClassicalDecl)
+def test_realtime_decl_with_measurement(build_ast: BuildAst) -> None:
+    (declaration,) = build_ast("rt int<> result = measure(q);").statements
+    assert isinstance(declaration, RealtimeDecl)
     assert declaration.name == "result"
     assert isinstance(declaration.declared_type, IntType)
     assert isinstance(declaration.initializer, Call)
@@ -205,7 +206,7 @@ def test_mvp_a_full_source(build_ast: BuildAst, mvp_a_source: str) -> None:
     assert len(statements) == 3
     assert isinstance(statements[0], QuantumDecl)
     assert isinstance(statements[1], ExprStatement)
-    assert isinstance(statements[2], ClassicalDecl)
+    assert isinstance(statements[2], RealtimeDecl)
 
 
 def test_hello_example_leaves_no_raw_parse_tree(build_ast: BuildAst, hello_source: str) -> None:

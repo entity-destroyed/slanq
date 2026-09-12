@@ -49,34 +49,34 @@ def test_hadamard_gives_both_outcomes(mvp_a_source: str) -> None:
 
 
 def test_false_initializer_always_measures_zero() -> None:
-    assert _counts("qbool q = false;\nint result = measure(q);\n") == {"0": SHOTS}
+    assert _counts("qbool q = false;\nrt int<> result = measure(q);\n") == {"0": SHOTS}
 
 
 def test_true_initializer_always_measures_one() -> None:
-    assert _counts("qbool q = true;\nint result = measure(q);\n") == {"1": SHOTS}
+    assert _counts("qbool q = true;\nrt int<> result = measure(q);\n") == {"1": SHOTS}
 
 
 def test_double_x_returns_to_zero() -> None:
-    source = "qbool q = false;\nX(q);\nX(q);\nint result = measure(q);\n"
+    source = "qbool q = false;\nX(q);\nX(q);\nrt int<> result = measure(q);\n"
     assert _counts(source) == {"0": SHOTS}
 
 
 def test_reset_returns_a_flipped_qubit_to_zero() -> None:
-    source = "qbool q = true;\nreset(q);\nint result = measure(q);\n"
+    source = "qbool q = true;\nreset(q);\nrt int<> result = measure(q);\n"
     assert _counts(source) == {"0": SHOTS}
 
 
 def test_reset_collapses_a_superposition_to_zero() -> None:
     """The one thing no unitary can do: the outcome is certain afterwards
     whatever the state was."""
-    source = "qbool q = false;\nH(q);\nreset(q);\nint result = measure(q);\n"
+    source = "qbool q = false;\nH(q);\nreset(q);\nrt int<> result = measure(q);\n"
     assert _counts(source) == {"0": SHOTS}
 
 
 def test_reset_of_one_qubit_leaves_the_others_alone() -> None:
     """Slanq is big-endian: a[0] is the most significant qubit, so resetting
     it takes 3 (0b11) to 1."""
-    source = "qint<2> a = 3;\nreset(a[0]);\nint result = measure(a);\n"
+    source = "qint<2> a = 3;\nreset(a[0]);\nrt int<> result = measure(a);\n"
     assert _counts(source) == {"01": SHOTS}
 
 
@@ -88,24 +88,24 @@ def test_bell_state_outcomes_are_correlated(mvp_b_source: str) -> None:
 
 def test_qint_constant_survives_the_endianness_split() -> None:
     """The canary for B1: a mirrored index or bit order would change the value."""
-    counts = _counts("qint<3> a = 5; int result = measure(a);")
+    counts = _counts("qint<3> a = 5; rt int<> result = measure(a);")
     assert counts == {"101": SHOTS}
 
 
 def test_indexed_gate_targets_the_intended_qubit() -> None:
     """Slanq a[0] is the most significant qubit, so flipping it gives 4, not 1."""
-    counts = _counts("qint<3> a = 0; X(a[0]); int result = measure(a);")
+    counts = _counts("qint<3> a = 0; X(a[0]); rt int<> result = measure(a);")
     assert counts == {"100": SHOTS}
 
 
 def test_last_index_is_the_least_significant_qubit() -> None:
-    counts = _counts("qint<3> a = 0; X(a[2]); int result = measure(a);")
+    counts = _counts("qint<3> a = 0; X(a[2]); rt int<> result = measure(a);")
     assert counts == {"001": SHOTS}
 
 
 def test_pi_rotation_flips_the_qubit() -> None:
     """RX(PI) is a bit flip up to phase; a half of it would not be deterministic."""
-    source = "qbool q = false;\nRX(PI, q);\nint result = measure(q);\n"
+    source = "qbool q = false;\nRX(PI, q);\nrt int<> result = measure(q);\n"
     assert _counts(source) == {"1": SHOTS}
 
 
@@ -115,7 +115,7 @@ def test_a_computed_angle_reaches_the_circuit_unfolded() -> None:
     assert result.qiskit_source is not None
     assert "_round(2.5) * np.pi / math.floor(7 / 2)" in result.qiskit_source
 
-    counts = _counts(source + "int result = measure(q);\n")
+    counts = _counts(source + "rt int<> result = measure(q);\n")
     assert counts == {"1": SHOTS}
 
 
@@ -123,14 +123,14 @@ def test_ccx_broadcast_computes_a_bitwise_and() -> None:
     """CCX over whole registers is one Toffoli per bit, so c becomes a & b."""
     source = (
         "qint<2> a = 3;\nqint<2> b = 2;\nqint<2> c = 0;\n"
-        "CCX(a, b, c);\nint result = measure(c);\n"
+        "CCX(a, b, c);\nrt int<> result = measure(c);\n"
     )
     assert _counts(source) == {"10": SHOTS}
 
 
 def test_empty_probability_list_is_a_cheap_equal_superposition() -> None:
     """[] is meant as Hadamards on every qubit, not a general StatePreparation."""
-    source = "qint<2> a = [];\nint result = measure(a);\n"
+    source = "qint<2> a = [];\nrt int<> result = measure(a);\n"
     result = compile_source(source, source_name="test.slanq")
     assert result.qiskit_source is not None
     assert "StatePreparation" not in result.qiskit_source
@@ -144,7 +144,7 @@ def test_uneven_probability_list_matches_the_given_distribution() -> None:
     """Slanq's index i and Qiskit's StatePreparation amplitude index i name the
     same basis state with no permutation -- the same rule as InitOp and
     measurement. Would fail if that mapping ever needed a mirror."""
-    source = "qint<2> b = [0, 0, 0.8, 0.2];\nint result = measure(b);\n"
+    source = "qint<2> b = [0, 0, 0.8, 0.2];\nrt int<> result = measure(b);\n"
     counts = _counts(source)
     assert set(counts) == {"10", "11"}
     assert counts["10"] > counts["11"]
@@ -154,7 +154,7 @@ def test_uneven_probability_list_matches_the_given_distribution() -> None:
 def test_probability_list_needing_normalization_still_runs() -> None:
     """A warning does not stop compilation, and the normalized amplitudes
     still describe a valid, correctly-proportioned distribution."""
-    source = "qint<2> c = [0.1, 0.1, 0.1, 0.1];\nint result = measure(c);\n"
+    source = "qint<2> c = [0.1, 0.1, 0.1, 0.1];\nrt int<> result = measure(c);\n"
     result = compile_source(source, source_name="test.slanq")
     assert result.diagnostics.warnings
     assert not result.diagnostics.has_errors
@@ -165,7 +165,7 @@ def test_probability_list_needing_normalization_still_runs() -> None:
 
 
 def test_qbool_probability_list() -> None:
-    source = "qbool q = [0.2, 0.8];\nint result = measure(q);\n"
+    source = "qbool q = [0.2, 0.8];\nrt int<> result = measure(q);\n"
     counts = _counts(source)
     assert set(counts) == {"0", "1"}
     assert counts["1"] > counts["0"]
@@ -192,7 +192,7 @@ def test_amplitude_list_with_negative_real_amplitude() -> None:
 
 
 def test_empty_amplitude_list_is_equal_superposition() -> None:
-    source = "qint<2> a = {};\nint result = measure(a);\n"
+    source = "qint<2> a = {};\nrt int<> result = measure(a);\n"
     result = compile_source(source, source_name="test.slanq")
     assert result.qiskit_source is not None
     assert "StatePreparation" not in result.qiskit_source
@@ -203,7 +203,7 @@ def test_empty_amplitude_list_is_equal_superposition() -> None:
 
 
 def test_amplitude_list_needing_normalization_still_runs() -> None:
-    source = "qbool q = {0.6, 0.6};\nint result = measure(q);\n"
+    source = "qbool q = {0.6, 0.6};\nrt int<> result = measure(q);\n"
     result = compile_source(source, source_name="test.slanq")
     assert result.diagnostics.warnings
     assert not result.diagnostics.has_errors
@@ -216,7 +216,7 @@ def test_amplitude_list_needing_normalization_still_runs() -> None:
 def test_amplitude_list_needing_normalization_with_a_complex_value() -> None:
     """The normalization warning and the correction it triggers must both work
     when the list contains a complex value, not just an all-real one."""
-    source = "qbool q = {0.6i, 0.6};\nint result = measure(q);\n"
+    source = "qbool q = {0.6i, 0.6};\nrt int<> result = measure(q);\n"
     result = compile_source(source, source_name="test.slanq")
     assert result.diagnostics.warnings
     assert not result.diagnostics.has_errors
@@ -255,7 +255,7 @@ def test_qif_equality_condition_fires_only_on_match() -> None:
     for a_value, expected in [(0, "0"), (1, "0"), (2, "1"), (3, "0")]:
         source = (
             f"qint<2> a = {a_value};\nqbool out = false;\n"
-            "qif(a == 2) { X(out); }\nint result = measure(out);\n"
+            "qif(a == 2) { X(out); }\nrt int<> result = measure(out);\n"
         )
         assert _counts(source) == {expected: SHOTS}
 
@@ -264,7 +264,7 @@ def test_qif_negated_condition_fires_on_mismatch() -> None:
     for a_value, expected in [(0, "1"), (1, "1"), (2, "0"), (3, "1")]:
         source = (
             f"qint<2> a = {a_value};\nqbool out = false;\n"
-            "qif(!(a == 2)) { X(out); }\nint result = measure(out);\n"
+            "qif(!(a == 2)) { X(out); }\nrt int<> result = measure(out);\n"
         )
         assert _counts(source) == {expected: SHOTS}
 
@@ -272,13 +272,13 @@ def test_qif_negated_condition_fires_on_mismatch() -> None:
 def test_qif_and_chain_across_two_registers() -> None:
     source = (
         "qint<2> a = 2;\nqbool flag = true;\nqbool out = false;\n"
-        "qif(a == 2 && flag) { X(out); }\nint result = measure(out);\n"
+        "qif(a == 2 && flag) { X(out); }\nrt int<> result = measure(out);\n"
     )
     assert _counts(source) == {"1": SHOTS}
 
     source_false = (
         "qint<2> a = 2;\nqbool flag = false;\nqbool out = false;\n"
-        "qif(a == 2 && flag) { X(out); }\nint result = measure(out);\n"
+        "qif(a == 2 && flag) { X(out); }\nrt int<> result = measure(out);\n"
     )
     assert _counts(source_false) == {"0": SHOTS}
 
@@ -289,7 +289,7 @@ def test_qif_two_qubit_gate_in_body_respects_endianness() -> None:
     operand renderer as the outer one."""
     source = (
         "qint<2> a = 2;\nqint<2> b = 0;\nqbool ctrl = true;\n"
-        "qif(ctrl) { CX(a[0], b[0]); }\nint result = measure(b);\n"
+        "qif(ctrl) { CX(a[0], b[0]); }\nrt int<> result = measure(b);\n"
     )
     # a=2 is '10' MSB-first, so a[0] (Slanq MSB) is 1: the control fires.
     assert _counts(source) == {"10": SHOTS}
@@ -428,7 +428,7 @@ def test_qif_not_equal_matches_the_negated_condition() -> None:
     for a_value, expected in [(0, "1"), (1, "1"), (2, "0"), (3, "1")]:
         source = (
             f"qint<2> a = {a_value};\nqbool out = false;\n"
-            "qif(a != 2) { X(out); }\nint result = measure(out);\n"
+            "qif(a != 2) { X(out); }\nrt int<> result = measure(out);\n"
         )
         assert _counts(source) == {expected: SHOTS}
 
@@ -436,7 +436,7 @@ def test_qif_not_equal_matches_the_negated_condition() -> None:
 def test_qif_equality_accepts_reversed_operands() -> None:
     source = (
         "qint<2> a = 2;\nqbool out = false;\n"
-        "qif(2 == a) { X(out); }\nint result = measure(out);\n"
+        "qif(2 == a) { X(out); }\nrt int<> result = measure(out);\n"
     )
     assert _counts(source) == {"1": SHOTS}
 
@@ -451,7 +451,7 @@ def test_qif_multiple_negated_clauses_combine_via_and() -> None:
             f"qint<2> a = {a_value};\nqint<2> b = {b_value};\nqbool flag = {flag};\n"
             "qbool out = false;\n"
             "qif(!(a == 2) && !(b == 3) && flag) { X(out); }\n"
-            "int result = measure(out);\n"
+            "rt int<> result = measure(out);\n"
         )
         assert _counts(source) == {expected: SHOTS}
 
@@ -473,50 +473,50 @@ def test_mvp_c_matches_the_condition(mvp_c_source: str) -> None:
 
 
 def test_quantum_addition_equal_width() -> None:
-    source = "qint<2> a = 1;\nqint<2> b = 2;\na += b;\nint result = measure(a);\n"
+    source = "qint<2> a = 1;\nqint<2> b = 2;\na += b;\nrt int<> result = measure(a);\n"
     assert _counts(source) == {"11": SHOTS}
 
 
 def test_quantum_addition_wraps_modulo_the_target_width() -> None:
-    source = "qint<2> a = 3;\nqint<2> b = 2;\na += b;\nint result = measure(a);\n"
+    source = "qint<2> a = 3;\nqint<2> b = 2;\na += b;\nrt int<> result = measure(a);\n"
     assert _counts(source) == {"01": SHOTS}
 
 
 def test_quantum_addition_wider_target_pads_the_narrower_addend() -> None:
     """The padding ancilla must come back clean regardless of the target's
     higher bits, verified here by running the full compiled circuit."""
-    source = "qint<3> a = 5;\nqint<2> b = 3;\na += b;\nint result = measure(a);\n"
+    source = "qint<3> a = 5;\nqint<2> b = 3;\na += b;\nrt int<> result = measure(a);\n"
     assert _counts(source) == {"000": SHOTS}
 
 
 def test_quantum_addition_narrower_target_uses_the_addends_low_bits() -> None:
-    source = "qint<2> a = 1;\nqint<3> b = 7;\na += b;\nint result = measure(a);\n"
+    source = "qint<2> a = 1;\nqint<3> b = 7;\na += b;\nrt int<> result = measure(a);\n"
     assert _counts(source) == {"00": SHOTS}
 
 
 def test_quantum_subtraction() -> None:
-    source = "qint<2> a = 3;\nqint<2> b = 1;\na -= b;\nint result = measure(a);\n"
+    source = "qint<2> a = 3;\nqint<2> b = 1;\na -= b;\nrt int<> result = measure(a);\n"
     assert _counts(source) == {"10": SHOTS}
 
 
 def test_quantum_addition_with_a_compile_time_constant() -> None:
-    source = "qint<2> a = 1;\na += 3;\nint result = measure(a);\n"
+    source = "qint<2> a = 1;\na += 3;\nrt int<> result = measure(a);\n"
     assert _counts(source) == {"00": SHOTS}
 
 
 def test_quantum_addition_constant_wraps_silently_on_overflow() -> None:
     """The decision is a silent mod 2^n, the same rule as a too-wide addend."""
-    source = "qint<2> a = 1;\na += 6;\nint result = measure(a);\n"
+    source = "qint<2> a = 1;\na += 6;\nrt int<> result = measure(a);\n"
     assert _counts(source) == {"11": SHOTS}
 
 
 def test_quantum_multiplication_declaration() -> None:
-    source = "qint<2> a = 3;\nqint<2> b = 2;\nqint<4> c = a * b;\nint result = measure(c);\n"
+    source = "qint<2> a = 3;\nqint<2> b = 2;\nqint<4> c = a * b;\nrt int<> result = measure(c);\n"
     assert _counts(source) == {"0110": SHOTS}
 
 
 def test_quantum_multiplication_is_truncated_to_the_declared_width() -> None:
-    source = "qint<2> a = 3;\nqint<2> b = 3;\nqint<2> c = a * b;\nint result = measure(c);\n"
+    source = "qint<2> a = 3;\nqint<2> b = 3;\nqint<2> c = a * b;\nrt int<> result = measure(c);\n"
     assert _counts(source) == {"01": SHOTS}
 
 
@@ -542,7 +542,7 @@ def test_multiply_accumulate_leaves_the_temp_register_clean() -> None:
 def test_multiply_accumulate_works_at_every_target_width(width: int) -> None:
     program = (
         f"qint<2> a = 2;\nqint<2> b = 3;\nqint<{width}> c = 0;\n"
-        "c += a * b;\nint result = measure(c);\n"
+        "c += a * b;\nrt int<> result = measure(c);\n"
     )
     expected = format((2 * 3) % (1 << width), f"0{width}b")
     assert _counts(program) == {expected: SHOTS}
@@ -567,7 +567,7 @@ def test_a_non_ascii_name_survives_into_the_circuit() -> None:
     generated file are named exactly as the program wrote them."""
     source = (
         "qint<3> ψ = 5;\nfor(int i in range(3)) { X(ψ[i]); }\n"
-        "int result = measure(ψ);\n"
+        "rt int<> result = measure(ψ);\n"
     )
     assert _counts(source) == {"010": SHOTS}
 
@@ -602,7 +602,7 @@ def test_process_call_runs_the_body_on_the_arguments() -> None:
     source = (
         "process add(qint x, qint y) { x += y; }\n"
         "qint<2> num1 = 1;\nqint<2> num2 = 2;\nadd(num1, num2);\n"
-        "int result = measure(num1);\n"
+        "rt int<> result = measure(num1);\n"
     )
     assert _counts(source) == {"11": SHOTS}
 
@@ -621,7 +621,7 @@ def test_a_process_is_equivalent_to_writing_the_body_out() -> None:
 def test_two_calls_of_one_process_both_take_effect() -> None:
     source = (
         "process bump(qint x) { x += 1; }\n"
-        "qint<2> a = 0;\nbump(a);\nbump(a);\nint result = measure(a);\n"
+        "qint<2> a = 0;\nbump(a);\nbump(a);\nrt int<> result = measure(a);\n"
     )
     assert _counts(source) == {"10": SHOTS}
 
@@ -629,7 +629,7 @@ def test_two_calls_of_one_process_both_take_effect() -> None:
 def test_a_process_parameter_may_be_a_single_qubit() -> None:
     source = (
         "process flip(qbool b) { X(b); }\n"
-        "qint<2> a = 0;\nflip(a[1]);\nint result = measure(a);\n"
+        "qint<2> a = 0;\nflip(a[1]);\nrt int<> result = measure(a);\n"
     )
     assert _counts(source) == {"01": SHOTS}
 
@@ -650,7 +650,7 @@ def test_a_qif_inside_a_process_body_still_controls_the_body() -> None:
     source = (
         "process guarded(qint a, qbool out) { qif(a == 2) { X(out); } }\n"
         "qint<2> a = 2;\nqbool out = false;\nguarded(a, out);\n"
-        "int result = measure(out);\n"
+        "rt int<> result = measure(out);\n"
     )
     assert _counts(source) == {"1": SHOTS}
 
@@ -662,7 +662,7 @@ def test_a_process_call_inside_a_qif_body_is_controlled() -> None:
     source = (
         "process flip(qbool b) { X(b); }\n"
         "qint<2> a = 2;\nqbool out = false;\nqif(a == 2) { flip(out); }\n"
-        "int result = measure(out);\n"
+        "rt int<> result = measure(out);\n"
     )
     assert _counts(source) == {"1": SHOTS}
 
@@ -670,7 +670,7 @@ def test_a_process_call_inside_a_qif_body_is_controlled() -> None:
 def test_a_classical_parameter_can_index_a_qubit() -> None:
     source = (
         "process poke(qint q, int i) { X(q[i]); }\n"
-        "qint<2> a = 0;\npoke(a, 1);\nint result = measure(a);\n"
+        "qint<2> a = 0;\npoke(a, 1);\nrt int<> result = measure(a);\n"
     )
     assert _counts(source) == {"01": SHOTS}
 
@@ -678,7 +678,7 @@ def test_a_classical_parameter_can_index_a_qubit() -> None:
 def test_a_nested_process_call_reaches_the_circuit() -> None:
     source = (
         "process inner(qbool x) { X(x); }\nprocess outer(qbool y) { inner(y); }\n"
-        "qbool q = false;\nouter(q);\nint result = measure(q);\n"
+        "qbool q = false;\nouter(q);\nrt int<> result = measure(q);\n"
     )
     assert _counts(source) == {"1": SHOTS}
 
@@ -691,7 +691,7 @@ def test_qif_controls_one_qubit_of_a_register_on_another() -> None:
         source = (
             f"qint<2> a = {value};\n"
             "qif(a[0]) { X(a[1]); }\n"
-            "int result = measure(a);\n"
+            "rt int<> result = measure(a);\n"
         )
         assert _counts(source) == {expected: SHOTS}
 
@@ -700,7 +700,7 @@ def test_qif_controls_across_a_wider_register() -> None:
     source = (
         "qint<3> a = 4;\n"
         "qif(a[0]) { X(a[2]); }\n"
-        "int result = measure(a);\n"
+        "rt int<> result = measure(a);\n"
     )
     assert _counts(source) == {"101": SHOTS}
 
@@ -714,7 +714,7 @@ def test_qif_top_level_negation_composes_with_a_clause_ancilla() -> None:
         expected = (a_value != 2) or (b_value == 3)
         source = (
             f"qint<2> a = {a_value};\nqint<2> b = {b_value};\nqbool out = false;\n"
-            "qif(!(a == 2 && !(b == 3))) { X(out); }\nint result = measure(out);\n"
+            "qif(!(a == 2 && !(b == 3))) { X(out); }\nrt int<> result = measure(out);\n"
         )
         assert _counts(source) == {"1" if expected else "0": SHOTS}
 
@@ -722,7 +722,7 @@ def test_qif_top_level_negation_composes_with_a_clause_ancilla() -> None:
 def test_a_loop_flips_every_qubit_it_indexes() -> None:
     source = (
         "qint<3> a = 0;\nfor(int i in range(3)) { X(a[i]); }\n"
-        "int result = measure(a);\n"
+        "rt int<> result = measure(a);\n"
     )
     assert _counts(source) == {"111": SHOTS}
 
@@ -738,7 +738,7 @@ def test_a_loop_is_equivalent_to_writing_the_body_out() -> None:
 def test_arithmetic_accumulates_over_the_iterations() -> None:
     source = (
         "qint<4> num = 0;\nfor(int i in range(1, 4)) { num += i; }\n"
-        "int result = measure(num);\n"
+        "rt int<> result = measure(num);\n"
     )
     assert _counts(source) == {"0110": SHOTS}
 
@@ -749,7 +749,7 @@ def test_a_triangular_loop_repeats_the_right_number_of_times() -> None:
     source = (
         "qint<3> a = 0;\n"
         "for(int i in range(3)) { for(int j in range(i)) { X(a[j]); } }\n"
-        "int result = measure(a);\n"
+        "rt int<> result = measure(a);\n"
     )
     assert _counts(source) == {"010": SHOTS}
 
@@ -757,7 +757,7 @@ def test_a_triangular_loop_repeats_the_right_number_of_times() -> None:
 def test_a_process_called_in_a_loop_runs_once_per_iteration() -> None:
     source = (
         "process bump(qint x) { x += 1; }\nqint<3> num = 0;\n"
-        "for(int i in range(2)) { bump(num); }\nint result = measure(num);\n"
+        "for(int i in range(2)) { bump(num); }\nrt int<> result = measure(num);\n"
     )
     assert _counts(source) == {"010": SHOTS}
 
@@ -765,7 +765,7 @@ def test_a_process_called_in_a_loop_runs_once_per_iteration() -> None:
 def test_a_loop_inside_a_process_body_reaches_the_circuit() -> None:
     source = (
         "process flip(qint x) { for(int i in range(3)) { X(x[i]); } }\n"
-        "qint<3> a = 0;\nflip(a);\nint result = measure(a);\n"
+        "qint<3> a = 0;\nflip(a);\nrt int<> result = measure(a);\n"
     )
     assert _counts(source) == {"111": SHOTS}
 
@@ -774,7 +774,7 @@ def test_a_loop_in_a_qif_body_is_controlled_by_the_condition() -> None:
     on = (
         "qint<2> c = 3;\nqint<2> t = 0;\n"
         "qif(c == 3) { for(int i in range(2)) { X(t[i]); } }\n"
-        "int result = measure(t);\n"
+        "rt int<> result = measure(t);\n"
     )
     off = on.replace("qint<2> c = 3;", "qint<2> c = 1;")
     assert _counts(on) == {"11": SHOTS}
@@ -794,7 +794,7 @@ def test_the_loop_value_reaches_an_angle_unfolded() -> None:
 def test_a_classical_parameter_can_drive_a_loop_in_a_process_body() -> None:
     source = (
         "process flip(int n, qint x) { for(int i in range(n)) { X(x[i]); } }\n"
-        "qint<3> a = 0;\nflip(3, a);\nint result = measure(a);\n"
+        "qint<3> a = 0;\nflip(3, a);\nrt int<> result = measure(a);\n"
     )
     assert _counts(source) == {"111": SHOTS}
 
@@ -806,7 +806,7 @@ def test_two_calls_may_ask_for_different_iteration_counts() -> None:
     source = (
         "process flip(int n, qint x) { for(int i in range(n)) { X(x[i]); } }\n"
         "qint<3> a = 0;\nqint<3> b = 0;\nflip(1, a);\nflip(3, b);\n"
-        "int result = measure(a);\nint other = measure(b);\n"
+        "rt int<> result = measure(a);\nrt int<> other = measure(b);\n"
     )
     assert _counts(source) == {"100": SHOTS}
     assert _counts(source, register="other") == {"111": SHOTS}
@@ -815,7 +815,7 @@ def test_two_calls_may_ask_for_different_iteration_counts() -> None:
 def test_the_taken_branch_is_the_only_one_built() -> None:
     source = (
         "qbool q = false;\nbool t = true;\n"
-        "if (t) { X(q); } else { H(q); }\nint result = measure(q);\n"
+        "if (t) { X(q); } else { H(q); }\nrt int<> result = measure(q);\n"
     )
     assert _counts(source) == {"1": SHOTS}
 
@@ -823,7 +823,7 @@ def test_the_taken_branch_is_the_only_one_built() -> None:
 def test_the_untaken_branch_contributes_nothing() -> None:
     source = (
         "qbool q = false;\nbool t = false;\n"
-        "if (t) { X(q); }\nint result = measure(q);\n"
+        "if (t) { X(q); }\nrt int<> result = measure(q);\n"
     )
     assert _counts(source) == {"0": SHOTS}
 
@@ -832,7 +832,7 @@ def test_an_else_if_chain_picks_one_branch() -> None:
     source = (
         "qint<2> a = 0;\nint n = 5;\n"
         "if (n > 9) { X(a[0]); } else if (n > 3) { X(a[1]); } else { H(a); }\n"
-        "int result = measure(a);\n"
+        "rt int<> result = measure(a);\n"
     )
     assert _counts(source) == {"01": SHOTS}
 
@@ -874,3 +874,88 @@ def test_a_conditional_phase_matches_the_branch_it_describes(
     assert Operator(_build_circuit(_PHASE_DECLS + written + "\n")) == Operator(
         _build_circuit(_PHASE_DECLS + equivalent + "\n")
     )
+
+
+TELEPORTATION = """qbool msg = true;
+qbool alice = false;
+qbool bob = false;
+H(alice);
+CX(alice, bob);
+CX(msg, alice);
+H(msg);
+rt int<> m1 = measure(msg);
+rt int<> m2 = measure(alice);
+rt if (m2 == 1) { X(bob); }
+rt if (m1 == 1) { Z(bob); }
+rt int<> result = measure(bob);
+"""
+
+
+def _realtime_counts(source: str) -> dict[str, int]:
+    """Run on Aer rather than StatevectorSampler: a feedforward branch is not
+    a unitary, so it needs a simulator that executes control flow."""
+    circuit = _build_circuit(source)
+    from qiskit import transpile
+    from qiskit_aer import AerSimulator
+
+    simulator = AerSimulator()
+    counts = simulator.run(transpile(circuit, simulator), shots=SHOTS).result().get_counts()
+    return {key.split()[0]: value for key, value in counts.items()}
+
+
+def test_teleportation_delivers_the_state() -> None:
+    """The two Pauli corrections are the textbook use of a feedforward branch:
+    whichever pair of outcomes the measurements give, bob ends up in |1>."""
+    assert set(_realtime_counts(TELEPORTATION)) == {"1"}
+
+
+@pytest.mark.parametrize(
+    ("program", "expected"),
+    [
+        (
+            "qint<2> a = 0;\nqbool f = false;\nrt int<> m = measure(a);\n"
+            "rt if (m == 3) { X(f); } else { X(f); X(f); }\n"
+            "rt int<> result = measure(f);\n",
+            "0",
+        ),
+        (
+            "qint<2> a = 2;\nqint<2> out = 0;\nrt int<> m = measure(a);\n"
+            "rt if (m == 0) { X(out[0]); } else rt if (m == 2) { X(out[1]); }"
+            " else { H(out); }\nrt int<> result = measure(out);\n",
+            "01",
+        ),
+        (
+            "qint<2> a = 3;\nqbool f = false;\nrt int<> m = measure(a);\n"
+            "rt if (m > 1 && m < 4) { X(f); }\nrt int<> result = measure(f);\n",
+            "1",
+        ),
+        (
+            "qint<2> a = 3;\nqbool f = false;\nbool off = false;\n"
+            "rt int<> m = measure(a);\nrt if (m > 1 && off) { X(f); }\n"
+            "rt int<> result = measure(f);\n",
+            "0",
+        ),
+        (
+            "qint<2> a = 3;\nqbool f = false;\nrt int<> m = measure(a);\n"
+            "rt if (m < 100) { X(f); }\nrt int<> result = measure(f);\n",
+            "1",
+        ),
+        (
+            "qbool q = true;\nqint<2> a = 3;\nrt int<> m = measure(a);\n"
+            "rt if (m == 3) { reset(q); }\nrt int<> result = measure(q);\n",
+            "0",
+        ),
+    ],
+    ids=[
+        "else branch",
+        "chain picks one arm",
+        "and of two real-time tests",
+        "a build-time clause narrows it",
+        "a literal wider than the register",
+        "reset inside a branch",
+    ],
+)
+def test_a_real_time_branch_runs_the_arm_it_describes(
+    program: str, expected: str
+) -> None:
+    assert set(_realtime_counts(program)) == {expected}

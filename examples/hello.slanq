@@ -24,8 +24,8 @@ qif(a == 2) {
 }
 
 // Classical condition on a measurement result (dynamic circuit)
-int r = measure(a);
-if(r < 4) {
+rt int<> r = measure(a);
+rt if(r < 4) {
     b += 1;
 }
 
