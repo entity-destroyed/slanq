@@ -210,6 +210,14 @@ def test_gates_return_nothing() -> None:
     assert all(BUILTIN_SIGNATURES[name].returns is None for name in BUILTIN_GATES)
 
 
+def test_reset_is_a_quantum_builtin_that_is_not_a_gate() -> None:
+    """The qif body rule reads `BUILTIN_GATES` as the unitary set, so reset
+    staying out of it is what makes that rule reject reset."""
+    assert "reset" not in BUILTIN_GATES
+    assert BUILTIN_SIGNATURES["reset"].args == (ArgKind.QUBITS,)
+    assert BUILTIN_SIGNATURES["reset"].returns is None
+
+
 def test_ccx_is_broadcast_by_slanq_not_qiskit() -> None:
     """Measured: Qiskit refuses a register operand for ccx, so the lowering
     has to unroll it; every other gate Qiskit spreads on its own."""

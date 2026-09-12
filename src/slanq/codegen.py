@@ -35,6 +35,7 @@ from slanq.ir import (
     QubitOperand,
     QubitRef,
     QubitSlice,
+    ResetOp,
 )
 
 INDENT = " " * 4
@@ -284,6 +285,9 @@ class _Generator:
             return [
                 f"{circuit_var}.measure({_operand_source(op.source)}, {op.target.name})"
             ]
+
+        if isinstance(op, ResetOp):
+            return [f"{circuit_var}.reset({_operand_source(op.target)})"]
 
         if isinstance(op, PhaseOp):
             return [f"{circuit_var}.global_phase += {self.expression(op.angle)}"]

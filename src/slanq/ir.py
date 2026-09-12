@@ -94,6 +94,11 @@ class MeasurementOp(Op):
 
 
 @dataclass(kw_only=True, eq=False)
+class ResetOp(Op):
+    target: QubitOperand
+
+
+@dataclass(kw_only=True, eq=False)
 class PhaseOp(Op):
     """`phase()`. Applied to a circuit's own `global_phase` directly; inside a
     `qif` body's sub-circuit this becomes a relative phase once that
@@ -224,4 +229,5 @@ __all__ = [
     "QubitOperand",
     "QubitRef",
     "QubitSlice",
+    "ResetOp",
 ]

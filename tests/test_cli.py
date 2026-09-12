@@ -94,6 +94,10 @@ RUNNABLE_PROGRAMS = {
         "param float theta;\nparam int gamma[2];\nqbool q = false;\n"
         "RX(theta + gamma[1], q);\nint result = measure(q);\n"
     ),
+    "reset": (
+        "qint<2> a = 3;\nH(a[1]);\nreset(a);\nX(a[0]);\n"
+        "int result = measure(a);\n"
+    ),
 }
 
 

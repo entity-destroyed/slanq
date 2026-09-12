@@ -31,6 +31,7 @@ from slanq.ast_nodes import (
 )
 from slanq.builtin import (
     BUILTIN_CONSTANTS,
+    BUILTIN_GATES,
     BUILTIN_SIGNATURES,
     ArgKind,
     ConstEvalError,
@@ -58,6 +59,7 @@ from slanq.ir import (
     QubitOperand,
     QubitRef,
     QubitSlice,
+    ResetOp,
 )
 from slanq.visitor import NodeVisitor
 
@@ -69,6 +71,7 @@ _PARAM_TYPE_NAMES: dict[type[Type], TypingLiteral["int", "float", "bool"]] = {
 
 MEASURE = "measure"
 PHASE = "phase"
+RESET = "reset"
 
 # Statement kinds the lowering does not handle yet. Without this the generic
 # traversal would walk straight past them and the construct would vanish from
@@ -301,17 +304,6 @@ class _Lowerer(NodeVisitor):
 
         name = expr.callee.name
 
-        if name == MEASURE:
-            # The else branch is unreachable: analysis already rejects a bare,
-            # unassigned measure() before lowering runs.
-            message = (
-                "a qif body may only contain unitary operations; measurement is not one"
-                if in_qif
-                else "the result of measure() must be assigned"
-            )
-            self._error(message, node.span)
-            return None
-
         signature = BUILTIN_SIGNATURES.get(name)
         if signature is None:
             if isinstance(expr.callee.resolved_symbol, ProcessDef):
@@ -333,8 +325,20 @@ class _Lowerer(NodeVisitor):
             )
             return None
 
+        if in_qif and _is_non_unitary_quantum(name, signature):
+            if signature.returns is None:
+                self._error(_not_unitary(f"'{name}'"), node.span)
+            return None
+
+        if name == MEASURE:
+            self._unreachable("an unassigned measure()", node.span)
+            return None
+
         if name == PHASE:
             return self._lower_phase(expr, node.span)
+
+        if name == RESET:
+            return self._lower_reset(expr, node.span)
 
         # Which argument is an angle and which is a qubit comes from the
         # signature, not from whether the argument happens to be constant: a
@@ -362,6 +366,13 @@ class _Lowerer(NodeVisitor):
         if not self._is_renderable_angle(angle):
             return None
         return [PhaseOp(span=span, angle=angle)]
+
+    def _lower_reset(self, expr: Call, span) -> list[Op] | None:
+        (target,) = expr.args
+        operand = self._operand(target)
+        if operand is None:
+            return None
+        return [ResetOp(span=span, target=operand)]
 
     def _is_renderable_angle(self, expression: Expression) -> bool:
         """Whether `expression` can reach the generated file as an angle --
@@ -398,6 +409,9 @@ class _Lowerer(NodeVisitor):
 
     def _qif_body_unimplemented(self, statement: Statement) -> None:
         kind = type(statement).__name__
+        if _measured_initializer(statement):
+            self._error(_not_unitary("measurement"), statement.span)
+            return
         if kind in TOP_LEVEL_ONLY:
             self._error(
                 f"{TOP_LEVEL_ONLY[kind]} is only allowed at the top level of "
@@ -890,6 +904,30 @@ class _Lowerer(NodeVisitor):
                 "the compiler, not in the source program.",
                 span,
             )
+
+
+def _not_unitary(what: str) -> str:
+    return f"a qif body may only contain unitary operations; {what} is not one"
+
+
+def _is_non_unitary_quantum(name: str, signature: Signature) -> bool:
+    """Whether `name` acts on qubits without being unitary -- example: `measure` and
+    `reset`. """
+    return name not in BUILTIN_GATES and any(
+        kind is not ArgKind.ANGLE for kind in signature.args
+    )
+
+
+def _measured_initializer(node: Statement) -> bool:
+    """A classical declaration whose value comes from a non-unitary quantum
+    builtin. Its statement kind says `ClassicalDecl`, but what a qif body
+    rejects about it is the measurement, not the declaration."""
+    if not isinstance(node, ClassicalDecl) or not isinstance(node.initializer, Call):
+        return False
+    signature = BUILTIN_SIGNATURES.get(node.initializer.callee.name)
+    return signature is not None and _is_non_unitary_quantum(
+        node.initializer.callee.name, signature
+    )
 
 
 def _broadcast(

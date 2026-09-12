@@ -61,6 +61,25 @@ def test_double_x_returns_to_zero() -> None:
     assert _counts(source) == {"0": SHOTS}
 
 
+def test_reset_returns_a_flipped_qubit_to_zero() -> None:
+    source = "qbool q = true;\nreset(q);\nint result = measure(q);\n"
+    assert _counts(source) == {"0": SHOTS}
+
+
+def test_reset_collapses_a_superposition_to_zero() -> None:
+    """The one thing no unitary can do: the outcome is certain afterwards
+    whatever the state was."""
+    source = "qbool q = false;\nH(q);\nreset(q);\nint result = measure(q);\n"
+    assert _counts(source) == {"0": SHOTS}
+
+
+def test_reset_of_one_qubit_leaves_the_others_alone() -> None:
+    """Slanq is big-endian: a[0] is the most significant qubit, so resetting
+    it takes 3 (0b11) to 1."""
+    source = "qint<2> a = 3;\nreset(a[0]);\nint result = measure(a);\n"
+    assert _counts(source) == {"01": SHOTS}
+
+
 def test_bell_state_outcomes_are_correlated(mvp_b_source: str) -> None:
     counts = _counts(mvp_b_source)
     assert set(counts) == {"00", "11"}

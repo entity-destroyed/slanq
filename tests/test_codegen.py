@@ -30,6 +30,7 @@ from slanq.ir import (
     QubitBit,
     QubitRef,
     QubitSlice,
+    ResetOp,
 )
 
 
@@ -185,6 +186,25 @@ def test_single_qubit_register_needs_no_mirroring(span: Span) -> None:
         ),
     )
     assert "circuit.h(q[0])" in _generate(module)
+
+
+def test_reset_of_a_whole_register_is_not_unpacked(span: Span) -> None:
+    """Qiskit spreads a register into one reset per qubit itself."""
+    qubit = QubitRef(name="q", size=3)
+    module = IRModule(
+        qubits=[qubit],
+        body=IRBlock(ops=[ResetOp(span=span, target=qubit)]),
+    )
+    assert "circuit.reset(q)" in _generate(module)
+
+
+def test_reset_of_one_qubit_is_mirrored(span: Span) -> None:
+    qubit = QubitRef(name="q", size=3)
+    module = IRModule(
+        qubits=[qubit],
+        body=IRBlock(ops=[ResetOp(span=span, target=QubitBit(ref=qubit, index=0))]),
+    )
+    assert "circuit.reset(q[2])" in _generate(module)
 
 
 def test_generated_module_builds_a_runnable_circuit(mvp_a_ir: IRModule) -> None:

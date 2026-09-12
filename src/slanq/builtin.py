@@ -73,6 +73,7 @@ BUILTIN_SIGNATURES: dict[str, Signature] = {
     ),
     "phase": Signature(args=(ArgKind.ANGLE,)),
     "measure": Signature(args=(ArgKind.QVAR,), returns=IntType()),
+    "reset": Signature(args=(ArgKind.QUBITS,)),
     **_gates("floor ceil round", ArgKind.ANGLE, returns=IntType()),
     "sqrt": Signature(args=(ArgKind.ANGLE,), returns=FloatType()),
 }

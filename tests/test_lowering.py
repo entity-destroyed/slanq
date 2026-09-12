@@ -42,6 +42,7 @@ from slanq.ir import (
     QubitBit,
     QubitRef,
     QubitSlice,
+    ResetOp,
 )
 from slanq.lowering import lower_to_ir
 
@@ -101,6 +102,46 @@ def test_measurement_creates_clbit_and_op(lower: LowerSource) -> None:
     assert isinstance(measurement, MeasurementOp)
     assert measurement.source == module.qubits[0]
     assert measurement.target == clbit
+
+
+def test_reset_of_a_whole_register_becomes_one_op(lower: LowerSource) -> None:
+    module, bag = lower("qint<2> a = 0; reset(a);")
+    assert not bag.has_errors
+
+    reset = module.body.ops[1]
+    assert isinstance(reset, ResetOp)
+    assert reset.target == module.qubits[0]
+
+
+def test_reset_of_one_qubit_keeps_the_index(lower: LowerSource) -> None:
+    module, bag = lower("qint<2> a = 0; reset(a[1]);")
+    assert not bag.has_errors
+
+    reset = module.body.ops[1]
+    assert isinstance(reset, ResetOp)
+    assert reset.target == QubitBit(ref=module.qubits[0], index=1)
+
+
+_NOT_UNITARY = "a qif body may only contain unitary operations; {} is not one"
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ("reset(b);", _NOT_UNITARY.format("'reset'")),
+        ("measure(b);", "the result of 'measure' must be assigned"),
+        ("int r = measure(b);", _NOT_UNITARY.format("measurement")),
+    ],
+    ids=["reset", "bare measure", "assigned measure"],
+)
+def test_a_qif_body_rejects_a_non_unitary_operation(
+    lower: LowerSource, body: str, message: str
+) -> None:
+    """A bare measure is rejected by analysis as an unassigned result, so the
+    qif rule stays silent there and one mistake still yields one message."""
+    _, bag = lower(f"qint<2> a = 0; qint<2> b = 0; qif(a == 2) {{ {body} }}")
+    (diagnostic,) = bag.errors
+    assert diagnostic.message == message
 
 
 def test_numeric_arguments_become_params(lower: LowerSource) -> None:
