@@ -21,7 +21,6 @@ from slanq.ast_nodes import (
     BinaryOp,
     BuiltinDecl,
     Call,
-    ClassicalDecl,
     Expression,
     FloatType,
     IntType,
@@ -30,6 +29,7 @@ from slanq.ast_nodes import (
     Span,
     Type,
     UnaryOp,
+    UnknownValue,
 )
 
 BUILTIN_GATES: frozenset[str] = frozenset(
@@ -189,8 +189,10 @@ def const_value(expression: Expression) -> int | float | bool | complex | None:
     if isinstance(expression, Name):
         if expression.name in BUILTIN_CONSTANTS:
             return BUILTIN_CONSTANTS[expression.name]
-        if isinstance(expression.resolved_symbol, ClassicalDecl):
-            return const_value(expression.resolved_symbol.initializer)
+        if isinstance(expression.effective_value, UnknownValue):
+            return None
+        if expression.effective_value is not None:
+            return const_value(expression.effective_value)
         return None
 
     if isinstance(expression, UnaryOp):

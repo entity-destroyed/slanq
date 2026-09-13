@@ -226,12 +226,25 @@ class For(Statement):
 Symbol = Declaration | ProcParam
 
 
+@dataclass(frozen=True, kw_only=True)
+class UnknownValue:
+    """Why a build-time variable has no one value at a given point."""
+
+    reason: str
+
+
 @dataclass(kw_only=True)
 class Name(Expression):
     name: str
     # A back-reference, not tree structure: traversal must not follow it, or a
     # declaration would be revisited once per reference to it.
     resolved_symbol: Symbol | None = field(default=None, metadata={"annotation": True})
+    # The expression this name stands for *here*, which assignment makes
+    # different from the declaration's initializer. None means value tracking
+    # has not run, so the initializer still stands.
+    effective_value: Expression | UnknownValue | None = field(
+        default=None, metadata={"annotation": True}
+    )
 
 
 @dataclass(kw_only=True)
@@ -304,6 +317,7 @@ __all__ = [
     "Symbol",
     "Type",
     "UnaryOp",
+    "UnknownValue",
     "While",
     "is_quantum",
     "qubit_count",

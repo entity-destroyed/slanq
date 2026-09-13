@@ -27,6 +27,7 @@ from slanq.builtin import (
 from slanq.diagnostics import SlanqError
 from slanq.ir import (
     ArithmeticOp,
+    ClassicalAssignOp,
     ClassicalIfOp,
     DeclareAncillaOp,
     DeclareRealtimeOp,
@@ -45,6 +46,7 @@ from slanq.ir import (
     QubitRef,
     QubitSlice,
     RealtimeIfOp,
+    RealtimeStoreOp,
     ResetOp,
 )
 
@@ -334,6 +336,14 @@ class _Generator:
 
         if isinstance(op, ResetOp):
             return [f"{circuit_var}.reset({_operand_source(op.target)})"]
+
+        if isinstance(op, ClassicalAssignOp):
+            return [f"{op.name} {op.op} {self.expression(op.value)}"]
+
+        if isinstance(op, RealtimeStoreOp):
+            self.needs_expr = True
+            stored = _widened(self._realtime_expr(op.value), op.size)
+            return [f"{circuit_var}.store({op.name}, {stored})"]
 
         if isinstance(op, DeclareRealtimeOp):
             self.needs_expr = True
@@ -690,10 +700,7 @@ class _Generator:
         if isinstance(expression, Name) and isinstance(
             expression.resolved_symbol, ClassicalDecl
         ):
-            # No Python variable exists for a classical constant (lowering
-            # gives it no IR representation) -- inline its initializer, same
-            # substitution const_value already does for compile-time eval.
-            return self.expression(expression.resolved_symbol.initializer)
+            return expression.name
 
         if isinstance(expression, Index) and isinstance(
             expression.base.resolved_symbol, ParamArrayDecl

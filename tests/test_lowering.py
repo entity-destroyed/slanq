@@ -28,6 +28,7 @@ from slanq.builtin import const_value
 from slanq.diagnostics import DiagnosticBag
 from slanq.ir import (
     ArithmeticOp,
+    ClassicalAssignOp,
     ClassicalIfOp,
     ClbitRef,
     DeclareAncillaOp,
@@ -45,6 +46,7 @@ from slanq.ir import (
     QubitRef,
     QubitSlice,
     RealtimeIfOp,
+    RealtimeStoreOp,
     ResetOp,
 )
 from slanq.lowering import lower_to_ir
@@ -163,11 +165,15 @@ def test_numeric_arguments_become_params(lower: LowerSource) -> None:
     assert gate.targets == [QubitBit(ref=module.qubits[0], index=0)]
 
 
-def test_classical_constant_produces_no_ir(lower: LowerSource) -> None:
+def test_a_classical_declaration_becomes_an_assignment(lower: LowerSource) -> None:
+    """It occupies no qubit and no classical register, but the name has to
+    exist in the generated file for the code that reads it."""
     module, bag = lower("int x = 42;")
     assert not bag.has_errors
     assert module.clbits == []
-    assert module.body.ops == []
+    (assignment,) = module.body.ops
+    assert isinstance(assignment, ClassicalAssignOp)
+    assert (assignment.name, assignment.op) == ("x", "=")
 
 
 def test_bare_measure_statement_is_rejected(lower: LowerSource) -> None:
@@ -255,7 +261,7 @@ def test_mvp_b_lowers_completely(lower: LowerSource, mvp_b_source: str) -> None:
 def test_unimplemented_statement_does_not_vanish(lower: LowerSource) -> None:
     """Before the guard this produced no IR and no diagnostic at all: the
     generated circuit simply never performed the assignment."""
-    _, bag = lower("qbool q = false; q = true;")
+    _, bag = lower("qbool q = false; while(true) { X(q); }")
     assert bag.has_errors
     assert "not implemented yet" in bag.errors[0].message
 
@@ -1219,3 +1225,44 @@ def test_a_qif_body_rejects_a_real_time_branch(lower: LowerSource) -> None:
     _, bag = lower(f"{_RT_PRELUDE}qif(b == 2) {{ rt if (m < 4) {{ X(f); }} }}")
     (diagnostic,) = bag.errors
     assert diagnostic.message == _NOT_UNITARY.format("a real-time branch")
+
+
+_ASSIGN_PRELUDE = "qint<3> a = []; qbool f = false; rt int<> m = measure(a); "
+
+
+def test_an_assigned_classical_variable_reaches_the_ir(lower: LowerSource) -> None:
+    module, bag = lower(f"{_ASSIGN_PRELUDE}int i = 0; i = 1; X(a[i]);")
+    assert not bag.has_errors
+    assignments = [op for op in module.body.ops if isinstance(op, ClassicalAssignOp)]
+    assert [(op.name, op.op) for op in assignments] == [("i", "="), ("i", "=")]
+
+
+def test_every_classical_declaration_reaches_the_ir(lower: LowerSource) -> None:
+    module, bag = lower(f"{_ASSIGN_PRELUDE}int i = 1; X(a[i]);")
+    assert not bag.has_errors
+    assignments = [op for op in module.body.ops if isinstance(op, ClassicalAssignOp)]
+    assert [(op.name, op.op) for op in assignments] == [("i", "=")]
+
+
+def test_a_compound_assignment_keeps_its_operator(lower: LowerSource) -> None:
+    module, bag = lower(f"{_ASSIGN_PRELUDE}int i = 0; i += 2; X(a[i]);")
+    assert not bag.has_errors
+    assignments = [op for op in module.body.ops if isinstance(op, ClassicalAssignOp)]
+    assert assignments[-1].op == "+="
+
+
+def test_re_measuring_writes_the_register_it_already_has(lower: LowerSource) -> None:
+    module, bag = lower(f"{_ASSIGN_PRELUDE}m = measure(a);")
+    assert not bag.has_errors
+    measurements = [op for op in module.body.ops if isinstance(op, MeasurementOp)]
+    assert len(measurements) == 2
+    assert measurements[0].target is measurements[1].target
+    assert len(module.clbits) == 1
+
+
+def test_a_real_time_assignment_becomes_a_store(lower: LowerSource) -> None:
+    module, bag = lower(f"{_ASSIGN_PRELUDE}m = m ^ 1;")
+    assert not bag.has_errors
+    store = module.body.ops[-1]
+    assert isinstance(store, RealtimeStoreOp)
+    assert (store.name, store.size) == ("m", 3)

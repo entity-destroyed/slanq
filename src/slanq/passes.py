@@ -7,8 +7,12 @@ import dataclasses
 from typing import Any
 
 from slanq.ast_nodes import (
+    Assign,
+    AugAssign,
+    BinaryOp,
     Block,
     Call,
+    ClassicalDecl,
     Declaration,
     Expression,
     ExprStatement,
@@ -24,9 +28,12 @@ from slanq.ast_nodes import (
     Program,
     Span,
     Statement,
+    UnknownValue,
+    While,
 )
 from slanq.builtin import RANGE, ConstEvalError, const_value
 from slanq.diagnostics import DiagnosticBag
+from slanq.visitor import iter_child_nodes
 
 # A body is copied into every call site and once per iteration, so a chain
 # where each process calls the next one twice, or a loop nested in a loop,
@@ -410,6 +417,10 @@ class _Unroller(_Copier):
                 argument.resolved_symbol, ParamDecl | ParamArrayDecl
             ):
                 detail = f"; '{argument.name}' only gets its value at runtime"
+            elif isinstance(argument, Name) and isinstance(
+                argument.effective_value, UnknownValue
+            ):
+                detail = f"; '{argument.name}': {argument.effective_value.reason}"
             self._error(
                 "a for loop needs an iteration count known when the circuit is "
                 f"built{detail}",
@@ -436,6 +447,109 @@ class _Unroller(_Copier):
         return copied
 
 
+BRANCH_MERGE = "its value here depends on a branch"
+BEFORE_DECLARATION = "it has no value before its declaration"
+
+
+def track_values(ast: Program) -> None:
+    """Annotate every name with the expression in effect where it stands.
+
+    Without assignment a name always means its initializer, which is why
+    `const_value` could read that directly. With assignment it means whatever
+    was last written to it, and after two branches meet it means nothing the
+    compiler can name -- an honest answer the places needing a compile-time
+    value can report."""
+    _Tracker().statements(ast.statements, {})
+
+
+def _collect_assigned(
+    statements: list[Statement], found: dict[int, ClassicalDecl]
+) -> None:
+    for statement in statements:
+        if isinstance(statement, Assign | AugAssign) and isinstance(
+            statement.target, Name
+        ):
+            symbol = statement.target.resolved_symbol
+            if isinstance(symbol, ClassicalDecl):
+                found[id(symbol)] = symbol
+        for block in _child_blocks(statement):
+            _collect_assigned(block.statements, found)
+
+
+# Keyed by identity: an AST node carries a dataclass __eq__, so two
+# declarations that happen to look alike would collide.
+Environment = dict[int, "Expression | UnknownValue"]
+
+
+class _Tracker:
+    def statements(self, statements: list[Statement], env: Environment) -> None:
+        for statement in statements:
+            self._statement(statement, env)
+
+    def _statement(self, statement: Statement, env: Environment) -> None:
+        blocks = _child_blocks(statement)
+        inner: dict[int, ClassicalDecl] = {}
+        for block in blocks:
+            _collect_assigned(block.statements, inner)
+
+        # A loop's condition is read again after every pass through the body,
+        # so what the body writes is already unsettled when it is first read.
+        if isinstance(statement, While):
+            for key in inner:
+                env[key] = UnknownValue(reason=BRANCH_MERGE)
+
+        for child in iter_child_nodes(statement):
+            if not isinstance(child, Block):
+                self._annotate(child, env)
+
+        if isinstance(statement, ClassicalDecl):
+            env[id(statement)] = statement.initializer
+            return
+
+        if isinstance(statement, Assign | AugAssign) and isinstance(
+            statement.target, Name
+        ):
+            symbol = statement.target.resolved_symbol
+            if isinstance(symbol, ClassicalDecl):
+                env[id(symbol)] = _written_value(statement, env.get(id(symbol)))
+                return
+
+        if not blocks:
+            return
+
+        # A loop runs its body more than once, so a variable the body writes is
+        # already unsettled on the way in, not only on the way out.
+        for block in blocks:
+            self.statements(block.statements, dict(env))
+        for key in inner:
+            env[key] = UnknownValue(reason=BRANCH_MERGE)
+
+    def _annotate(self, node: Node, env: Environment) -> None:
+        if isinstance(node, Name):
+            symbol = node.resolved_symbol
+            if isinstance(symbol, ClassicalDecl):
+                node.effective_value = env.get(
+                    id(symbol), UnknownValue(reason=BEFORE_DECLARATION)
+                )
+        for child in iter_child_nodes(node):
+            self._annotate(child, env)
+
+
+def _written_value(
+    statement: Assign | AugAssign, current: Expression | UnknownValue | None
+) -> Expression | UnknownValue:
+    if isinstance(statement, Assign):
+        return statement.value
+    if current is None or isinstance(current, UnknownValue):
+        return UnknownValue(reason=BRANCH_MERGE)
+    return BinaryOp(
+        span=statement.span,
+        op=statement.op.removesuffix("="),
+        left=current,
+        right=statement.value,
+    )
+
+
 def _child_blocks(statement: Statement) -> list[Block]:
     blocks = []
     for f in dataclasses.fields(statement):
@@ -445,4 +559,4 @@ def _child_blocks(statement: Statement) -> list[Block]:
     return blocks
 
 
-__all__ = ["expand_processes", "unroll_loops"]
+__all__ = ["expand_processes", "track_values", "unroll_loops"]

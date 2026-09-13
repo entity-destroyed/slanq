@@ -105,6 +105,13 @@ RUNNABLE_PROGRAMS = {
         "qif(a == 2) { if (t) { phase(PI / 3); } }\n"
         "rt int<> result = measure(a);\n"
     ),
+    "assignment": (
+        "qint<3> a = 0;\nint i = 0;\n"
+        "X(a[i]);\ni = i + 1;\nX(a[i]);\n"
+        "rt int<> m = measure(a);\nm = measure(a);\n"
+        "rt if (m > 0) { X(a[2]); }\n"
+        "rt int<> result = measure(a);\n"
+    ),
     "teleportation": (
         "qbool msg = true;\nqbool alice = false;\nqbool bob = false;\n"
         "H(alice);\nCX(alice, bob);\nCX(msg, alice);\nH(msg);\n"

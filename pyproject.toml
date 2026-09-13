@@ -43,6 +43,7 @@ markers = ["slow: compiles and runs the generated file in a separate process"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+exclude = ["generated"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

@@ -4,6 +4,7 @@ from typing import Literal as TypingLiteral
 
 from slanq.ast_nodes import (
     AmplitudeList,
+    Assign,
     AugAssign,
     BinaryOp,
     Block,
@@ -46,6 +47,7 @@ from slanq.builtin import (
 from slanq.diagnostics import DiagnosticBag
 from slanq.ir import (
     ArithmeticOp,
+    ClassicalAssignOp,
     ClassicalIfOp,
     ClbitRef,
     DeclareAncillaOp,
@@ -66,6 +68,7 @@ from slanq.ir import (
     QubitRef,
     QubitSlice,
     RealtimeIfOp,
+    RealtimeStoreOp,
     ResetOp,
 )
 from slanq.visitor import NodeVisitor
@@ -84,7 +87,6 @@ RESET = "reset"
 # traversal would walk straight past them and the construct would vanish from
 # the circuit without a word.
 UNIMPLEMENTED: dict[str, str] = {
-    "Assign": "assignment",
     "While": "the while loop",
 }
 
@@ -128,6 +130,7 @@ class _Lowerer(NodeVisitor):
         self.module = IRModule()
         self._block = self.module.body
         self.qubits: dict[str, QubitRef] = {}
+        self.realtime: dict[str, ClbitRef] = {}
         self._ancilla_counter = 0
 
     def generic_visit(self, node):
@@ -172,7 +175,11 @@ class _Lowerer(NodeVisitor):
     def visit_ClassicalDecl(self, node: ClassicalDecl) -> None:
         initializer = node.initializer
         if not (isinstance(initializer, Call) and initializer.callee.name == MEASURE):
-            # A compile-time classical constant; it has no circuit representation.
+            self._block.ops.append(
+                ClassicalAssignOp(
+                    span=node.span, name=node.name, op="=", value=initializer
+                )
+            )
             return
 
         self._unreachable("a measurement assigned to a build-time variable", node.span)
@@ -199,6 +206,7 @@ class _Lowerer(NodeVisitor):
                 return
             clbit = ClbitRef(name=node.name, size=source.size)
             self.module.clbits.append(clbit)
+            self.realtime[node.name] = clbit
             self._block.ops.append(
                 MeasurementOp(span=node.span, source=source, target=clbit)
             )
@@ -214,6 +222,57 @@ class _Lowerer(NodeVisitor):
                 size=node.width,
                 value=initializer,
                 is_bool=isinstance(node.declared_type, BoolType),
+            )
+        )
+
+    def visit_Assign(self, node: Assign) -> None:
+        self._assign(node, node.value, "=")
+
+    def _assign(self, node, value, op: str) -> None:
+        target = node.target
+        if not isinstance(target, Name):
+            self._unreachable("an assignment to something other than a variable", node.span)
+            return
+
+        symbol = target.resolved_symbol
+        if isinstance(symbol, ClassicalDecl):
+            self._block.ops.append(
+                ClassicalAssignOp(span=node.span, name=target.name, op=op, value=value)
+            )
+            return
+
+        if isinstance(symbol, RealtimeDecl):
+            self._realtime_assign(node, symbol, value, op)
+            return
+
+        self._unreachable(f"an assignment to '{target.name}'", node.span)
+
+    def _realtime_assign(self, node, symbol: RealtimeDecl, value, op: str) -> None:
+        if op == "=" and isinstance(value, Call) and value.callee.name == MEASURE:
+            source = self._measure_source(value)
+            target = self.realtime.get(symbol.name)
+            if source is None or target is None:
+                self._unreachable("a measurement into an unknown variable", node.span)
+                return
+            self._block.ops.append(
+                MeasurementOp(span=node.span, source=source, target=target)
+            )
+            return
+
+        if op != "=":
+            value = BinaryOp(
+                span=node.span,
+                op=op.removesuffix("="),
+                left=node.target,
+                right=value,
+            )
+        width = symbol.width
+        if width is None:
+            self._unreachable("a real-time variable of unknown width", node.span)
+            return
+        self._block.ops.append(
+            RealtimeStoreOp(
+                span=node.span, name=symbol.name, size=width, value=value
             )
         )
 
@@ -280,6 +339,11 @@ class _Lowerer(NodeVisitor):
         )
 
     def visit_AugAssign(self, node: AugAssign) -> None:
+        if isinstance(node.target, Name) and isinstance(
+            node.target.resolved_symbol, ClassicalDecl | RealtimeDecl
+        ):
+            self._assign(node, node.value, node.op)
+            return
         if not isinstance(node.target, Name):
             self._unreachable("an arithmetic target that is not a variable", node.span)
             return
@@ -686,10 +750,7 @@ class _Lowerer(NodeVisitor):
             return None
         index = self._const_int(target.index)
         if index is None:
-            self._error(
-                "a quantum register index must be a compile-time integer",
-                target.index.span,
-            )
+            self._unreachable("an index with no compile-time value", target.index.span)
             return None
         return [QubitBit(ref=ref, index=index)], [0 if negated else 1], None
 
@@ -907,9 +968,8 @@ class _Lowerer(NodeVisitor):
 
         index = self._const_int(expression.index)
         if index is None:
-            self._error(
-                "a quantum register index must be a compile-time integer",
-                expression.index.span,
+            self._unreachable(
+                "an index with no compile-time value", expression.index.span
             )
             return None
 

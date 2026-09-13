@@ -30,3 +30,6 @@ desktop.ini
 *.qasm
 out/
 .claude
+
+# Compiler output
+generated/

@@ -908,10 +908,10 @@ def test_augassign_indexed_target_is_rejected(diagnostics_of: DiagnosticsOf) -> 
     assert "not a single qubit" in bag.errors[0].message
 
 
-def test_augassign_classical_target_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
-    bag = diagnostics_of("int x = 0; x += 1;")
-    assert bag.has_errors
-    assert "is not a quantum variable" in bag.errors[0].message
+def test_augassign_on_a_classical_target_is_ordinary_assignment(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    assert not diagnostics_of("int x = 0; x += 1;").has_errors
 
 
 def test_augassign_param_addend_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
@@ -1227,3 +1227,83 @@ def test_a_comparison_outside_the_width_warns(
     bag = diagnostics_of(f"{_RT_DECLS}rt if ({condition}) {{ X(f); }}\n")
     assert not bag.has_errors
     assert any(f"always {answer}" in w.message for w in bag.warnings)
+
+
+_ASSIGN_DECLS = (
+    "qint<3> a = [];\nqint<2> b = 0;\nqbool f = false;\nint n = 5;\nbool t = true;\n"
+    "rt int<> m = measure(a);\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("program", "message"),
+    [
+        ("a = b;", "'a' is a quantum variable, which cannot be assigned to; use "
+         "reset() or a gate"),
+        ("param int p;\np = 1;", "'p' is a param and is bound, not assigned"),
+        ("for(int j in range(2)) { j = 5; }",
+         "'j' is a loop variable and cannot be assigned to"),
+        ("a[0] = 1;", "only a variable can be assigned to"),
+        ("int i = 0;\ni = m;",
+         "'i' is settled while the circuit is built, so it cannot be given a "
+         "real-time value"),
+        ("process g(int i) { i += 1; }\ng(1);",
+         "assigning to the process parameter 'i' is not implemented yet; this "
+         "is a limitation of the compiler, not an error in the program"),
+    ],
+    ids=["quantum", "param", "loop variable", "indexed", "real-time value", "process parameter"],
+)
+def test_an_assignment_target_is_checked(
+    diagnostics_of: DiagnosticsOf, program: str, message: str
+) -> None:
+    (diagnostic,) = diagnostics_of(_ASSIGN_DECLS + program + "\n").errors
+    assert diagnostic.message == message
+
+
+@pytest.mark.parametrize(
+    ("program", "reason"),
+    [
+        (
+            "int i = 0;\nif (t) { i = 1; }\nX(a[i]);",
+            "its value here depends on a branch",
+        ),
+        (
+            "X(a[i]);\nint i = 0;\ni = 1;",
+            "it has no value before its declaration",
+        ),
+    ],
+    ids=["after a branch", "before its declaration"],
+)
+def test_a_slot_needing_a_compile_time_value_says_why_it_has_none(
+    diagnostics_of: DiagnosticsOf, program: str, reason: str
+) -> None:
+    (diagnostic,) = diagnostics_of(_ASSIGN_DECLS + program + "\n").errors
+    assert diagnostic.message == (
+        f"a quantum register index must be a compile-time integer -- 'i': {reason}"
+    )
+
+
+def test_a_loop_bound_says_why_it_has_no_value(diagnostics_of: DiagnosticsOf) -> None:
+    (diagnostic,) = diagnostics_of(
+        f"{_ASSIGN_DECLS}int k = 2;\nif (t) {{ k = 3; }}\n"
+        "for(int j in range(k)) { X(f); }\n"
+    ).errors
+    assert diagnostic.message == (
+        "a for loop needs an iteration count known when the circuit is built; "
+        "'k': its value here depends on a branch"
+    )
+
+
+@pytest.mark.parametrize(
+    "program",
+    [
+        "int i = 0;\ni = 1;\nX(a[i]);",
+        "int i = 0;\ni = i + 1;\nX(a[i]);",
+        "int i = 0;\ni += 2;\nX(a[i]);",
+        "int i = 0;\nif (t) { i = 1; X(a[i]); }",
+        "m = measure(a);",
+        "m = m ^ 1;",
+    ],
+)
+def test_an_accepted_assignment(diagnostics_of: DiagnosticsOf, program: str) -> None:
+    assert not diagnostics_of(_ASSIGN_DECLS + program + "\n").has_errors

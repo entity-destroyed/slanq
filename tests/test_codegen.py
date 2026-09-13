@@ -260,11 +260,12 @@ def test_sqrt_maps_to_the_helper_as_an_angle_expression() -> None:
     assert "import math" in source
 
 
-def test_classical_name_angle_inlines_its_initializer() -> None:
+def test_classical_name_angle_keeps_its_name() -> None:
     result = compile_source("float t = PI / 4;\nqbool q = false;\nRX(t, q);\n")
     assert not result.diagnostics.has_errors
     assert result.qiskit_source is not None
-    assert "circuit.rx(np.pi / 4, q[0])" in result.qiskit_source
+    assert "t = np.pi / 4" in result.qiskit_source
+    assert "circuit.rx(t, q[0])" in result.qiskit_source
 
 
 @pytest.mark.parametrize(
@@ -1174,16 +1175,16 @@ _IF_DECLS = "qint<2> a = 0;\nqbool f = false;\nint n = 5;\nbool t = true;\n"
 @pytest.mark.parametrize(
     ("condition", "rendered"),
     [
-        ("n > 3", "5 > 3"),
-        ("n == 5 && t", "5 == 5 and True"),
-        ("n == 5 || t", "5 == 5 or True"),
-        ("!t", "not True"),
-        ("!(n > 3)", "not 5 > 3"),
-        ("!t && n > 3", "not True and 5 > 3"),
-        ("!(t && n > 3)", "not (True and 5 > 3)"),
-        ("(n > 3) == t", "(5 > 3) == True"),
-        ("n + 1 > 3", "5 + 1 > 3"),
-        ("~n > 3", "~5 > 3"),
+        ("n > 3", "n > 3"),
+        ("n == 5 && t", "n == 5 and t"),
+        ("n == 5 || t", "n == 5 or t"),
+        ("!t", "not t"),
+        ("!(n > 3)", "not n > 3"),
+        ("!t && n > 3", "not t and n > 3"),
+        ("!(t && n > 3)", "not (t and n > 3)"),
+        ("(n > 3) == t", "(n > 3) == t"),
+        ("n + 1 > 3", "n + 1 > 3"),
+        ("~n > 3", "~n > 3"),
     ],
 )
 def test_a_condition_keeps_its_meaning_in_python(
@@ -1220,26 +1221,29 @@ def test_a_rendered_condition_means_what_slanq_evaluated(
     )
     ast = build_ast(program)
     analyze(ast, DiagnosticBag())
-    assert eval(rendered) is const_value(ast.statements[-1].condition)  # noqa: S307
+    values = {"n": 5, "t": True}
+    assert eval(rendered, values) is const_value(  # noqa: S307
+        ast.statements[-1].condition
+    )
 
 
 def test_an_else_branch_is_emitted() -> None:
     source = _if_source(f"{_IF_DECLS}if (t) {{ X(f); }} else {{ Y(f); }}\n")
-    assert "    if True:\n        circuit.x(f[0])\n    else:\n        circuit.y(f[0])" in source
+    assert "    if t:\n        circuit.x(f[0])\n    else:\n        circuit.y(f[0])" in source
 
 
 def test_an_else_if_nests() -> None:
     source = _if_source(
         f"{_IF_DECLS}if (n > 9) {{ X(f); }} else if (n > 3) {{ Y(f); }}\n"
     )
-    assert "    else:\n        if 5 > 3:\n            circuit.y(f[0])" in source
+    assert "    else:\n        if n > 3:\n            circuit.y(f[0])" in source
 
 
 def test_an_empty_branch_becomes_pass() -> None:
     """Python has no empty block, and dropping the branch would hide the
     warning's subject from the generated file."""
     source = _if_source(f"{_IF_DECLS}if (t) {{ }}\n")
-    assert "    if True:\n        pass" in source
+    assert "    if t:\n        pass" in source
 
 
 def test_an_ancilla_is_declared_outside_the_branch() -> None:
@@ -1252,7 +1256,7 @@ def test_an_ancilla_is_declared_outside_the_branch() -> None:
         if "add_register(_ancilla_0)" in line
     )
     branch = next(
-        index for index, line in enumerate(source.splitlines()) if line.strip() == "if True:"
+        index for index, line in enumerate(source.splitlines()) if line.strip() == "if t:"
     )
     assert declaration < branch
 
@@ -1283,7 +1287,7 @@ _RT_SOURCE = (
     [
         ("m < 4", "expr.less(m, expr.lift(4, types.Uint(3)))"),
         ("m == 3", "expr.equal(m, expr.lift(3, types.Uint(3)))"),
-        ("m < n", "expr.less(m, expr.lift(5, types.Uint(3)))"),
+        ("m < n", "expr.less(m, expr.lift(n, types.Uint(3)))"),
         (
             "m < 4 && m > 1",
             "expr.logic_and(expr.less(m, expr.lift(4, types.Uint(3))), "
@@ -1335,3 +1339,38 @@ def test_expr_is_imported_only_when_a_condition_needs_it() -> None:
     without = _if_source("qbool q = false;\nH(q);\n")
     assert "from qiskit.circuit.classical import expr, types" in with_condition
     assert "expr" not in without
+
+
+def test_an_assigned_classical_variable_survives_as_a_python_variable() -> None:
+    source = _if_source("qint<3> a = 0;\nint i = 0;\ni = i + 1;\nX(a[i]);\n")
+    assert "    i = 0" in source
+    assert "    i = i + 1" in source
+
+
+def test_a_classical_name_reaches_the_generated_file() -> None:
+    """The name the program chose says more than the value behind it, and the
+    expression it was given is still written out unfolded."""
+    source = _if_source("qbool q = false;\nfloat t = PI / 4;\nRX(t, q);\n")
+    assert "    t = np.pi / 4" in source
+    assert "circuit.rx(t, q[0])" in source
+
+
+def test_a_tracked_index_is_mirrored_per_use() -> None:
+    """`a[i]` is not rendered from `i`: the compiler knows the value in effect
+    at each use and mirrors that one."""
+    source = _if_source("qint<3> a = 0;\nint i = 0;\nX(a[i]);\ni = i + 1;\nX(a[i]);\n")
+    assert "circuit.x(a[2])" in source
+    assert "circuit.x(a[1])" in source
+
+
+def test_a_real_time_assignment_renders_as_a_store() -> None:
+    source = _if_source(
+        "qint<3> a = [];\nrt int<> m = measure(a);\nm = m ^ 1;\n"
+    )
+    assert "circuit.store(m, expr.bit_xor(m, expr.lift(1, types.Uint(3))))" in source
+
+
+def test_re_measuring_writes_the_same_register() -> None:
+    source = _if_source("qint<2> a = [];\nrt int<> m = measure(a);\nm = measure(a);\n")
+    assert source.count("circuit.measure(a, m)") == 2
+    assert source.count('m = ClassicalRegister') == 1

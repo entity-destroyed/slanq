@@ -113,6 +113,26 @@ class DeclareRealtimeOp(Op):
 
 
 @dataclass(kw_only=True, eq=False)
+class ClassicalAssignOp(Op):
+    """A build-time classical variable getting a value. Only a variable that is
+    assigned somewhere needs one: one that never is reaches the generated file
+    substituted by its value."""
+
+    name: str
+    op: str
+    value: Expression
+
+
+@dataclass(kw_only=True, eq=False)
+class RealtimeStoreOp(Op):
+    """A real-time classical variable getting a value while the circuit runs."""
+
+    name: str
+    size: int
+    value: Expression
+
+
+@dataclass(kw_only=True, eq=False)
 class RealtimeIfOp(Op):
     """A branch taken while the circuit runs, on a real-time classical value,
     so it becomes a Qiskit `if_test` block."""
@@ -247,6 +267,7 @@ class IRModule:
 
 __all__ = [
     "ArithmeticOp",
+    "ClassicalAssignOp",
     "ClassicalIfOp",
     "ClbitRef",
     "DeclareAncillaOp",
@@ -267,5 +288,6 @@ __all__ = [
     "QubitRef",
     "QubitSlice",
     "RealtimeIfOp",
+    "RealtimeStoreOp",
     "ResetOp",
 ]

@@ -959,3 +959,32 @@ def test_a_real_time_branch_runs_the_arm_it_describes(
     program: str, expected: str
 ) -> None:
     assert set(_realtime_counts(program)) == {expected}
+
+
+def test_a_tracked_index_addresses_the_qubit_it_names() -> None:
+    """A hand-rolled loop: each `X` must land on the qubit the index held at
+    that point, not on the one the declaration started with."""
+    source = (
+        "qint<3> a = 0;\nint i = 0;\n"
+        "X(a[i]);\ni = i + 1;\nX(a[i]);\n"
+        "rt int<> result = measure(a);\n"
+    )
+    assert _counts(source) == {"110": SHOTS}
+
+
+def test_an_assigned_angle_reaches_the_gate() -> None:
+    source = (
+        "qbool q = false;\nfloat g = PI;\ng = g / 2;\nRX(g, q);\n"
+        "rt int<> result = measure(q);\n"
+    )
+    counts = _counts(source)
+    assert set(counts) == {"0", "1"}
+    assert all(SHOTS * 0.3 < value < SHOTS * 0.7 for value in counts.values())
+
+
+def test_re_measuring_overwrites_the_same_register() -> None:
+    source = (
+        "qbool q = false;\nrt int<> result = measure(q);\nX(q);\n"
+        "result = measure(q);\n"
+    )
+    assert _realtime_counts(source) == {"1": SHOTS}

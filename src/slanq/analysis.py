@@ -5,6 +5,7 @@ import unicodedata
 
 from slanq.ast_nodes import (
     AmplitudeList,
+    Assign,
     AugAssign,
     BinaryOp,
     Block,
@@ -21,6 +22,7 @@ from slanq.ast_nodes import (
     Index,
     IntType,
     Literal,
+    LoopVarDecl,
     Name,
     Node,
     ParamArrayDecl,
@@ -38,6 +40,7 @@ from slanq.ast_nodes import (
     Symbol,
     Type,
     UnaryOp,
+    UnknownValue,
     is_quantum,
     qubit_count,
 )
@@ -50,7 +53,7 @@ from slanq.builtin import (
     const_value,
 )
 from slanq.diagnostics import DiagnosticBag
-from slanq.passes import expand_processes, unroll_loops
+from slanq.passes import expand_processes, track_values, unroll_loops
 from slanq.visitor import NodeVisitor, iter_child_nodes
 
 Scope = dict[str, Symbol]
@@ -61,8 +64,12 @@ def analyze(ast: Program, bag: DiagnosticBag) -> None:
     _resolve_names(ast, bag, scope)
     _check_process_calls(ast, bag)
     expand_processes(ast, bag)
+    track_values(ast)
     _check_loops(ast, bag)
     unroll_loops(ast, bag)
+    # Twice: the unroller needs the loop bound's value, and unrolling then
+    # produces one copy of the body per iteration, each with its own values.
+    track_values(ast)
     _check_types(ast, bag)
     _check_affine(ast, bag)
 
@@ -234,6 +241,16 @@ class _Checker(NodeVisitor):
             self._reject(str(exc), expression)
             return None
 
+    def _no_value_reason(self, expression: Expression) -> str:
+        """A suffix naming the variable that has no value here, when one is
+        the reason the expression could not be evaluated."""
+        for node in _walk(expression):
+            if isinstance(node, Name) and isinstance(
+                node.effective_value, UnknownValue
+            ):
+                return f" -- '{node.name}': {node.effective_value.reason}"
+        return ""
+
     def _reject(self, message: str, node: Node) -> None:
         _error(self.bag, message, node.span)
 
@@ -253,7 +270,9 @@ class _IndexChecker(_Checker):
         index = self._int(node.index)
         if index is None:
             self._reject(
-                "a quantum register index must be a compile-time integer", node.index
+                "a quantum register index must be a compile-time integer"
+                + self._no_value_reason(node.index),
+                node.index,
             )
             return
 
@@ -265,7 +284,9 @@ class _IndexChecker(_Checker):
             return
         if self._int(node.index) is None:
             self._reject(
-                "a param array index must be a compile-time integer", node.index
+                "a param array index must be a compile-time integer"
+                + self._no_value_reason(node.index),
+                node.index,
             )
             return
         self._check_bounds(node, symbol.size)
@@ -276,6 +297,28 @@ class _IndexChecker(_Checker):
             self._reject(
                 f"index {index} is out of range for '{node.base.name}' of size {size}",
                 node.index,
+            )
+
+
+class _LoopVarAssignChecker(_Checker):
+    """Runs before unrolling, which substitutes the loop variable away: after
+    it, the target of `i = 5` is a literal and the mistake is unrecognisable."""
+
+    def visit_Assign(self, node: Assign) -> None:
+        self.generic_visit(node)
+        self._check(node.target)
+
+    def visit_AugAssign(self, node: AugAssign) -> None:
+        self.generic_visit(node)
+        self._check(node.target)
+
+    def _check(self, target: Expression) -> None:
+        if isinstance(target, Name) and isinstance(
+            target.resolved_symbol, LoopVarDecl
+        ):
+            self._reject(
+                f"'{target.name}' is a loop variable and cannot be assigned to",
+                target,
             )
 
 
@@ -493,12 +536,19 @@ class _ArithmeticChecker(_Checker):
         self.generic_visit(node)
 
         target = node.target
+        if isinstance(target, Literal):
+            return
         if not isinstance(target, Name):
             self._reject(
                 "arithmetic assignment targets a whole quantum variable, "
                 "not a single qubit",
                 target,
             )
+            return
+
+        # Anything but a quantum target is ordinary assignment, which
+        # _AugAssignChecker reports on; only a quantum one is the adder.
+        if not _is_quantum_target(target):
             return
 
         if self._require_quantum(target) is not None:
@@ -1353,6 +1403,127 @@ class _IfChecker(_Checker):
 
 
 
+ASSIGNABLE_NOT_YET = {
+    LoopVarDecl: "a loop variable",
+}
+
+
+class _AssignChecker(_Checker):
+    """Plain `=`. Which side of the four phases the target lives on decides
+    what may be written to it and when."""
+
+    def visit_Assign(self, node: Assign) -> None:
+        self.generic_visit(node)
+        self._check(node.target, node.value, node)
+
+    def _check(self, target: Expression, value: Expression, node: Node) -> None:
+        if isinstance(target, Literal):
+            # Unrolling substituted a loop variable here, and assigning to one
+            # is already reported where it still had a name.
+            return
+        if not isinstance(target, Name):
+            self._reject("only a variable can be assigned to", target)
+            return
+
+        symbol = target.resolved_symbol
+        if isinstance(symbol, QuantumDecl):
+            self._reject(
+                f"'{symbol.name}' is a quantum variable, which cannot be "
+                "assigned to; use reset() or a gate",
+                target,
+            )
+            return
+        if isinstance(symbol, ParamDecl | ParamArrayDecl):
+            self._reject(f"'{symbol.name}' is a param and is bound, not assigned", target)
+            return
+        if isinstance(symbol, LoopVarDecl):
+            self._reject(f"'{symbol.name}' is a loop variable and cannot be assigned to", target)
+            return
+        if isinstance(symbol, ProcParam):
+            if is_quantum(symbol.declared_type):
+                return
+            self._reject(
+                f"assigning to the process parameter '{symbol.name}' is not "
+                "implemented yet; this is a limitation of the compiler, not an "
+                "error in the program",
+                target,
+            )
+            return
+
+        if isinstance(symbol, ClassicalDecl) and _touches_realtime(value):
+            self._reject(
+                f"'{symbol.name}' is settled while the circuit is built, so it "
+                "cannot be given a real-time value",
+                value,
+            )
+            return
+
+        if isinstance(symbol, RealtimeDecl):
+            _check_realtime_value(self, value)
+
+
+class _AugAssignChecker(_AssignChecker):
+    """`+=`/`-=`. On a quantum variable it describes a reversible adder, which
+    `_ArithmeticChecker` handles; on a classical one it is ordinary
+    assignment."""
+
+    def visit_Assign(self, node: Assign) -> None:
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: AugAssign) -> None:
+        self.generic_visit(node)
+        # An indexed target is _ArithmeticChecker's to reject: only it knows
+        # that `+=` addresses a whole register, not one qubit.
+        if not isinstance(node.target, Name) or _is_quantum_target(node.target):
+            return
+        # `m += 1` computes `m + 1`, so the target is part of the arithmetic
+        # even though only the right-hand side is written down.
+        combined = BinaryOp(
+            span=node.span,
+            op=node.op.removesuffix("="),
+            left=node.target,
+            right=node.value,
+        )
+        self._check(node.target, combined, node)
+
+
+def _check_realtime_value(checker: _Checker, value: Expression) -> None:
+    if _is_measurement(value):
+        return
+    if any(
+        isinstance(other, QuantumDecl) for other in _declarations_in(value)
+    ):
+        checker._reject(
+            "a quantum variable has no classical value; measure it first", value
+        )
+        return
+    if _has_realtime_arithmetic(value):
+        checker._warn(
+            "Aer 0.17.2 cannot run arithmetic on a real-time value", value
+        )
+
+
+def _is_quantum_target(target: Name) -> bool:
+    symbol = target.resolved_symbol
+    if isinstance(symbol, QuantumDecl):
+        return True
+    return isinstance(symbol, ProcParam) and is_quantum(symbol.declared_type)
+
+
+def _has_realtime_arithmetic(expression: Expression) -> bool:
+    if isinstance(expression, BinaryOp):
+        if expression.op in ("+", "-", "*", "/", "%", "**") and _touches_realtime(
+            expression
+        ):
+            return True
+        return _has_realtime_arithmetic(expression.left) or _has_realtime_arithmetic(
+            expression.right
+        )
+    if isinstance(expression, UnaryOp):
+        return _has_realtime_arithmetic(expression.operand)
+    return False
+
+
 class _ParamTypeChecker(_Checker):
     """No Qiskit gate-synthesis primitive ever consumes a `Parameter` except as
     an already-present, real-valued angle or time -- never as a complex value
@@ -1380,6 +1551,7 @@ def _check_process_calls(ast: Program, bag: DiagnosticBag) -> None:
 
 def _check_loops(ast: Program, bag: DiagnosticBag) -> None:
     _ForChecker(bag).visit(ast)
+    _LoopVarAssignChecker(bag).visit(ast)
 
 
 def _check_types(ast: Program, bag: DiagnosticBag) -> None:
@@ -1395,6 +1567,8 @@ def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _MeasurementDeclChecker(bag).visit(ast)
     _RealtimeDeclChecker(bag).visit(ast)
     _RealtimeIfChecker(bag).visit(ast)
+    _AssignChecker(bag).visit(ast)
+    _AugAssignChecker(bag).visit(ast)
     _ArithmeticChecker(bag).visit(ast)
     _ParamTypeChecker(bag).visit(ast)
 

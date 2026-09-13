@@ -15,6 +15,7 @@ from slanq.ast_nodes import (
     Call,
     ExprStatement,
     For,
+    If,
     Index,
     Literal,
     Name,
@@ -22,7 +23,10 @@ from slanq.ast_nodes import (
     Program,
     QIf,
     Statement,
+    UnknownValue,
+    While,
 )
+from slanq.builtin import const_value
 from slanq.diagnostics import DiagnosticBag
 from slanq.lowering import lower_to_ir
 from slanq.passes import MAX_EXPANDED_STATEMENTS
@@ -568,3 +572,62 @@ def test_a_silenced_budget_message_does_not_count_as_reported(
         "for(int k in range(1000000000)) { X(a[0]); }\n"
     )
     assert any(str(MAX_EXPANDED_STATEMENTS) in message for message in _messages(bag))
+
+
+def _index_of(ast: Program, statement: int) -> object:
+    """The expression in effect for the name used as a qubit index."""
+    expression = ast.statements[statement]
+    assert isinstance(expression, ExprStatement)
+    (argument,) = expression.expr.args  # type: ignore[attr-defined]
+    return const_value(argument.index)
+
+
+def test_a_name_means_what_was_last_written_to_it(expanded: Expanded) -> None:
+    ast, bag = expanded("qint<3> a = 0;\nint i = 0;\nX(a[i]);\ni = i + 1;\nX(a[i]);\n")
+    assert not bag.has_errors
+    assert _index_of(ast, 2) == 0
+    assert _index_of(ast, 4) == 1
+
+
+def test_a_compound_assignment_folds_into_the_value(expanded: Expanded) -> None:
+    ast, bag = expanded("qint<3> a = 0;\nint i = 0;\ni += 2;\nX(a[i]);\n")
+    assert not bag.has_errors
+    assert _index_of(ast, 3) == 2
+
+
+def test_a_value_written_in_a_branch_is_unknown_after_it(expanded: Expanded) -> None:
+    """Two arms meet and the compiler cannot name one value, so it says so
+    rather than picking the one it happened to walk through."""
+    ast, _ = expanded("qint<3> a = 0;\nint i = 0;\nbool t = true;\nif (t) { i = 1; }\nX(a[i]);\n")
+    statement = ast.statements[4]
+    assert isinstance(statement, ExprStatement)
+    (argument,) = statement.expr.args  # type: ignore[attr-defined]
+    assert isinstance(argument.index.effective_value, UnknownValue)
+    assert "branch" in argument.index.effective_value.reason
+
+
+def test_a_value_inside_a_branch_is_still_known(expanded: Expanded) -> None:
+    ast, bag = expanded("qint<3> a = 0;\nint i = 0;\nbool t = true;\nif (t) { i = 1; X(a[i]); }\n")
+    assert not bag.has_errors
+    branch = ast.statements[3]
+    assert isinstance(branch, If)
+    assert _index_of(branch.body, 1) == 1  # type: ignore[arg-type]
+
+
+def test_a_loop_body_unsettles_its_own_writes(expanded: Expanded) -> None:
+    """A while body runs again, so a name it writes has no one value even on
+    the way in."""
+    ast, _ = expanded("qbool f = false;\nint i = 0;\nwhile (i < 3) { i = i + 1; }\n")
+    loop = ast.statements[2]
+    assert isinstance(loop, While)
+    assert isinstance(loop.condition.left.effective_value, UnknownValue)  # type: ignore[attr-defined]
+
+
+def test_a_name_used_before_its_declaration_has_no_value(expanded: Expanded) -> None:
+    """Every classical variable is a Python variable in the generated file, so
+    reading one above its own assignment has nothing to read."""
+    ast, _ = expanded("qint<3> a = 0;\nX(a[i]);\nint i = 1;\n")
+    statement = ast.statements[1]
+    assert isinstance(statement, ExprStatement)
+    (argument,) = statement.expr.args  # type: ignore[attr-defined]
+    assert isinstance(argument.index.effective_value, UnknownValue)
