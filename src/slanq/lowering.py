@@ -9,8 +9,10 @@ from slanq.ast_nodes import (
     BinaryOp,
     Block,
     BoolType,
+    Break,
     Call,
     ClassicalDecl,
+    Continue,
     Expression,
     ExprStatement,
     FloatType,
@@ -29,9 +31,11 @@ from slanq.ast_nodes import (
     QuantumDecl,
     RealtimeDecl,
     RealtimeIf,
+    RealtimeWhile,
     Statement,
     Type,
     UnaryOp,
+    While,
     qubit_count,
 )
 from slanq.builtin import (
@@ -49,6 +53,7 @@ from slanq.ir import (
     ArithmeticOp,
     ClassicalAssignOp,
     ClassicalIfOp,
+    ClassicalWhileOp,
     ClbitRef,
     DeclareAncillaOp,
     DeclareRealtimeOp,
@@ -56,6 +61,7 @@ from slanq.ir import (
     InitOp,
     IRBlock,
     IRModule,
+    LoopControlOp,
     MeasurementOp,
     MultiplyOp,
     Op,
@@ -69,6 +75,7 @@ from slanq.ir import (
     QubitSlice,
     RealtimeIfOp,
     RealtimeStoreOp,
+    RealtimeWhileOp,
     ResetOp,
 )
 from slanq.visitor import NodeVisitor
@@ -86,9 +93,7 @@ RESET = "reset"
 # Statement kinds the lowering does not handle yet. Without this the generic
 # traversal would walk straight past them and the construct would vanish from
 # the circuit without a word.
-UNIMPLEMENTED: dict[str, str] = {
-    "While": "the while loop",
-}
+UNIMPLEMENTED: dict[str, str] = {}
 
 # Additional phrases for statements that lower fine at the top level but a
 # qif body specifically forbids -- distinct from UNIMPLEMENTED, which is for
@@ -132,6 +137,7 @@ class _Lowerer(NodeVisitor):
         self.qubits: dict[str, QubitRef] = {}
         self.realtime: dict[str, ClbitRef] = {}
         self._ancilla_counter = 0
+        self._in_realtime_loop: list[bool] = []
 
     def generic_visit(self, node):
         if isinstance(node, Statement):
@@ -285,6 +291,44 @@ class _Lowerer(NodeVisitor):
             )
         )
 
+    def visit_While(self, node: While) -> None:
+        self._in_realtime_loop.append(False)
+        try:
+            body = self._lower_block(node.body)
+        finally:
+            self._in_realtime_loop.pop()
+        self._block.ops.append(
+            ClassicalWhileOp(span=node.span, condition=node.condition, body=body)
+        )
+
+    def visit_RealtimeWhile(self, node: RealtimeWhile) -> None:
+        self._in_realtime_loop.append(True)
+        try:
+            body = self._lower_block(node.body)
+        finally:
+            self._in_realtime_loop.pop()
+        self._block.ops.append(
+            RealtimeWhileOp(span=node.span, condition=node.condition, body=body)
+        )
+
+    def visit_Break(self, node: Break) -> None:
+        self._loop_control(node, "break")
+
+    def visit_Continue(self, node: Continue) -> None:
+        self._loop_control(node, "continue")
+
+    def _loop_control(self, node: Statement, keyword: str) -> None:
+        if not self._in_realtime_loop:
+            self._unreachable(f"a {keyword} outside a loop", node.span)
+            return
+        self._block.ops.append(
+            LoopControlOp(
+                span=node.span,
+                keyword=keyword,
+                realtime=self._in_realtime_loop[-1],
+            )
+        )
+
     def visit_If(self, node: If) -> None:
         body = self._lower_block(node.body)
         orelse = None if node.orelse is None else self._lower_block(node.orelse)
@@ -423,6 +467,25 @@ class _Lowerer(NodeVisitor):
                 ops = self._lower_gate_statement(statement, in_qif=True)
                 if ops is not None:
                     result.ops.extend(ops)
+            elif isinstance(statement, Assign | AugAssign) and _is_build_time_target(
+                statement
+            ):
+                # No qubit and no circuit instruction: a Python line the
+                # sub-circuit's own construction runs, so nothing about the
+                # controlled gate changes.
+                outer, self._block = self._block, result
+                try:
+                    self.visit(statement)
+                finally:
+                    self._block = outer
+            elif isinstance(statement, While):
+                result.ops.append(
+                    ClassicalWhileOp(
+                        span=statement.span,
+                        condition=statement.condition,
+                        body=self._lower_qif_body(statement.body),
+                    )
+                )
             elif isinstance(statement, If):
                 branch = ClassicalIfOp(
                     span=statement.span,
@@ -554,6 +617,9 @@ class _Lowerer(NodeVisitor):
         kind = type(statement).__name__
         if isinstance(statement, RealtimeIf):
             self._error(_not_unitary("a real-time branch"), statement.span)
+            return
+        if isinstance(statement, RealtimeWhile):
+            self._error(_not_unitary("a real-time loop"), statement.span)
             return
         if _measured_initializer(statement):
             self._error(_not_unitary("measurement"), statement.span)
@@ -1046,6 +1112,12 @@ class _Lowerer(NodeVisitor):
                 "the compiler, not in the source program.",
                 span,
             )
+
+
+def _is_build_time_target(statement: Assign | AugAssign) -> bool:
+    return isinstance(statement.target, Name) and isinstance(
+        statement.target.resolved_symbol, ClassicalDecl
+    )
 
 
 def _not_unitary(what: str) -> str:

@@ -112,6 +112,16 @@ RUNNABLE_PROGRAMS = {
         "rt if (m > 0) { X(a[2]); }\n"
         "rt int<> result = measure(a);\n"
     ),
+    "build-time loop": (
+        "qint<3> a = 0;\nint i = 0;\n"
+        "while (i < 3) { X(a[0]); X(a[2]); i = i + 1; if (i > 1) { break; } }\n"
+        "rt int<> result = measure(a);\n"
+    ),
+    "repeat until success": (
+        "qbool coin = false;\nH(coin);\nrt int<> m = measure(coin);\n"
+        "rt while (m == 1) { reset(coin); H(coin); m = measure(coin); }\n"
+        "rt int<> result = measure(coin);\n"
+    ),
     "teleportation": (
         "qbool msg = true;\nqbool alice = false;\nqbool bob = false;\n"
         "H(alice);\nCX(alice, bob);\nCX(msg, alice);\nH(msg);\n"

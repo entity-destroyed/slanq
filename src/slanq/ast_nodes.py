@@ -212,6 +212,25 @@ class While(Statement):
 
 
 @dataclass(kw_only=True)
+class RealtimeWhile(Statement):
+    """`rt while`: the test is made again on the processor beside the QPU after
+    every pass, so it becomes a Qiskit `while_loop` block."""
+
+    condition: Expression
+    body: Block
+
+
+@dataclass(kw_only=True)
+class Break(Statement):
+    pass
+
+
+@dataclass(kw_only=True)
+class Continue(Statement):
+    pass
+
+
+@dataclass(kw_only=True)
 class LoopVarDecl(Declaration):
     declared_type: Type
 
@@ -283,11 +302,13 @@ __all__ = [
     "AugAssign",
     "BinaryOp",
     "Block",
+    "Break",
     "BoolType",
     "BuiltinDecl",
     "Call",
     "ClassicalDecl",
     "ComplexType",
+    "Continue",
     "Declaration",
     "Expression",
     "ExprStatement",
@@ -312,6 +333,7 @@ __all__ = [
     "QuantumDecl",
     "RealtimeDecl",
     "RealtimeIf",
+    "RealtimeWhile",
     "Span",
     "Statement",
     "Symbol",

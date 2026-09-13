@@ -10,9 +10,11 @@ from slanq.ast_nodes import (
     BinaryOp,
     Block,
     BoolType,
+    Break,
     Call,
     ClassicalDecl,
     ComplexType,
+    Continue,
     Expression,
     ExprStatement,
     FloatType,
@@ -35,6 +37,7 @@ from slanq.ast_nodes import (
     QuantumDecl,
     RealtimeDecl,
     RealtimeIf,
+    RealtimeWhile,
     Span,
     Statement,
     Type,
@@ -250,6 +253,18 @@ class SlanqTransformer(Transformer):
     def while_stmt(self, meta: Meta, children) -> While:
         condition, body = children
         return While(span=_span_from_meta(meta), condition=condition, body=body)
+
+    def rt_while_stmt(self, meta: Meta, children) -> RealtimeWhile:
+        condition, body = children
+        return RealtimeWhile(
+            span=_span_from_meta(meta), condition=condition, body=body
+        )
+
+    def break_stmt(self, meta: Meta, children) -> Break:
+        return Break(span=_span_from_meta(meta))
+
+    def continue_stmt(self, meta: Meta, children) -> Continue:
+        return Continue(span=_span_from_meta(meta))
 
     def for_stmt(self, meta: Meta, children) -> For:
         binding, iterable, body = children

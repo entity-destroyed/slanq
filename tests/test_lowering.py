@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import pytest
 
@@ -23,6 +24,7 @@ from slanq.ast_nodes import (
     QIntType,
     QuantumDecl,
     Span,
+    Statement,
 )
 from slanq.builtin import const_value
 from slanq.diagnostics import DiagnosticBag
@@ -258,17 +260,26 @@ def test_mvp_b_lowers_completely(lower: LowerSource, mvp_b_source: str) -> None:
     ]
 
 
-def test_unimplemented_statement_does_not_vanish(lower: LowerSource) -> None:
-    """Before the guard this produced no IR and no diagnostic at all: the
-    generated circuit simply never performed the assignment."""
-    _, bag = lower("qbool q = false; while(true) { X(q); }")
+@dataclass(kw_only=True)
+class _FutureStatement(Statement):
+    """Stands in for a statement kind the language gains later. Every kind the
+    grammar has today is lowered, so nothing written in Slanq reaches the
+    guard -- which is exactly why it needs a test of its own."""
+
+
+def test_a_statement_the_lowering_does_not_know_does_not_vanish(
+    build_ast: BuildAst, span: Span
+) -> None:
+    """Without the guard such a statement produces no IR and no diagnostic at
+    all: the construct simply never reaches the circuit."""
+    ast = build_ast("qbool q = false;")
+    ast.statements.append(_FutureStatement(span=span))
+
+    bag = DiagnosticBag()
+    lower_to_ir(ast, bag)
     assert bag.has_errors
     assert "not implemented yet" in bag.errors[0].message
-
-
-def test_unimplemented_statement_names_the_construct(lower: LowerSource) -> None:
-    _, bag = lower("qbool q = false; while(true) { X(q); }")
-    assert "while loop" in bag.errors[0].message
+    assert "_FutureStatement" in bag.errors[0].message
 
 
 def test_unimplemented_message_blames_the_compiler(lower: LowerSource) -> None:

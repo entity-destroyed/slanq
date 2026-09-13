@@ -268,11 +268,12 @@ def test_an_unimplemented_statement_in_a_body_still_reports_itself(
     """Nothing needs to gate these: the copy reaches lowering like any other
     statement and is reported there."""
     ast, bag = expanded(
-        "process f(qint x) { while(true) { X(x); } }\nqint<2> a = 0;\nf(a);\n"
+        "process f(qbool x) { qif(a == 2) { reset(x); } }\n"
+        "qint<2> a = 2;\nqbool q = false;\nf(q);\n"
     )
     assert not bag.has_errors  # analysis is fine; lowering is what refuses it
     lower_to_ir(ast, bag)
-    assert any("while loop" in message for message in _messages(bag))
+    assert any("unitary operations" in message for message in _messages(bag))
 
 
 def test_a_body_error_is_reported_once_for_two_call_sites(expanded: Expanded) -> None:

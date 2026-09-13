@@ -1374,3 +1374,54 @@ def test_re_measuring_writes_the_same_register() -> None:
     source = _if_source("qint<2> a = [];\nrt int<> m = measure(a);\nm = measure(a);\n")
     assert source.count("circuit.measure(a, m)") == 2
     assert source.count('m = ClassicalRegister') == 1
+
+
+_LOOP_SOURCE = "qint<3> a = [];\nqbool f = false;\nbool t = true;\nrt int<> m = measure(a);\n"
+
+
+def test_a_build_time_loop_becomes_a_python_while() -> None:
+    source = _if_source(f"{_LOOP_SOURCE}int i = 0;\nwhile (i < 2) {{ X(f); i = i + 1; }}\n")
+    assert "    while i < 2:\n        circuit.x(f[0])\n        i = i + 1" in source
+
+
+def test_a_real_time_loop_becomes_a_while_loop_block() -> None:
+    source = _if_source(
+        f"{_LOOP_SOURCE}rt while (m != 0) {{ reset(a); m = measure(a); }}\n"
+    )
+    assert (
+        "with circuit.while_loop(expr.not_equal(m, expr.lift(0, types.Uint(3)))):"
+        in source
+    )
+
+
+def test_break_follows_the_loop_it_belongs_to() -> None:
+    build_time = _if_source(
+        f"{_LOOP_SOURCE}int i = 0;\nwhile (i < 9) {{ i = i + 1; if (t) {{ break; }} }}\n"
+    )
+    assert "\n            break" in build_time
+    assert "break_loop()" not in build_time
+
+    real_time = _if_source(
+        f"{_LOOP_SOURCE}rt while (m != 0) {{ reset(a); m = measure(a); "
+        "rt if (m == 0) { break; } }\n"
+    )
+    assert "circuit.break_loop()" in real_time
+
+
+def test_continue_follows_the_loop_it_belongs_to() -> None:
+    real_time = _if_source(
+        f"{_LOOP_SOURCE}rt while (m != 0) {{ reset(a); m = measure(a); "
+        "rt if (m == 1) { continue; } }\n"
+    )
+    assert "circuit.continue_loop()" in real_time
+
+
+def test_a_build_time_loop_inside_a_qif_builds_the_sub_circuit() -> None:
+    """The branch count is settled before the sub-circuit is controlled, so the
+    loop runs over the sub-circuit's own construction."""
+    source = _if_source(
+        "qint<2> b = 2;\nqbool f = false;\nint i = 0;\n"
+        "qif(b == 2) { while (i < 2) { X(f); i = i + 1; } }\n"
+    )
+    assert "    while i < 2:\n        _qif_body_1.x(" in source
+    assert "        i = i + 1" in source

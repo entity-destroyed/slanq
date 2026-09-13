@@ -988,3 +988,87 @@ def test_re_measuring_overwrites_the_same_register() -> None:
         "result = measure(q);\n"
     )
     assert _realtime_counts(source) == {"1": SHOTS}
+
+
+def test_a_build_time_loop_matches_the_same_loop_written_as_a_for() -> None:
+    """The two ways of writing a counted repetition must give the same circuit,
+    so a fault in one is not hidden by the same fault in the other."""
+    written_as_for = _build_circuit(
+        "qbool q = false;\nfor(int i in range(3)) { H(q); }\n"
+    )
+    written_as_while = _build_circuit(
+        "qbool q = false;\nint i = 0;\nwhile (i < 3) { H(q); i = i + 1; }\n"
+    )
+    assert Operator(written_as_for) == Operator(written_as_while)
+
+
+def test_a_build_time_loop_repeats_its_body() -> None:
+    """Three X gates on one qubit leave it flipped; two would not."""
+    source = (
+        "qbool q = false;\nint i = 0;\nwhile (i < 3) { X(q); i = i + 1; }\n"
+        "rt int<> result = measure(q);\n"
+    )
+    assert _counts(source) == {"1": SHOTS}
+
+
+def test_a_build_time_break_stops_the_loop() -> None:
+    """Two passes instead of three, so the qubit comes back to zero."""
+    source = (
+        "qbool q = false;\nint i = 0;\n"
+        "while (i < 3) { X(q); i = i + 1; if (i > 1) { break; } }\n"
+        "rt int<> result = measure(q);\n"
+    )
+    assert _counts(source) == {"0": SHOTS}
+
+
+def test_a_build_time_continue_skips_the_rest_of_the_body() -> None:
+    """Three passes, one of them skipping the gate: two X gates, back to zero."""
+    source = (
+        "qbool q = false;\nint i = 0;\n"
+        "while (i < 3) { i = i + 1; if (i == 2) { continue; } X(q); }\n"
+        "rt int<> result = measure(q);\n"
+    )
+    assert _counts(source) == {"0": SHOTS}
+
+
+def test_a_build_time_loop_cannot_index_with_its_counter() -> None:
+    """Unlike `for`, which is unrolled into one copy per iteration, a `while`
+    body is written once and repeated -- so the counter has no one value there,
+    and the compiler says which loop took it away."""
+    result = compile_source(
+        "qint<3> a = 0;\nint i = 0;\nwhile (i < 3) { X(a[i]); i = i + 1; }\n",
+        source_name="test.slanq",
+    )
+    (diagnostic,) = result.diagnostics.errors
+    assert diagnostic.message == (
+        "a quantum register index must be an integer the compiler can compute"
+        " -- 'i': its value here depends on a branch"
+    )
+
+
+REPEAT_UNTIL_SUCCESS = """qbool coin = false;
+H(coin);
+rt int<> m = measure(coin);
+rt while (m == 1) {
+    reset(coin);
+    H(coin);
+    m = measure(coin);
+}
+rt int<> result = measure(coin);
+"""
+
+
+def test_repeat_until_success_always_ends_on_the_wanted_outcome() -> None:
+    """The loop keeps flipping until the coin lands on 0, so no shot can end
+    anywhere else -- the thing a unitary circuit cannot express."""
+    assert set(_realtime_counts(REPEAT_UNTIL_SUCCESS)) == {"0"}
+
+
+def test_a_real_time_break_leaves_the_loop() -> None:
+    source = (
+        "qbool coin = false;\nH(coin);\nrt int<> m = measure(coin);\n"
+        "rt while (m == 1) { reset(coin); H(coin); m = measure(coin);"
+        " rt if (m == 0) { break; } }\n"
+        "rt int<> result = measure(coin);\n"
+    )
+    assert set(_realtime_counts(source)) == {"0"}

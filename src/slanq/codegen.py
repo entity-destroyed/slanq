@@ -29,12 +29,14 @@ from slanq.ir import (
     ArithmeticOp,
     ClassicalAssignOp,
     ClassicalIfOp,
+    ClassicalWhileOp,
     DeclareAncillaOp,
     DeclareRealtimeOp,
     GateOp,
     InitOp,
     IRBlock,
     IRModule,
+    LoopControlOp,
     MeasurementOp,
     MultiplyOp,
     Op,
@@ -47,6 +49,7 @@ from slanq.ir import (
     QubitSlice,
     RealtimeIfOp,
     RealtimeStoreOp,
+    RealtimeWhileOp,
     ResetOp,
 )
 
@@ -371,6 +374,23 @@ class _Generator:
                 + self._indented(op.orelse, circuit_var, qubits)
             )
 
+        if isinstance(op, ClassicalWhileOp):
+            return [
+                f"while {self.expression(op.condition)}:"
+            ] + self._indented(op.body, circuit_var, qubits)
+
+        if isinstance(op, RealtimeWhileOp):
+            self.needs_expr = True
+            condition = _as_truth(self._realtime_expr(op.condition))
+            return [
+                f"with {circuit_var}.while_loop({condition}):"
+            ] + self._indented(op.body, circuit_var, qubits)
+
+        if isinstance(op, LoopControlOp):
+            if op.realtime:
+                return [f"{circuit_var}.{op.keyword}_loop()"]
+            return [op.keyword]
+
         if isinstance(op, ClassicalIfOp):
             lines = [f"if {self.expression(op.condition)}:"]
             lines += self._indented(op.body, circuit_var, qubits)
@@ -487,15 +507,30 @@ class _Generator:
         # A global phase gets no wire in the sub-circuit, because controlling
         # one is exactly a phase gate on the control qubits themselves. A body
         # made only of phases therefore needs no sub-circuit at all.
-        phases = _phases_only(op.body)
-        gates = _gates_only(op.body)
-        if not phases.ops and not gates.ops:
+
+        # A body whose phases all stand at its top level can have them summed
+        # into one expression here. One under a build-time branch or loop
+        # cannot: which passes happen is settled when the generated file runs.
+        # Then the body is walked *once*, gates into the sub-circuit and phases
+        # into a running total, because the two share build-time state
+        nested_phase = _has_nested_phase(op.body)
+        phases = IRBlock() if nested_phase else _phases_only(op.body)
+        gates = op.body if nested_phase else _gates_only(op.body)
+        if not _has_gate(gates) and not phases.ops and not nested_phase:
             return []
 
         lines: list[str] = []
+        angle: str | None = None
+        angle_accumulated = False
+        if nested_phase:
+            self._phase_counter += 1
+            angle = f"_qif_phase_{self._phase_counter}"
+            angle_accumulated = True
+            lines.append(f"{angle} = 0.0")
+
         body_var = ""
         body_sources: list[str] = []
-        if gates.ops:
+        if _has_gate(gates):
             self._qif_counter += 1
             body_var = f"_qif_body_{self._qif_counter}"
 
@@ -514,12 +549,23 @@ class _Generator:
             lines.append(
                 f'{body_var} = QuantumCircuit({len(body_qubits)}, name="qif_body")'
             )
-            for sub_op in gates.ops:
-                lines += self.op_lines(sub_op, body_var, qubits=local)
+            outer_total, self._phase_total = self._phase_total, angle
+            try:
+                for sub_op in gates.ops:
+                    lines += self.op_lines(sub_op, body_var, qubits=local)
+            finally:
+                self._phase_total = outer_total
             body_sources = [f"{name}[{index}]" for name, index in body_qubits]
+        elif nested_phase:
+            outer_total, self._phase_total = self._phase_total, angle
+            try:
+                for sub_op in gates.ops:
+                    lines += self.op_lines(sub_op, circuit_var)
+            finally:
+                self._phase_total = outer_total
 
-        angle, angle_accumulated, angle_lines = self._qif_angle(phases, circuit_var)
-        lines = angle_lines + lines
+        if not nested_phase:
+            angle = self._summed_angle(phases)
 
         # Each wide-negated clause needs its own ancilla, computed before
         # everything else and uncomputed after everything else -- proper
@@ -594,37 +640,15 @@ class _Generator:
 
         return lines
 
-    def _qif_angle(
-        self, phases: IRBlock, circuit_var: str
-    ) -> tuple[str | None, bool, list[str]]:
-        """The phase gate's angle. Phases that always apply sum into one
-        expression the compiler writes out. A phase under a build-time branch
-        has no such expression -- which branch runs is only settled when the
-        generated file runs -- so all of them go into a running total the
-        generated file builds first, keeping the source's own if/else shape."""
+    def _summed_angle(self, phases: IRBlock) -> str | None:
+        """Phases that always apply add up into one expression the compiler
+        writes out."""
         if not phases.ops:
-            return None, False, []
-
-        if all(isinstance(sub_op, PhaseOp) for sub_op in phases.ops):
-            return (
-                " + ".join(
-                    self._wrapped(sub_op.angle, BINARY_PRECEDENCE["+"])
-                    for sub_op in cast(list[PhaseOp], phases.ops)
-                ),
-                False,
-                [],
-            )
-
-        self._phase_counter += 1
-        total = f"_qif_phase_{self._phase_counter}"
-        lines = [f"{total} = 0.0"]
-        outer, self._phase_total = self._phase_total, total
-        try:
-            for sub_op in phases.ops:
-                lines += self.op_lines(sub_op, circuit_var)
-        finally:
-            self._phase_total = outer
-        return total, True, lines
+            return None
+        return " + ".join(
+            self._wrapped(sub_op.angle, BINARY_PRECEDENCE["+"])
+            for sub_op in cast(list[PhaseOp], phases.ops)
+        )
 
     def _controlled_body_lines(
         self,
@@ -934,6 +958,27 @@ def _collect_realtime_widths(block: IRBlock, widths: dict[str, int]) -> None:
                 _collect_realtime_widths(nested, widths)
 
 
+def _has_nested_phase(block: IRBlock, *, nested: bool = False) -> bool:
+    """Whether any phase stands under a build-time branch or loop."""
+    for op in block.ops:
+        if isinstance(op, PhaseOp) and nested:
+            return True
+        for inner in (getattr(op, "body", None), getattr(op, "orelse", None)):
+            if isinstance(inner, IRBlock) and _has_nested_phase(inner, nested=True):
+                return True
+    return False
+
+
+def _has_gate(block: IRBlock) -> bool:
+    for op in block.ops:
+        if isinstance(op, GateOp):
+            return True
+        for inner in (getattr(op, "body", None), getattr(op, "orelse", None)):
+            if isinstance(inner, IRBlock) and _has_gate(inner):
+                return True
+    return False
+
+
 def _phases_only(block: IRBlock) -> IRBlock:
     """The block's phases with its build-time branches kept around them, so the
     running total is built under the same conditions the source wrote."""
@@ -950,6 +995,14 @@ def _filtered(block: IRBlock, *, keep_phases: bool) -> IRBlock:
         if isinstance(op, PhaseOp):
             if keep_phases:
                 result.ops.append(op)
+            continue
+        if isinstance(op, ClassicalWhileOp):
+            body = _filtered(op.body, keep_phases=keep_phases)
+            if not body.ops:
+                continue
+            result.ops.append(
+                ClassicalWhileOp(span=op.span, condition=op.condition, body=body)
+            )
             continue
         if isinstance(op, ClassicalIfOp):
             body = _filtered(op.body, keep_phases=keep_phases)
@@ -976,15 +1029,20 @@ def _collect_body_qubits(body: IRBlock, seen: dict[Qubit, None]) -> None:
     for op in body.ops:
         if isinstance(op, PhaseOp):
             continue  # a global phase touches no qubit
+        if isinstance(op, ClassicalWhileOp):
+            _collect_body_qubits(op.body, seen)
+            continue
         if isinstance(op, ClassicalIfOp):
             _collect_body_qubits(op.body, seen)
             if op.orelse is not None:
                 _collect_body_qubits(op.orelse, seen)
             continue
+        if isinstance(op, ClassicalAssignOp):
+            continue  # a Python line, not a circuit instruction
         assert isinstance(op, GateOp), (
-            "a qif body holds only gates, phases and build-time branches; a "
-            "new op kind allowed here must have its operands mapped into the "
-            "sub-circuit too"
+            "a qif body holds only gates, phases, build-time branches and "
+            "build-time assignments; a new op kind allowed here must have its "
+            "operands mapped into the sub-circuit too"
         )
         for target in op.targets:
             for qubit in _operand_qubits(target):
