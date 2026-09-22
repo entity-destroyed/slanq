@@ -45,7 +45,6 @@ from slanq.ast_nodes import (
     Type,
     UnaryOp,
     UnknownValue,
-    While,
     is_quantum,
     qubit_count,
 )
@@ -1529,26 +1528,6 @@ def _has_realtime_arithmetic(expression: Expression) -> bool:
     return False
 
 
-class _WhileChecker(_Checker):
-
-    def visit_While(self, node: While) -> None:
-        self.generic_visit(node)
-        if not _check_build_time_condition(self, node.condition, "while"):
-            return
-        _check_no_declarations(self, node.body, "a while")
-        self._check_settles(node)
-        if not node.body.statements:
-            self._warn("this while body is empty", node.body)
-
-    def _check_settles(self, node: While) -> None:
-        if _never_settles(node.condition, node.body):
-            self._reject(
-                "this while loop never ends: its body writes nothing its "
-                "condition reads, and it has no break",
-                node.condition,
-            )
-
-
 class _RealtimeWhileChecker(_Checker):
 
     def visit_RealtimeWhile(self, node: RealtimeWhile) -> None:
@@ -1567,32 +1546,19 @@ class _RealtimeWhileChecker(_Checker):
 
 
 class _LoopControlChecker(_Checker):
-    """`break` and `continue` belong to the nearest enclosing loop. A build-time
-    one cannot sit inside a real-time block: the generated file runs that block's
-    Python unconditionally, so the loop would end whatever the qubits did."""
+    """An rt while is the only loop that reaches the circuit, so it is the only
+    one a break or a continue can belong to; a for is unrolled long before."""
 
     def __init__(self, bag: DiagnosticBag) -> None:
         super().__init__(bag)
-        self._context: list[str] = []
-
-    def visit_While(self, node: While) -> None:
-        self._descend(node, "while")
+        self._depth = 0
 
     def visit_RealtimeWhile(self, node: RealtimeWhile) -> None:
-        self._descend(node, "rt while")
-
-    def visit_For(self, node: For) -> None:
-        self._descend(node, "for")
-
-    def visit_RealtimeIf(self, node: RealtimeIf) -> None:
-        self._descend(node, "rt if")
-
-    def _descend(self, node: Node, label: str) -> None:
-        self._context.append(label)
+        self._depth += 1
         try:
             self.generic_visit(node)
         finally:
-            self._context.pop()
+            self._depth -= 1
 
     def visit_Break(self, node: Break) -> None:
         self._check(node, "break")
@@ -1601,59 +1567,10 @@ class _LoopControlChecker(_Checker):
         self._check(node, "continue")
 
     def _check(self, node: Node, keyword: str) -> None:
-        loops = [
-            index
-            for index, label in enumerate(self._context)
-            if label in ("while", "rt while", "for")
-        ]
-        if not loops:
-            self._reject(f"'{keyword}' is only meaningful inside a loop", node)
-            return
-        innermost = loops[-1]
-        if self._context[innermost] == "rt while":
-            return
-        crossed = [label for label in self._context[innermost + 1 :] if label == "rt if"]
-        if crossed:
+        if not self._depth:
             self._reject(
-                f"'{keyword}' here would leave the loop while the circuit is "
-                "being built, whatever the measurement says: it belongs to a "
-                f"{self._context[innermost]} loop but stands inside an rt if",
-                node,
+                f"'{keyword}' is only meaningful inside an rt while loop", node
             )
-
-
-def _check_build_time_condition(
-    checker: _Checker, condition: Expression, construct: str
-) -> bool:
-    for symbol in _declarations_in(condition):
-        if isinstance(symbol, QuantumDecl):
-            checker._reject(
-                f"'{symbol.name}' is a quantum variable, so it cannot be a "
-                f"{construct} condition; use qif",
-                condition,
-            )
-            return False
-        if isinstance(symbol, ParamDecl | ParamArrayDecl):
-            checker._reject(
-                f"'{symbol.name}' is a param, which has no value while the "
-                f"circuit is being built, so it cannot be a {construct} condition",
-                condition,
-            )
-            return False
-        if isinstance(symbol, RealtimeDecl):
-            checker._reject(
-                f"'{symbol.name}' is a real-time value, which has no value "
-                f"while the circuit is being built; use rt {construct}",
-                condition,
-            )
-            return False
-    if not _is_boolean(condition):
-        checker._reject(
-            f"a {construct} condition must be a true/false value", condition
-        )
-        return False
-    checker._value(condition)
-    return True
 
 
 def _check_realtime_condition(
@@ -1681,8 +1598,8 @@ def _check_realtime_condition(
         return False
     if not _touches_realtime(condition):
         checker._reject(
-            f"an {construct} condition must read a real-time value; use "
-            f"{construct.removeprefix('rt ')}",
+            f"an {construct} condition must read a real-time value; a loop "
+            "settled when the circuit is built is a for",
             condition,
         )
         return False
@@ -1717,7 +1634,7 @@ def _contains_break(statements: list[Statement]) -> bool:
     for statement in statements:
         if isinstance(statement, Break):
             return True
-        if isinstance(statement, While | RealtimeWhile | For):
+        if isinstance(statement, RealtimeWhile):
             continue  # its break leaves that loop, not this one
         for child in iter_child_nodes(statement):
             if isinstance(child, Block) and _contains_break(child.statements):
@@ -1770,7 +1687,6 @@ def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _RealtimeIfChecker(bag).visit(ast)
     _AssignChecker(bag).visit(ast)
     _AugAssignChecker(bag).visit(ast)
-    _WhileChecker(bag).visit(ast)
     _RealtimeWhileChecker(bag).visit(ast)
     _LoopControlChecker(bag).visit(ast)
     _ArithmeticChecker(bag).visit(ast)

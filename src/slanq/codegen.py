@@ -29,7 +29,6 @@ from slanq.ir import (
     ArithmeticOp,
     ClassicalAssignOp,
     ClassicalIfOp,
-    ClassicalWhileOp,
     DeclareAncillaOp,
     DeclareRealtimeOp,
     GateOp,
@@ -374,11 +373,6 @@ class _Generator:
                 + self._indented(op.orelse, circuit_var, qubits)
             )
 
-        if isinstance(op, ClassicalWhileOp):
-            return [
-                f"while {self.expression(op.condition)}:"
-            ] + self._indented(op.body, circuit_var, qubits)
-
         if isinstance(op, RealtimeWhileOp):
             self.needs_expr = True
             condition = _as_truth(self._realtime_expr(op.condition))
@@ -387,9 +381,7 @@ class _Generator:
             ] + self._indented(op.body, circuit_var, qubits)
 
         if isinstance(op, LoopControlOp):
-            if op.realtime:
-                return [f"{circuit_var}.{op.keyword}_loop()"]
-            return [op.keyword]
+            return [f"{circuit_var}.{op.keyword}_loop()"]
 
         if isinstance(op, ClassicalIfOp):
             lines = [f"if {self.expression(op.condition)}:"]
@@ -996,14 +988,6 @@ def _filtered(block: IRBlock, *, keep_phases: bool) -> IRBlock:
             if keep_phases:
                 result.ops.append(op)
             continue
-        if isinstance(op, ClassicalWhileOp):
-            body = _filtered(op.body, keep_phases=keep_phases)
-            if not body.ops:
-                continue
-            result.ops.append(
-                ClassicalWhileOp(span=op.span, condition=op.condition, body=body)
-            )
-            continue
         if isinstance(op, ClassicalIfOp):
             body = _filtered(op.body, keep_phases=keep_phases)
             orelse = (
@@ -1029,9 +1013,6 @@ def _collect_body_qubits(body: IRBlock, seen: dict[Qubit, None]) -> None:
     for op in body.ops:
         if isinstance(op, PhaseOp):
             continue  # a global phase touches no qubit
-        if isinstance(op, ClassicalWhileOp):
-            _collect_body_qubits(op.body, seen)
-            continue
         if isinstance(op, ClassicalIfOp):
             _collect_body_qubits(op.body, seen)
             if op.orelse is not None:

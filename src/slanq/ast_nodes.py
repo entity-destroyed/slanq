@@ -206,12 +206,6 @@ class QIf(Statement):
 
 
 @dataclass(kw_only=True)
-class While(Statement):
-    condition: Expression
-    body: Block
-
-
-@dataclass(kw_only=True)
 class RealtimeWhile(Statement):
     """`rt while`: the test is made again on the processor beside the QPU after
     every pass, so it becomes a Qiskit `while_loop` block."""
@@ -340,7 +334,6 @@ __all__ = [
     "Type",
     "UnaryOp",
     "UnknownValue",
-    "While",
     "is_quantum",
     "qubit_count",
 ]

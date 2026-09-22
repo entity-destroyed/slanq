@@ -157,6 +157,16 @@ def test_a_qif_body_rejects_a_non_unitary_operation(
     assert diagnostic.message == message
 
 
+def test_a_qif_body_rejects_an_assignment(lower: LowerSource) -> None:
+    """Assignment has no reversible form, so no controlled form either --
+    the build-time target makes no difference."""
+    _, bag = lower(
+        "qint<2> a = 0; qbool f = false; int i = 0; qif(a == 2) { i = i + 1; X(f); }"
+    )
+    (diagnostic,) = bag.errors
+    assert diagnostic.message == _NOT_UNITARY.format("an assignment")
+
+
 def test_numeric_arguments_become_params(lower: LowerSource) -> None:
     module, bag = lower("qbool q = false; RX(90, q);")
     assert not bag.has_errors

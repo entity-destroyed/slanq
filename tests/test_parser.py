@@ -22,7 +22,6 @@ from slanq.parser import parse_source
         "qif(a == 2) { phase(60); }",
         "if(x == y) { a += 1; }",
         "for(int i in range(4)) { num += gamma[i]; }",
-        "while(result == 0) { result = measure(num); }",
         "process add(qint a, qint b) { a += b; }",
         "// just a comment",
     ],

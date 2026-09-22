@@ -1320,37 +1320,32 @@ _LOOP_DECLS = (
     ("program", "message"),
     [
         (
-            "int i = 0;\nwhile (i < 3) { X(f); }",
-            "this while loop never ends: its body writes nothing its condition "
-            "reads, and it has no break",
-        ),
-        (
             "rt while (m != 0) { X(f); }",
             "this rt while loop never ends: its body writes nothing its "
             "condition reads, and it has no break",
         ),
         (
-            "while (b == 2) { X(f); }",
-            "'b' is a quantum variable, so it cannot be a while condition; use qif",
-        ),
-        (
-            "while (m == 0) { X(f); }",
-            "'m' is a real-time value, which has no value while the circuit is "
-            "being built; use rt while",
+            "rt while (b == 2) { X(f); }",
+            "'b' is a quantum variable, so it cannot be an rt while "
+            "condition; use qif",
         ),
         (
             "rt while (n > 3) { X(f); }",
-            "an rt while condition must read a real-time value; use while",
+            "an rt while condition must read a real-time value; a loop "
+            "settled when the circuit is built is a for",
         ),
-        ("break;", "'break' is only meaningful inside a loop"),
-        ("continue;", "'continue' is only meaningful inside a loop"),
+        (
+            "rt while (m != 0) { qbool z = false; reset(a); m = measure(a); }",
+            "'z' cannot be declared inside an rt while body",
+        ),
+        ("break;", "'break' is only meaningful inside an rt while loop"),
+        ("continue;", "'continue' is only meaningful inside an rt while loop"),
     ],
     ids=[
-        "never settles",
         "rt never settles",
         "quantum condition",
-        "real-time condition",
         "build-time condition",
+        "declaration in the body",
         "stray break",
         "stray continue",
     ],
@@ -1362,40 +1357,17 @@ def test_a_loop_is_checked(
     assert diagnostic.message == message
 
 
-def test_a_build_time_break_cannot_sit_in_a_real_time_block(
-    diagnostics_of: DiagnosticsOf,
-) -> None:
-    """The generated file runs an rt if body's Python unconditionally, so this
-    break would end the loop whatever the measurement said."""
-    (diagnostic,) = diagnostics_of(
-        f"{_LOOP_DECLS}int i = 0;\nwhile (i < 3) {{ i = i + 1; rt if (m == 0) {{ break; }} }}\n"
-    ).errors
-    assert diagnostic.message == (
-        "'break' here would leave the loop while the circuit is being built, "
-        "whatever the measurement says: it belongs to a while loop but stands "
-        "inside an rt if"
-    )
-
-
 @pytest.mark.parametrize(
     "program",
     [
-        "int i = 0;\nwhile (i < 3) { X(f); i = i + 1; }",
-        "int i = 0;\nwhile (i < 9) { i = i + 1; if (i > 2) { break; } }",
-        "int i = 0;\nwhile (i < 3) { i = i + 1; if (i == 2) { continue; } X(f); }",
         "rt while (m != 0) { reset(a); H(a); m = measure(a); }",
         "rt while (m != 0) { reset(a); m = measure(a); rt if (m == 0) { break; } }",
         "rt while (m != 0) { reset(a); m = measure(a); if (t) { break; } }",
-        "int i = 0;\nqif(b == 2) { while (i < 2) { X(f); i = i + 1; } }",
     ],
     ids=[
-        "counted",
-        "break",
-        "continue",
         "repeat until success",
         "break in an rt if",
         "real-time break under a build-time if",
-        "build-time loop inside a qif",
     ],
 )
 def test_an_accepted_loop(diagnostics_of: DiagnosticsOf, program: str) -> None:

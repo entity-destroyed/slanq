@@ -24,7 +24,6 @@ from slanq.ast_nodes import (
     QIf,
     Statement,
     UnknownValue,
-    While,
 )
 from slanq.builtin import const_value
 from slanq.diagnostics import DiagnosticBag
@@ -613,15 +612,6 @@ def test_a_value_inside_a_branch_is_still_known(expanded: Expanded) -> None:
     branch = ast.statements[3]
     assert isinstance(branch, If)
     assert _index_of(branch.body, 1) == 1  # type: ignore[arg-type]
-
-
-def test_a_loop_body_unsettles_its_own_writes(expanded: Expanded) -> None:
-    """A while body runs again, so a name it writes has no one value even on
-    the way in."""
-    ast, _ = expanded("qbool f = false;\nint i = 0;\nwhile (i < 3) { i = i + 1; }\n")
-    loop = ast.statements[2]
-    assert isinstance(loop, While)
-    assert isinstance(loop.condition.left.effective_value, UnknownValue)  # type: ignore[attr-defined]
 
 
 def test_a_name_used_before_its_declaration_has_no_value(expanded: Expanded) -> None:

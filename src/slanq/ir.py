@@ -143,15 +143,6 @@ class RealtimeIfOp(Op):
 
 
 @dataclass(kw_only=True, eq=False)
-class ClassicalWhileOp(Op):
-    """A loop run while the circuit is being built: a Python `while` in the
-    generated file, appending its body's gates once per pass."""
-
-    condition: Expression
-    body: IRBlock
-
-
-@dataclass(kw_only=True, eq=False)
 class RealtimeWhileOp(Op):
     """A loop the processor beside the QPU runs, testing again after every
     pass: a Qiskit `while_loop` block."""
@@ -162,11 +153,9 @@ class RealtimeWhileOp(Op):
 
 @dataclass(kw_only=True, eq=False)
 class LoopControlOp(Op):
-    """`break` or `continue`. Which loop it leaves decides how it is written:
-    the generated file's own `break`, or an instruction in the circuit."""
+    """`break` or `continue` in an rt while: an instruction in the circuit."""
 
     keyword: str
-    realtime: bool
 
 
 @dataclass(kw_only=True, eq=False)
@@ -296,7 +285,6 @@ __all__ = [
     "ArithmeticOp",
     "ClassicalAssignOp",
     "ClassicalIfOp",
-    "ClassicalWhileOp",
     "ClbitRef",
     "DeclareAncillaOp",
     "DeclareRealtimeOp",

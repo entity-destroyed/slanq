@@ -16,7 +16,6 @@ start: statement*
           | rt_if_stmt
           | qif_stmt
           | for_stmt
-          | while_stmt
           | rt_while_stmt
           | simple_statement ";"
 
@@ -76,7 +75,6 @@ AUGOP: "+=" | "-="
 if_stmt:    "if" "(" expr ")" block ("else" else_branch)?
 rt_if_stmt: "rt" "if" "(" expr ")" block ("else" rt_else_branch)?
 qif_stmt:   "qif" "(" expr ")" block
-while_stmt:    "while" "(" expr ")" block
 rt_while_stmt: "rt" "while" "(" expr ")" block
 
 // `else if` is an else branch holding one if, the same shape Python's own ast

@@ -990,53 +990,11 @@ def test_re_measuring_overwrites_the_same_register() -> None:
     assert _realtime_counts(source) == {"1": SHOTS}
 
 
-def test_a_build_time_loop_matches_the_same_loop_written_as_a_for() -> None:
-    """The two ways of writing a counted repetition must give the same circuit,
-    so a fault in one is not hidden by the same fault in the other."""
-    written_as_for = _build_circuit(
-        "qbool q = false;\nfor(int i in range(3)) { H(q); }\n"
-    )
-    written_as_while = _build_circuit(
-        "qbool q = false;\nint i = 0;\nwhile (i < 3) { H(q); i = i + 1; }\n"
-    )
-    assert Operator(written_as_for) == Operator(written_as_while)
-
-
-def test_a_build_time_loop_repeats_its_body() -> None:
-    """Three X gates on one qubit leave it flipped; two would not."""
-    source = (
-        "qbool q = false;\nint i = 0;\nwhile (i < 3) { X(q); i = i + 1; }\n"
-        "rt int<> result = measure(q);\n"
-    )
-    assert _counts(source) == {"1": SHOTS}
-
-
-def test_a_build_time_break_stops_the_loop() -> None:
-    """Two passes instead of three, so the qubit comes back to zero."""
-    source = (
-        "qbool q = false;\nint i = 0;\n"
-        "while (i < 3) { X(q); i = i + 1; if (i > 1) { break; } }\n"
-        "rt int<> result = measure(q);\n"
-    )
-    assert _counts(source) == {"0": SHOTS}
-
-
-def test_a_build_time_continue_skips_the_rest_of_the_body() -> None:
-    """Three passes, one of them skipping the gate: two X gates, back to zero."""
-    source = (
-        "qbool q = false;\nint i = 0;\n"
-        "while (i < 3) { i = i + 1; if (i == 2) { continue; } X(q); }\n"
-        "rt int<> result = measure(q);\n"
-    )
-    assert _counts(source) == {"0": SHOTS}
-
-
-def test_a_build_time_loop_cannot_index_with_its_counter() -> None:
-    """Unlike `for`, which is unrolled into one copy per iteration, a `while`
-    body is written once and repeated -- so the counter has no one value there,
-    and the compiler says which loop took it away."""
+def test_an_index_settled_by_a_branch_is_rejected() -> None:
+    """Which arm runs is decided when the circuit is built, so the compiler
+    cannot say which qubit this is, and it says why."""
     result = compile_source(
-        "qint<3> a = 0;\nint i = 0;\nwhile (i < 3) { X(a[i]); i = i + 1; }\n",
+        "qint<3> a = 0;\nbool t = true;\nint i = 0;\nif (t) { i = 1; }\nX(a[i]);\n",
         source_name="test.slanq",
     )
     (diagnostic,) = result.diagnostics.errors

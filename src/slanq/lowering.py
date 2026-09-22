@@ -35,7 +35,6 @@ from slanq.ast_nodes import (
     Statement,
     Type,
     UnaryOp,
-    While,
     qubit_count,
 )
 from slanq.builtin import (
@@ -53,7 +52,6 @@ from slanq.ir import (
     ArithmeticOp,
     ClassicalAssignOp,
     ClassicalIfOp,
-    ClassicalWhileOp,
     ClbitRef,
     DeclareAncillaOp,
     DeclareRealtimeOp,
@@ -137,7 +135,7 @@ class _Lowerer(NodeVisitor):
         self.qubits: dict[str, QubitRef] = {}
         self.realtime: dict[str, ClbitRef] = {}
         self._ancilla_counter = 0
-        self._in_realtime_loop: list[bool] = []
+        self._realtime_loops = 0
 
     def generic_visit(self, node):
         if isinstance(node, Statement):
@@ -291,22 +289,12 @@ class _Lowerer(NodeVisitor):
             )
         )
 
-    def visit_While(self, node: While) -> None:
-        self._in_realtime_loop.append(False)
-        try:
-            body = self._lower_block(node.body)
-        finally:
-            self._in_realtime_loop.pop()
-        self._block.ops.append(
-            ClassicalWhileOp(span=node.span, condition=node.condition, body=body)
-        )
-
     def visit_RealtimeWhile(self, node: RealtimeWhile) -> None:
-        self._in_realtime_loop.append(True)
+        self._realtime_loops += 1
         try:
             body = self._lower_block(node.body)
         finally:
-            self._in_realtime_loop.pop()
+            self._realtime_loops -= 1
         self._block.ops.append(
             RealtimeWhileOp(span=node.span, condition=node.condition, body=body)
         )
@@ -318,16 +306,10 @@ class _Lowerer(NodeVisitor):
         self._loop_control(node, "continue")
 
     def _loop_control(self, node: Statement, keyword: str) -> None:
-        if not self._in_realtime_loop:
+        if not self._realtime_loops:
             self._unreachable(f"a {keyword} outside a loop", node.span)
             return
-        self._block.ops.append(
-            LoopControlOp(
-                span=node.span,
-                keyword=keyword,
-                realtime=self._in_realtime_loop[-1],
-            )
-        )
+        self._block.ops.append(LoopControlOp(span=node.span, keyword=keyword))
 
     def visit_If(self, node: If) -> None:
         body = self._lower_block(node.body)
@@ -467,25 +449,6 @@ class _Lowerer(NodeVisitor):
                 ops = self._lower_gate_statement(statement, in_qif=True)
                 if ops is not None:
                     result.ops.extend(ops)
-            elif isinstance(statement, Assign | AugAssign) and _is_build_time_target(
-                statement
-            ):
-                # No qubit and no circuit instruction: a Python line the
-                # sub-circuit's own construction runs, so nothing about the
-                # controlled gate changes.
-                outer, self._block = self._block, result
-                try:
-                    self.visit(statement)
-                finally:
-                    self._block = outer
-            elif isinstance(statement, While):
-                result.ops.append(
-                    ClassicalWhileOp(
-                        span=statement.span,
-                        condition=statement.condition,
-                        body=self._lower_qif_body(statement.body),
-                    )
-                )
             elif isinstance(statement, If):
                 branch = ClassicalIfOp(
                     span=statement.span,
@@ -620,6 +583,9 @@ class _Lowerer(NodeVisitor):
             return
         if isinstance(statement, RealtimeWhile):
             self._error(_not_unitary("a real-time loop"), statement.span)
+            return
+        if isinstance(statement, Assign):
+            self._error(_not_unitary("an assignment"), statement.span)
             return
         if _measured_initializer(statement):
             self._error(_not_unitary("measurement"), statement.span)
@@ -1112,12 +1078,6 @@ class _Lowerer(NodeVisitor):
                 "the compiler, not in the source program.",
                 span,
             )
-
-
-def _is_build_time_target(statement: Assign | AugAssign) -> bool:
-    return isinstance(statement.target, Name) and isinstance(
-        statement.target.resolved_symbol, ClassicalDecl
-    )
 
 
 def _not_unitary(what: str) -> str:

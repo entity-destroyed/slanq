@@ -35,7 +35,6 @@ from slanq.ast_nodes import (
     QuantumDecl,
     RealtimeDecl,
     UnaryOp,
-    While,
 )
 from slanq.diagnostics import SlanqError
 from slanq.transformer import SlanqTransformer
@@ -143,11 +142,10 @@ def test_realtime_decl_with_measurement(build_ast: BuildAst) -> None:
 
 
 def test_branches_and_loops(build_ast: BuildAst) -> None:
-    source = "if(x) { X(q); }\nqif(y) { X(q); }\nwhile(z) { X(q); }"
-    classical, quantum, loop = build_ast(source).statements
+    source = "if(x) { X(q); }\nqif(y) { X(q); }"
+    classical, quantum = build_ast(source).statements
     assert isinstance(classical, If)
     assert isinstance(quantum, QIf)
-    assert isinstance(loop, While)
     assert isinstance(classical.body, Block)
     assert len(classical.body.statements) == 1
 

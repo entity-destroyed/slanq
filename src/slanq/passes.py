@@ -29,7 +29,6 @@ from slanq.ast_nodes import (
     Span,
     Statement,
     UnknownValue,
-    While,
 )
 from slanq.builtin import RANGE, ConstEvalError, const_value
 from slanq.diagnostics import DiagnosticBag
@@ -492,12 +491,6 @@ class _Tracker:
         for block in blocks:
             _collect_assigned(block.statements, inner)
 
-        # A loop's condition is read again after every pass through the body,
-        # so what the body writes is already unsettled when it is first read.
-        if isinstance(statement, While):
-            for key in inner:
-                env[key] = UnknownValue(reason=BRANCH_MERGE)
-
         for child in iter_child_nodes(statement):
             if not isinstance(child, Block):
                 self._annotate(child, env)
@@ -517,8 +510,8 @@ class _Tracker:
         if not blocks:
             return
 
-        # A loop runs its body more than once, so a variable the body writes is
-        # already unsettled on the way in, not only on the way out.
+        # Which branch runs is not settled here, so a name either arm writes
+        # has no one value afterwards.
         for block in blocks:
             self.statements(block.statements, dict(env))
         for key in inner:

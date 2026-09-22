@@ -42,7 +42,6 @@ from slanq.ast_nodes import (
     Statement,
     Type,
     UnaryOp,
-    While,
 )
 from slanq.diagnostics import SlanqError
 
@@ -249,10 +248,6 @@ class SlanqTransformer(Transformer):
     def qif_stmt(self, meta: Meta, children) -> QIf:
         condition, body = children
         return QIf(span=_span_from_meta(meta), condition=condition, body=body)
-
-    def while_stmt(self, meta: Meta, children) -> While:
-        condition, body = children
-        return While(span=_span_from_meta(meta), condition=condition, body=body)
 
     def rt_while_stmt(self, meta: Meta, children) -> RealtimeWhile:
         condition, body = children
