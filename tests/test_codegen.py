@@ -1192,9 +1192,10 @@ def test_a_condition_keeps_its_meaning_in_python(
 ) -> None:
     """Slanq's `!` binds tighter than Python's `not`, and Python chains
     comparisons where Slanq forbids them, so both need parentheses the source
-    did not have."""
-    source = _if_source(f"{_IF_DECLS}if ({condition}) {{ X(f); }}\n")
-    assert f"if {rendered}:" in source
+    did not have. A build-time truth value reaches the file as the initializer
+    of a real-time one."""
+    source = _if_source(f"{_IF_DECLS}rt bool g = {condition};\n")
+    assert f"int({rendered})" in source
 
 
 @pytest.mark.parametrize(
@@ -1213,42 +1214,45 @@ def test_a_rendered_condition_means_what_slanq_evaluated(
 ) -> None:
     """The rendered form is run as Python and compared with the compiler's own
     answer, so a precedence slip shows up as a difference in value."""
-    program = f"{_IF_DECLS}if ({condition}) {{ X(f); }}\n"
-    rendered = next(
-        line.strip()[3:-1]
-        for line in _if_source(program).splitlines()
-        if line.strip().startswith("if ")
+    program = f"{_IF_DECLS}rt bool g = {condition};\n"
+    line = next(
+        line for line in _if_source(program).splitlines() if "int(" in line
     )
+    rendered = line[line.index("int(") + 4 : line.rindex("), types.Uint")]
     ast = build_ast(program)
     analyze(ast, DiagnosticBag())
     values = {"n": 5, "t": True}
     assert eval(rendered, values) is const_value(  # noqa: S307
-        ast.statements[-1].condition
+        ast.statements[-1].initializer
     )
 
 
-def test_an_else_branch_is_emitted() -> None:
+def test_only_the_arm_that_runs_reaches_the_file() -> None:
     source = _if_source(f"{_IF_DECLS}if (t) {{ X(f); }} else {{ Y(f); }}\n")
-    assert "    if t:\n        circuit.x(f[0])\n    else:\n        circuit.y(f[0])" in source
+    assert "circuit.x(f[0])" in source
+    assert "circuit.y" not in source
+    assert "if t:" not in source
 
 
-def test_an_else_if_nests() -> None:
+def test_an_else_if_chain_picks_one_arm() -> None:
     source = _if_source(
         f"{_IF_DECLS}if (n > 9) {{ X(f); }} else if (n > 3) {{ Y(f); }}\n"
     )
-    assert "    else:\n        if n > 3:\n            circuit.y(f[0])" in source
+    assert "circuit.y(f[0])" in source
+    assert "circuit.x" not in source
 
 
-def test_an_empty_branch_becomes_pass() -> None:
+def test_an_empty_real_time_branch_becomes_pass() -> None:
     """Python has no empty block, and dropping the branch would hide the
     warning's subject from the generated file."""
-    source = _if_source(f"{_IF_DECLS}if (t) {{ }}\n")
-    assert "    if t:\n        pass" in source
+    source = _if_source(
+        f"{_IF_DECLS}rt int<> m = measure(f);\nrt if (m == 1) {{ }}\n"
+    )
+    assert "        pass" in source
 
 
-def test_an_ancilla_is_declared_outside_the_branch() -> None:
-    """add_register inside a branch would leave the register missing whenever
-    that branch is not taken, while every later reference still expects it."""
+def test_an_ancilla_is_declared_before_the_adder_that_needs_it() -> None:
+    """A register every later reference expects has to exist by then."""
     source = _if_source(f"{_IF_DECLS}qint<2> b = 1;\nif (t) {{ a += b; }}\n")
     declaration = next(
         index
@@ -1256,17 +1260,11 @@ def test_an_ancilla_is_declared_outside_the_branch() -> None:
         if "add_register(_ancilla_0)" in line
     )
     branch = next(
-        index for index, line in enumerate(source.splitlines()) if line.strip() == "if t:"
+        index
+        for index, line in enumerate(source.splitlines())
+        if "circuit.append(CDKMRippleCarryAdder" in line
     )
     assert declaration < branch
-
-
-def test_a_conditional_phase_becomes_a_build_time_total() -> None:
-    source = _if_source(f"{_IF_DECLS}qif(a == 2) {{ if (t) {{ phase(PI / 3); }} }}\n")
-    assert "_qif_phase_1 = 0.0" in source
-    assert "        _qif_phase_1 += np.pi / 3" in source
-    assert "if _qif_phase_1:" in source
-    assert "circuit.mcp(_qif_phase_1, [a[0]], a[1])" in source
 
 
 def test_an_unconditional_phase_still_renders_as_one_expression() -> None:
@@ -1342,9 +1340,18 @@ def test_expr_is_imported_only_when_a_condition_needs_it() -> None:
 
 
 def test_an_assigned_classical_variable_survives_as_a_python_variable() -> None:
+    source = _if_source(
+        "qbool q = false;\nfloat i = 0.0;\ni = i + 1.0;\nRX(i, q);\n"
+    )
+    assert "    i = 0.0" in source
+    assert "    i = i + 1.0" in source
+
+
+def test_an_assignment_nothing_reads_leaves_no_line() -> None:
+    """Every use was resolved at compile time, so the line would say nothing."""
     source = _if_source("qint<3> a = 0;\nint i = 0;\ni = i + 1;\nX(a[i]);\n")
-    assert "    i = 0" in source
-    assert "    i = i + 1" in source
+    assert "    i = 0" not in source
+    assert "circuit.x(a[1])" in source
 
 
 def test_a_classical_name_reaches_the_generated_file() -> None:

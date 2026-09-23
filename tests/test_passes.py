@@ -595,15 +595,16 @@ def test_a_compound_assignment_folds_into_the_value(expanded: Expanded) -> None:
     assert _index_of(ast, 3) == 2
 
 
-def test_a_value_written_in_a_branch_is_unknown_after_it(expanded: Expanded) -> None:
-    """Two arms meet and the compiler cannot name one value, so it says so
-    rather than picking the one it happened to walk through."""
-    ast, _ = expanded("qint<3> a = 0;\nint i = 0;\nbool t = true;\nif (t) { i = 1; }\nX(a[i]);\n")
+def test_a_settled_branch_is_followed_not_merged(expanded: Expanded) -> None:
+    """The condition has a value, so the arm that runs is the one the compiler
+    walks, and what it writes stands afterwards."""
+    ast, _ = expanded(
+        "qint<3> a = 0;\nint i = 0;\nbool t = true;\nif (t) { i = 1; }\nX(a[i]);\n"
+    )
     statement = ast.statements[4]
     assert isinstance(statement, ExprStatement)
     (argument,) = statement.expr.args  # type: ignore[attr-defined]
-    assert isinstance(argument.index.effective_value, UnknownValue)
-    assert "branch" in argument.index.effective_value.reason
+    assert const_value(argument.index) == 1
 
 
 def test_a_value_inside_a_branch_is_still_known(expanded: Expanded) -> None:

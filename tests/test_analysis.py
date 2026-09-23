@@ -1260,34 +1260,53 @@ def test_an_assignment_target_is_checked(
     assert diagnostic.message == message
 
 
+def test_a_name_read_above_its_declaration_is_rejected(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    """Every classical variable is a Python variable in the generated file, so
+    the build would find nothing there."""
+    messages = [
+        diagnostic.message
+        for diagnostic in diagnostics_of(f"{_ASSIGN_DECLS}X(a[i]);\nint i = 0;\n").errors
+    ]
+    assert messages == [
+        "a quantum register index must be an integer the compiler can compute"
+        " -- 'i': it has no value before its declaration",
+        "'i' is read before its declaration",
+    ]
+
+
 @pytest.mark.parametrize(
-    ("program", "reason"),
+    ("program", "message"),
     [
         (
-            "int i = 0;\nif (t) { i = 1; }\nX(a[i]);",
-            "its value here depends on a branch",
+            "rt if (m == 1) { i = 1; }",
+            "'i' is settled when the circuit is built, so assigning to it "
+            "inside an rt if body would happen whatever the measurement says",
         ),
         (
-            "X(a[i]);\nint i = 0;\ni = 1;",
-            "it has no value before its declaration",
+            "rt while (m == 1) { i = 1; reset(a); m = measure(a); }",
+            "'i' is settled when the circuit is built, so assigning to it "
+            "inside an rt while body would happen once, not on every pass",
         ),
     ],
-    ids=["after a branch", "before its declaration"],
+    ids=["rt if", "rt while"],
 )
-def test_a_slot_needing_a_compile_time_value_says_why_it_has_none(
-    diagnostics_of: DiagnosticsOf, program: str, reason: str
+def test_a_build_time_assignment_inside_a_real_time_body_is_rejected(
+    diagnostics_of: DiagnosticsOf, program: str, message: str
 ) -> None:
-    (diagnostic,) = diagnostics_of(_ASSIGN_DECLS + program + "\n").errors
-    assert diagnostic.message == (
-        f"a quantum register index must be an integer the compiler can compute"
-        f" -- 'i': {reason}"
-    )
+    """A real-time body's Python runs when the circuit is built, so the
+    assignment does not wait for the measurement."""
+    (diagnostic,) = diagnostics_of(
+        f"{_ASSIGN_DECLS}int i = 0;\n" + program + "\n"
+    ).errors
+    assert diagnostic.message == message
 
 
 def test_a_loop_bound_says_why_it_has_no_value(diagnostics_of: DiagnosticsOf) -> None:
     (diagnostic,) = diagnostics_of(
-        f"{_ASSIGN_DECLS}int k = 2;\nif (t) {{ k = 3; }}\n"
-        "for(int j in range(k)) { X(f); }\n"
+        f"{_ASSIGN_DECLS}int k = 2;\nfor(int j in range(2)) {{ k = 3; }}\n"
+        "for(int j2 in range(k)) { X(f); }\n"
     ).errors
     assert diagnostic.message == (
         "a for loop needs an iteration count known when the circuit is built; "

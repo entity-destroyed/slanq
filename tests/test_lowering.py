@@ -31,7 +31,6 @@ from slanq.diagnostics import DiagnosticBag
 from slanq.ir import (
     ArithmeticOp,
     ClassicalAssignOp,
-    ClassicalIfOp,
     ClbitRef,
     DeclareAncillaOp,
     DeclareRealtimeOp,
@@ -180,12 +179,19 @@ def test_numeric_arguments_become_params(lower: LowerSource) -> None:
 def test_a_classical_declaration_becomes_an_assignment(lower: LowerSource) -> None:
     """It occupies no qubit and no classical register, but the name has to
     exist in the generated file for the code that reads it."""
-    module, bag = lower("int x = 42;")
+    module, bag = lower("qbool q = false; float x = 0.5; RX(x, q);")
     assert not bag.has_errors
     assert module.clbits == []
-    (assignment,) = module.body.ops
-    assert isinstance(assignment, ClassicalAssignOp)
+    (assignment,) = [
+        op for op in module.body.ops if isinstance(op, ClassicalAssignOp)
+    ]
     assert (assignment.name, assignment.op) == ("x", "=")
+
+
+def test_an_assignment_nothing_reads_is_dropped(lower: LowerSource) -> None:
+    module, bag = lower("qint<3> a = 0; int i = 0; i = 1; X(a[i]);")
+    assert not bag.has_errors
+    assert not any(isinstance(op, ClassicalAssignOp) for op in module.body.ops)
 
 
 def test_bare_measure_statement_is_rejected(lower: LowerSource) -> None:
@@ -1165,47 +1171,43 @@ def test_a_loop_lowers_to_its_unrolled_operations(lower: LowerSource) -> None:
 _IF_DECLS = "qint<2> a = 0; qbool f = false; int n = 5; bool t = true; "
 
 
-def test_an_if_becomes_one_op_holding_its_branches(lower: LowerSource) -> None:
+def test_only_the_arm_that_runs_is_lowered(lower: LowerSource) -> None:
+    """The condition is settled before the circuit is built, so the arm not
+    taken leaves nothing behind at all."""
     module, bag = lower(f"{_IF_DECLS}if (t) {{ X(f); }} else {{ Y(f); }}")
     assert not bag.has_errors
-
-    branch = module.body.ops[-1]
-    assert isinstance(branch, ClassicalIfOp)
-    assert [type(op).__name__ for op in branch.body.ops] == ["GateOp"]
-    assert branch.orelse is not None
-    assert [type(op).__name__ for op in branch.orelse.ops] == ["GateOp"]
+    gate = module.body.ops[-1]
+    assert isinstance(gate, GateOp)
+    assert gate.name == "X"
 
 
-def test_an_if_without_else_has_no_else_block(lower: LowerSource) -> None:
-    module, bag = lower(f"{_IF_DECLS}if (t) {{ X(f); }}")
+def test_a_false_branch_with_no_else_lowers_to_nothing(lower: LowerSource) -> None:
+    module, bag = lower(f"{_IF_DECLS}X(f); if (!t) {{ Y(f); }}")
     assert not bag.has_errors
-    branch = module.body.ops[-1]
-    assert isinstance(branch, ClassicalIfOp)
-    assert branch.orelse is None
+    gate = module.body.ops[-1]
+    assert isinstance(gate, GateOp)
+    assert gate.name == "X"
 
 
 def test_an_ancilla_from_a_branch_is_declared_at_the_top_level(
     lower: LowerSource,
 ) -> None:
-    """The branch decides which gates run, not which registers exist: a
-    register only added when one branch is taken would be missing from the
-    circuit everywhere else."""
+    """A register the adder needs exists whether or not the branch ran, so it
+    is declared where every later statement can see it."""
     module, bag = lower(f"{_IF_DECLS}qint<2> b = 1; if (t) {{ a += b; }}")
     assert not bag.has_errors
 
-    assert any(isinstance(op, DeclareAncillaOp) for op in module.body.ops)
-    branch = module.body.ops[-1]
-    assert isinstance(branch, ClassicalIfOp)
-    assert not any(isinstance(op, DeclareAncillaOp) for op in branch.body.ops)
+    kinds = [type(op).__name__ for op in module.body.ops]
+    assert kinds.index("DeclareAncillaOp") < kinds.index("ArithmeticOp")
 
 
-def test_an_if_inside_a_qif_body_stays_a_branch(lower: LowerSource) -> None:
+def test_an_if_inside_a_qif_body_is_folded_too(lower: LowerSource) -> None:
     module, bag = lower(f"{_IF_DECLS}qif(a == 2) {{ X(f); if (t) {{ Y(f); }} }}")
     assert not bag.has_errors
 
     qif = module.body.ops[-1]
     assert isinstance(qif, QIfOp)
-    assert [type(op).__name__ for op in qif.body.ops] == ["GateOp", "ClassicalIfOp"]
+    assert [op.name for op in qif.body.ops] == ["X", "Y"]
 
 
 _RT_PRELUDE = (
@@ -1252,21 +1254,21 @@ _ASSIGN_PRELUDE = "qint<3> a = []; qbool f = false; rt int<> m = measure(a); "
 
 
 def test_an_assigned_classical_variable_reaches_the_ir(lower: LowerSource) -> None:
-    module, bag = lower(f"{_ASSIGN_PRELUDE}int i = 0; i = 1; X(a[i]);")
+    module, bag = lower(f"{_ASSIGN_PRELUDE}float i = 0.0; i = 1.0; RX(i, f);")
     assert not bag.has_errors
     assignments = [op for op in module.body.ops if isinstance(op, ClassicalAssignOp)]
     assert [(op.name, op.op) for op in assignments] == [("i", "="), ("i", "=")]
 
 
 def test_every_classical_declaration_reaches_the_ir(lower: LowerSource) -> None:
-    module, bag = lower(f"{_ASSIGN_PRELUDE}int i = 1; X(a[i]);")
+    module, bag = lower(f"{_ASSIGN_PRELUDE}float i = 1.0; RX(i, f);")
     assert not bag.has_errors
     assignments = [op for op in module.body.ops if isinstance(op, ClassicalAssignOp)]
     assert [(op.name, op.op) for op in assignments] == [("i", "=")]
 
 
 def test_a_compound_assignment_keeps_its_operator(lower: LowerSource) -> None:
-    module, bag = lower(f"{_ASSIGN_PRELUDE}int i = 0; i += 2; X(a[i]);")
+    module, bag = lower(f"{_ASSIGN_PRELUDE}float i = 0.0; i += 2.0; RX(i, f);")
     assert not bag.has_errors
     assignments = [op for op in module.body.ops if isinstance(op, ClassicalAssignOp)]
     assert assignments[-1].op == "+="

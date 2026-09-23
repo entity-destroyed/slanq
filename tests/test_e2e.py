@@ -990,18 +990,14 @@ def test_re_measuring_overwrites_the_same_register() -> None:
     assert _realtime_counts(source) == {"1": SHOTS}
 
 
-def test_an_index_settled_by_a_branch_is_rejected() -> None:
-    """Which arm runs is decided when the circuit is built, so the compiler
-    cannot say which qubit this is, and it says why."""
-    result = compile_source(
-        "qint<3> a = 0;\nbool t = true;\nint i = 0;\nif (t) { i = 1; }\nX(a[i]);\n",
-        source_name="test.slanq",
+def test_an_index_a_branch_settles_reaches_the_right_qubit() -> None:
+    """The arm that runs is the one the compiler walks, so the index it writes
+    is the one the gate lands on."""
+    source = (
+        "qint<3> a = 0;\nbool t = true;\nint i = 0;\nif (t) { i = 1; }\n"
+        "X(a[i]);\nrt int<> result = measure(a);\n"
     )
-    (diagnostic,) = result.diagnostics.errors
-    assert diagnostic.message == (
-        "a quantum register index must be an integer the compiler can compute"
-        " -- 'i': its value here depends on a branch"
-    )
+    assert _counts(source) == {"010": SHOTS}
 
 
 REPEAT_UNTIL_SUCCESS = """qbool coin = false;

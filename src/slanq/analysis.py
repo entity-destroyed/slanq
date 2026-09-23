@@ -57,7 +57,7 @@ from slanq.builtin import (
     const_value,
 )
 from slanq.diagnostics import DiagnosticBag
-from slanq.passes import expand_processes, track_values, unroll_loops
+from slanq.passes import BEFORE_DECLARATION, expand_processes, track_values, unroll_loops
 from slanq.visitor import NodeVisitor, iter_child_nodes
 
 Scope = dict[str, Symbol]
@@ -1358,6 +1358,67 @@ def _check_no_declarations(checker: _Checker, block: Block, construct: str) -> N
             )
 
 
+class _BeforeDeclarationChecker(_Checker):
+    """Every classical variable is a Python variable in the generated file, so
+    reading one above its own declaration would find nothing there."""
+
+    def visit_Name(self, node: Name) -> None:
+        self.generic_visit(node)
+        value = node.effective_value
+        if isinstance(value, UnknownValue) and value.reason == BEFORE_DECLARATION:
+            self._reject(f"'{node.name}' is read before its declaration", node)
+
+
+class _RealtimeBodyAssignChecker(_Checker):
+    """A real-time body's Python runs when the circuit is built, so a build-time
+    assignment inside one does not wait for the measurement."""
+
+    CONSEQUENCE = {
+        "rt if": "would happen whatever the measurement says",
+        "rt while": "would happen once, not on every pass",
+    }
+
+    def __init__(self, bag: DiagnosticBag) -> None:
+        super().__init__(bag)
+        self._context: list[str] = []
+
+    def visit_RealtimeIf(self, node: RealtimeIf) -> None:
+        self._descend(node, "rt if")
+
+    def visit_RealtimeWhile(self, node: RealtimeWhile) -> None:
+        self._descend(node, "rt while")
+
+    def _descend(self, node: Node, label: str) -> None:
+        self._context.append(label)
+        try:
+            self.generic_visit(node)
+        finally:
+            self._context.pop()
+
+    def visit_Assign(self, node: Assign) -> None:
+        self.generic_visit(node)
+        self._check(node)
+
+    def visit_AugAssign(self, node: AugAssign) -> None:
+        self.generic_visit(node)
+        self._check(node)
+
+    def _check(self, node: Assign | AugAssign) -> None:
+        if not self._context:
+            return
+        target = node.target
+        if not isinstance(target, Name) or not isinstance(
+            target.resolved_symbol, ClassicalDecl
+        ):
+            return
+        construct = self._context[-1]
+        self._reject(
+            f"'{target.name}' is settled when the circuit is built, so assigning "
+            f"to it inside an {construct} body {self.CONSEQUENCE[construct]}",
+            node,
+        )
+
+
 class _IfChecker(_Checker):
     """An `if` is resolved while the circuit is being built, so its condition
     has to hold a value at that point: a quantum variable never does, and a
@@ -1682,6 +1743,8 @@ def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _QIfConditionChecker(bag).visit(ast)
     _QIfBodyChecker(bag).visit(ast)
     _IfChecker(bag).visit(ast)
+    _BeforeDeclarationChecker(bag).visit(ast)
+    _RealtimeBodyAssignChecker(bag).visit(ast)
     _MeasurementDeclChecker(bag).visit(ast)
     _RealtimeDeclChecker(bag).visit(ast)
     _RealtimeIfChecker(bag).visit(ast)

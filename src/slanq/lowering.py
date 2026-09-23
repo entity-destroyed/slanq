@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from dataclasses import fields
 from typing import Literal as TypingLiteral
 
 from slanq.ast_nodes import (
@@ -22,6 +24,7 @@ from slanq.ast_nodes import (
     IntType,
     Literal,
     Name,
+    Node,
     ParamArrayDecl,
     ParamDecl,
     ProbList,
@@ -51,7 +54,6 @@ from slanq.diagnostics import DiagnosticBag
 from slanq.ir import (
     ArithmeticOp,
     ClassicalAssignOp,
-    ClassicalIfOp,
     ClbitRef,
     DeclareAncillaOp,
     DeclareRealtimeOp,
@@ -76,7 +78,8 @@ from slanq.ir import (
     RealtimeWhileOp,
     ResetOp,
 )
-from slanq.visitor import NodeVisitor
+from slanq.passes import taken_branch
+from slanq.visitor import NodeVisitor, iter_child_nodes
 
 _PARAM_TYPE_NAMES: dict[type[Type], TypingLiteral["int", "float", "bool"]] = {
     IntType: "int",
@@ -124,6 +127,7 @@ def lower_to_ir(ast: Program, bag: DiagnosticBag) -> IRModule:
     lowerer = _Lowerer(bag)
     lowerer.visit(ast)
     lowerer.warn_if_unsimulable()
+    _drop_unread_assignments(lowerer.module.body)
     return lowerer.module
 
 
@@ -312,16 +316,15 @@ class _Lowerer(NodeVisitor):
         self._block.ops.append(LoopControlOp(span=node.span, keyword=keyword))
 
     def visit_If(self, node: If) -> None:
-        body = self._lower_block(node.body)
-        orelse = None if node.orelse is None else self._lower_block(node.orelse)
-        self._block.ops.append(
-            ClassicalIfOp(
-                span=node.span,
-                condition=node.condition,
-                body=body,
-                orelse=orelse,
-            )
-        )
+        """Only the arm that runs is lowered: the condition is settled before
+        the circuit is built, so the generated file holds no branch at all."""
+        settled, taken = taken_branch(node)
+        if not settled:
+            self._unreachable("an if whose condition has no value", node.span)
+            return
+        if taken is not None:
+            for statement in taken.statements:
+                self.visit(statement)
 
     def _lower_block(self, block: Block) -> IRBlock:
         inner = IRBlock()
@@ -450,15 +453,13 @@ class _Lowerer(NodeVisitor):
                 if ops is not None:
                     result.ops.extend(ops)
             elif isinstance(statement, If):
-                branch = ClassicalIfOp(
-                    span=statement.span,
-                    condition=statement.condition,
-                    body=self._lower_qif_body(statement.body),
-                    orelse=None
-                    if statement.orelse is None
-                    else self._lower_qif_body(statement.orelse),
-                )
-                result.ops.append(branch)
+                settled, taken = taken_branch(statement)
+                if not settled:
+                    self._unreachable(
+                        "an if whose condition has no value", statement.span
+                    )
+                elif taken is not None:
+                    result.ops.extend(self._lower_qif_body(taken).ops)
             else:
                 self._qif_body_unimplemented(statement)
         return result
@@ -1078,6 +1079,76 @@ class _Lowerer(NodeVisitor):
                 "the compiler, not in the source program.",
                 span,
             )
+
+
+def _drop_unread_assignments(block: IRBlock) -> None:
+    """A build-time variable the compiler resolved everywhere leaves an
+    assignment nothing reads. What another kept assignment reads is itself
+    read, so the set grows until it settles."""
+    read: set[str] = set()
+    _collect_reads(block, read, skip_assignments=True)
+    while True:
+        grown = set(read)
+        _collect_assignment_reads(block, grown)
+        if grown == read:
+            break
+        read = grown
+    _prune_assignments(block, read)
+
+
+def _collect_reads(block: IRBlock, found: set[str], *, skip_assignments: bool) -> None:
+    for op in block.ops:
+        if skip_assignments and isinstance(op, ClassicalAssignOp):
+            continue
+        for field in fields(op):
+            _collect_from(
+                getattr(op, field.name), found, skip_assignments=skip_assignments
+            )
+
+
+def _collect_from(value: object, found: set[str], *, skip_assignments: bool) -> None:
+    if isinstance(value, IRBlock):
+        _collect_reads(value, found, skip_assignments=skip_assignments)
+    elif isinstance(value, Expression):
+        for node in _walk(value):
+            if isinstance(node, Name) and isinstance(
+                node.resolved_symbol, ClassicalDecl
+            ):
+                found.add(node.name)
+    elif isinstance(value, list | tuple):
+        for item in value:
+            _collect_from(item, found, skip_assignments=skip_assignments)
+
+
+def _collect_assignment_reads(block: IRBlock, found: set[str]) -> None:
+    for op in block.ops:
+        if isinstance(op, ClassicalAssignOp):
+            if op.name in found:
+                _collect_from(op.value, found, skip_assignments=False)
+            continue
+        for field in fields(op):
+            value = getattr(op, field.name)
+            if isinstance(value, IRBlock):
+                _collect_assignment_reads(value, found)
+
+
+def _prune_assignments(block: IRBlock, read: set[str]) -> None:
+    kept: list[Op] = []
+    for op in block.ops:
+        if isinstance(op, ClassicalAssignOp) and op.name not in read:
+            continue
+        for field in fields(op):
+            value = getattr(op, field.name)
+            if isinstance(value, IRBlock):
+                _prune_assignments(value, read)
+        kept.append(op)
+    block.ops = kept
+
+
+def _walk(node: Node) -> Iterator[Node]:
+    yield node
+    for child in iter_child_nodes(node):
+        yield from _walk(child)
 
 
 def _not_unitary(what: str) -> str:

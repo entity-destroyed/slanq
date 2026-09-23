@@ -17,6 +17,7 @@ from slanq.ast_nodes import (
     Expression,
     ExprStatement,
     For,
+    If,
     Index,
     Literal,
     LoopVarDecl,
@@ -510,6 +511,16 @@ class _Tracker:
         if not blocks:
             return
 
+        settled, taken = taken_branch(statement)
+        if settled:
+            incoming = dict(env)
+            for block in blocks:
+                if block is taken:
+                    self.statements(block.statements, env)
+                else:
+                    self.statements(block.statements, dict(incoming))
+            return
+
         # Which branch runs is not settled here, so a name either arm writes
         # has no one value afterwards.
         for block in blocks:
@@ -526,6 +537,21 @@ class _Tracker:
                 )
         for child in iter_child_nodes(node):
             self._annotate(child, env)
+
+
+def taken_branch(statement: Statement) -> tuple[bool, Block | None]:
+    """Whether an `if` is already settled, and the arm it then runs. A
+    constant-false `if` with no else settles on no arm at all, which is not the
+    same as a condition the compiler cannot read."""
+    if not isinstance(statement, If):
+        return False, None
+    try:
+        value = const_value(statement.condition)
+    except ConstEvalError:
+        return False, None
+    if not isinstance(value, bool):
+        return False, None
+    return True, statement.body if value else statement.orelse
 
 
 def _written_value(
@@ -552,4 +578,4 @@ def _child_blocks(statement: Statement) -> list[Block]:
     return blocks
 
 
-__all__ = ["expand_processes", "track_values", "unroll_loops"]
+__all__ = ["expand_processes", "taken_branch", "track_values", "unroll_loops"]
