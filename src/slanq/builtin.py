@@ -182,7 +182,30 @@ def _guard_power(base: object, exponent: object) -> None:
 
 
 def const_value(expression: Expression) -> int | float | bool | complex | None:
-    """The compile-time value of `expression`, or None if it has none."""
+    """The compile-time value of `expression`, or None if it has none.
+
+    A name is resolved through the value in effect where it stands, so a chain
+    of definitions that each read the one before would be walked once per
+    reference -- doubling the work at every link. The memo lives for one call
+    only: within it nothing can re-annotate the tree, so no entry can go
+    stale."""
+    return _const_value(expression, {})
+
+
+def _const_value(
+    expression: Expression, memo: dict[int, int | float | bool | complex | None]
+) -> int | float | bool | complex | None:
+    key = id(expression)
+    if key in memo:
+        return memo[key]
+    value = _evaluate(expression, memo)
+    memo[key] = value
+    return value
+
+
+def _evaluate(
+    expression: Expression, memo: dict[int, int | float | bool | complex | None]
+) -> int | float | bool | complex | None:
     if isinstance(expression, Literal):
         return expression.value
 
@@ -192,11 +215,11 @@ def const_value(expression: Expression) -> int | float | bool | complex | None:
         if isinstance(expression.effective_value, UnknownValue):
             return None
         if expression.effective_value is not None:
-            return const_value(expression.effective_value)
+            return _const_value(expression.effective_value, memo)
         return None
 
     if isinstance(expression, UnaryOp):
-        operand = const_value(expression.operand)
+        operand = _const_value(expression.operand, memo)
         function = UNARY_OPS.get(expression.op)
         if operand is None or function is None:
             return None
@@ -206,8 +229,8 @@ def const_value(expression: Expression) -> int | float | bool | complex | None:
         function = BINARY_OPS.get(expression.op)
         if function is None:
             return None
-        left = const_value(expression.left)
-        right = const_value(expression.right)
+        left = _const_value(expression.left, memo)
+        right = _const_value(expression.right, memo)
         if left is None or right is None:
             return None
         if expression.op == "**":
@@ -218,7 +241,7 @@ def const_value(expression: Expression) -> int | float | bool | complex | None:
         function = BUILTIN_FUNCTIONS.get(expression.callee.name)
         if function is None or len(expression.args) != 1:
             return None
-        argument = const_value(expression.args[0])
+        argument = _const_value(expression.args[0], memo)
         if argument is None:
             return None
         return _apply(function, (argument,), expression.callee.name)

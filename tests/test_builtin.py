@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable
 
 import pytest
@@ -246,3 +247,17 @@ def test_rotation_takes_the_angle_first() -> None:
 
 def test_builtin_scope_covers_every_builtin_name() -> None:
     assert BUILTIN_SCOPE.keys() == set(BUILTIN_NAMES)
+
+
+def test_a_long_definition_chain_is_evaluated_once_per_link(last_value_of) -> None:
+    """Each link reads the one before it twice, so walking the chain again
+    at every reference doubles the work per link. The bound is what has
+    teeth: this chain is measured at about 0.1 s with the memo and about
+    27 s without, so the value alone would not notice it going missing."""
+    lines = ["float v0 = 1.0;"]
+    lines += [f"float v{k} = v{k - 1} + v{k - 1};" for k in range(1, 25)]
+    program = "\n".join(lines) + "\nfloat last = v24;\n"
+    started = time.perf_counter()
+    value = last_value_of(program)
+    assert value == 2.0**24
+    assert time.perf_counter() - started < 5.0

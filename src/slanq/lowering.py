@@ -91,16 +91,10 @@ MEASURE = "measure"
 PHASE = "phase"
 RESET = "reset"
 
-# Statement kinds the lowering does not handle yet. Without this the generic
-# traversal would walk straight past them and the construct would vanish from
-# the circuit without a word.
-UNIMPLEMENTED: dict[str, str] = {}
-
-# Additional phrases for statements that lower fine at the top level but a
-# qif body specifically forbids -- distinct from UNIMPLEMENTED, which is for
-# things not lowered anywhere yet. Everything named here is something a qif
-# body could plausibly support with more implementation work later (a
-# per-branch ancilla, a controlled adder, ...).
+# Phrases for statements that lower fine at the top level but a qif body
+# forbids. Everything named here is something a qif body could plausibly
+# support with more implementation work later (a per-branch ancilla, a
+# controlled adder, ...).
 QIF_BODY_ONLY_UNIMPLEMENTED: dict[str, str] = {
     "ClassicalDecl": "a classical declaration",
     "QuantumDecl": "a quantum declaration",
@@ -569,9 +563,9 @@ class _Lowerer(NodeVisitor):
             return False
         if value is None and not _is_param_expression(expression):
             self._error(
-                "an angle that is not known at compile time is not "
-                "implemented yet; this is a limitation of the compiler, not "
-                "an error in the program",
+                "an angle the compiler cannot compute is not implemented "
+                "yet; this is a limitation of the compiler, not an error "
+                "in the program",
                 expression.span,
             )
             return False
@@ -588,6 +582,9 @@ class _Lowerer(NodeVisitor):
         if isinstance(statement, Assign):
             self._error(_not_unitary("an assignment"), statement.span)
             return
+        if isinstance(statement, AugAssign) and not _is_quantum_target(statement):
+            self._error(_not_unitary("a compound assignment"), statement.span)
+            return
         if _measured_initializer(statement):
             self._error(_not_unitary("measurement"), statement.span)
             return
@@ -598,7 +595,7 @@ class _Lowerer(NodeVisitor):
                 statement.span,
             )
             return
-        phrase = UNIMPLEMENTED.get(kind) or QIF_BODY_ONLY_UNIMPLEMENTED.get(kind, kind)
+        phrase = QIF_BODY_ONLY_UNIMPLEMENTED.get(kind, kind)
         self._error(
             f"{phrase} is not implemented inside a qif body yet; this is a "
             "limitation of the compiler, not an error in the program",
@@ -1040,7 +1037,7 @@ class _Lowerer(NodeVisitor):
     def _unimplemented(self, node: Statement) -> None:
         kind = type(node).__name__
         self._error(
-            f"{UNIMPLEMENTED.get(kind, kind)} is not implemented yet; this is a "
+            f"{kind} is not implemented yet; this is a "
             "limitation of the compiler, not an error in the program",
             node.span,
         )
@@ -1149,6 +1146,14 @@ def _walk(node: Node) -> Iterator[Node]:
     yield node
     for child in iter_child_nodes(node):
         yield from _walk(child)
+
+
+def _is_quantum_target(statement: AugAssign) -> bool:
+    target = statement.target
+    name = target.base if isinstance(target, Index) else target
+    return isinstance(name, Name) and isinstance(
+        name.resolved_symbol, QuantumDecl
+    )
 
 
 def _not_unitary(what: str) -> str:

@@ -166,6 +166,19 @@ def test_a_qif_body_rejects_an_assignment(lower: LowerSource) -> None:
     assert diagnostic.message == _NOT_UNITARY.format("an assignment")
 
 
+def test_a_qif_body_rejects_a_build_time_compound_assignment(
+    lower: LowerSource,
+) -> None:
+    """On a quantum variable `+=` is a reversible adder and a controlled
+    body could hold one later; on a build-time variable it is an ordinary
+    assignment, so no later work would make it belong here."""
+    _, bag = lower(
+        "qint<2> a = 0; qbool f = false; int i = 0; qif(a == 2) { i += 1; X(f); }"
+    )
+    (diagnostic,) = bag.errors
+    assert diagnostic.message == _NOT_UNITARY.format("a compound assignment")
+
+
 def test_numeric_arguments_become_params(lower: LowerSource) -> None:
     module, bag = lower("qbool q = false; RX(90, q);")
     assert not bag.has_errors
@@ -293,9 +306,11 @@ def test_a_statement_the_lowering_does_not_know_does_not_vanish(
 
     bag = DiagnosticBag()
     lower_to_ir(ast, bag)
-    assert bag.has_errors
-    assert "not implemented yet" in bag.errors[0].message
-    assert "_FutureStatement" in bag.errors[0].message
+    (diagnostic,) = bag.errors
+    assert diagnostic.message == (
+        "_FutureStatement is not implemented yet; this is a limitation of "
+        "the compiler, not an error in the program"
+    )
 
 
 def test_unimplemented_message_blames_the_compiler(lower: LowerSource) -> None:
@@ -353,7 +368,10 @@ def test_runtime_angle_is_reported_as_a_limitation(lower: LowerSource) -> None:
     runtime value, like a measurement result, is what stays a limitation."""
     _, bag = lower("qbool q = false; qbool q2 = false; rt int<> t = measure(q); RX(t, q2);")
     assert bag.has_errors
-    assert "not known at compile time" in bag.errors[0].message
+    assert bag.errors[0].message == (
+        "an angle the compiler cannot compute is not implemented yet; this "
+        "is a limitation of the compiler, not an error in the program"
+    )
 
 
 def test_classical_name_is_a_renderable_angle(lower: LowerSource) -> None:
@@ -1018,7 +1036,10 @@ def test_param_array_indexed_angle_is_accepted(lower: LowerSource) -> None:
 def test_param_with_an_unsupported_operator_is_reported(lower: LowerSource) -> None:
     _, bag = lower("param int gamma; qbool q = false; RX(gamma % 2, q);")
     assert bag.has_errors
-    assert "not known at compile time" in bag.errors[0].message
+    assert bag.errors[0].message == (
+        "an angle the compiler cannot compute is not implemented yet; this "
+        "is a limitation of the compiler, not an error in the program"
+    )
 
 
 def test_param_decl_inside_qif_body_is_a_top_level_only_error(
