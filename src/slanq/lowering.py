@@ -179,9 +179,7 @@ class _Lowerer(NodeVisitor):
         initializer = node.initializer
         if not (isinstance(initializer, Call) and initializer.callee.name == MEASURE):
             self._block.ops.append(
-                ClassicalAssignOp(
-                    span=node.span, name=node.name, op="=", value=initializer
-                )
+                ClassicalAssignOp(span=node.span, name=node.name, op="=", value=initializer)
             )
             return
 
@@ -192,9 +190,7 @@ class _Lowerer(NodeVisitor):
 
         clbit = ClbitRef(name=node.name, size=source.size)
         self.module.clbits.append(clbit)
-        self._block.ops.append(
-            MeasurementOp(span=node.span, source=source, target=clbit)
-        )
+        self._block.ops.append(MeasurementOp(span=node.span, source=source, target=clbit))
 
     def visit_ExprStatement(self, node: ExprStatement) -> None:
         ops = self._lower_gate_statement(node, in_qif=False)
@@ -210,9 +206,7 @@ class _Lowerer(NodeVisitor):
             clbit = ClbitRef(name=node.name, size=source.size)
             self.module.clbits.append(clbit)
             self.realtime[node.name] = clbit
-            self._block.ops.append(
-                MeasurementOp(span=node.span, source=source, target=clbit)
-            )
+            self._block.ops.append(MeasurementOp(span=node.span, source=source, target=clbit))
             return
 
         if node.width is None:
@@ -257,9 +251,7 @@ class _Lowerer(NodeVisitor):
             if source is None or target is None:
                 self._unreachable("a measurement into an unknown variable", node.span)
                 return
-            self._block.ops.append(
-                MeasurementOp(span=node.span, source=source, target=target)
-            )
+            self._block.ops.append(MeasurementOp(span=node.span, source=source, target=target))
             return
 
         if op != "=":
@@ -274,18 +266,14 @@ class _Lowerer(NodeVisitor):
             self._unreachable("a real-time variable of unknown width", node.span)
             return
         self._block.ops.append(
-            RealtimeStoreOp(
-                span=node.span, name=symbol.name, size=width, value=value
-            )
+            RealtimeStoreOp(span=node.span, name=symbol.name, size=width, value=value)
         )
 
     def visit_RealtimeIf(self, node: RealtimeIf) -> None:
         body = self._lower_block(node.body)
         orelse = None if node.orelse is None else self._lower_block(node.orelse)
         self._block.ops.append(
-            RealtimeIfOp(
-                span=node.span, condition=node.condition, body=body, orelse=orelse
-            )
+            RealtimeIfOp(span=node.span, condition=node.condition, body=body, orelse=orelse)
         )
 
     def visit_RealtimeWhile(self, node: RealtimeWhile) -> None:
@@ -294,9 +282,7 @@ class _Lowerer(NodeVisitor):
             body = self._lower_block(node.body)
         finally:
             self._realtime_loops -= 1
-        self._block.ops.append(
-            RealtimeWhileOp(span=node.span, condition=node.condition, body=body)
-        )
+        self._block.ops.append(RealtimeWhileOp(span=node.span, condition=node.condition, body=body))
 
     def visit_Break(self, node: Break) -> None:
         self._loop_control(node, "break")
@@ -467,18 +453,14 @@ class _Lowerer(NodeVisitor):
             elif isinstance(statement, If):
                 settled, taken = taken_branch(statement)
                 if not settled:
-                    self._unreachable(
-                        "an if whose condition has no value", statement.span
-                    )
+                    self._unreachable("an if whose condition has no value", statement.span)
                 elif taken is not None:
                     result.ops.extend(self._lower_qif_body(taken).ops)
             else:
                 self._qif_body_unimplemented(statement)
         return result
 
-    def _lower_gate_statement(
-        self, node: ExprStatement, *, in_qif: bool
-    ) -> list[Op] | None:
+    def _lower_gate_statement(self, node: ExprStatement, *, in_qif: bool) -> list[Op] | None:
         expr = node.expr
         if not isinstance(expr, Call):
             self._error("only call expressions are allowed as statements", node.span)
@@ -567,15 +549,13 @@ class _Lowerer(NodeVisitor):
             return False
         if isinstance(value, complex):
             self._error(
-                "a complex number cannot be used as an angle; only int or "
-                "float are supported here",
+                "a complex number cannot be used as an angle; only int or float are supported here",
                 expression.span,
             )
             return False
         if type(value) is bool or (value is None and _is_boolean_param_expression(expression)):
             self._error(
-                "a bool value cannot be used as an angle; only int or float "
-                "are supported here",
+                "a bool value cannot be used as an angle; only int or float are supported here",
                 expression.span,
             )
             return False
@@ -698,8 +678,7 @@ class _Lowerer(NodeVisitor):
             for qubit, bit in zip(physical, wanted, strict=True):
                 if required.get(qubit, bit) != bit:
                     self._reject_impossible(
-                        f"'{qubit[0]}' would have to hold two different values "
-                        "at once",
+                        f"'{qubit[0]}' would have to hold two different values at once",
                         span,
                         negated=negated,
                     )
@@ -809,9 +788,7 @@ class _Lowerer(NodeVisitor):
         name = left if isinstance(left, Name) else right
         literal = right if isinstance(left, Name) else left
         if not isinstance(name, Name):
-            self._unreachable(
-                "a qif equality test with no quantum operand", clause.span
-            )
+            self._unreachable("a qif equality test with no quantum operand", clause.span)
             return None
 
         ref = self._register(name)
@@ -848,9 +825,7 @@ class _Lowerer(NodeVisitor):
         self.module.body.ops.append(DeclareAncillaOp(span=span, ref=ref))
         return ref
 
-    def _pad_to_width(
-        self, ref: QubitRef, width: int, span
-    ) -> list[QubitOperand]:
+    def _pad_to_width(self, ref: QubitRef, width: int, span) -> list[QubitOperand]:
         """`ref`'s bits, concatenated with a fresh 0-ancilla if it is
         narrower than `width`, or sliced to its low bits if it is wider --
         the CDKM/HRS adder and multiplier both preserve their `a`/`b`
@@ -903,12 +878,8 @@ class _Lowerer(NodeVisitor):
             )
         )
 
-    def _lower_multiply_decl(
-        self, node: QuantumDecl, size: int, initializer: BinaryOp
-    ) -> None:
-        operands = self._lower_multiply_operands(
-            node.span, initializer.left, initializer.right
-        )
+    def _lower_multiply_decl(self, node: QuantumDecl, size: int, initializer: BinaryOp) -> None:
+        operands = self._lower_multiply_operands(node.span, initializer.left, initializer.right)
         if operands is None:
             return
         left, right = operands
@@ -1016,9 +987,7 @@ class _Lowerer(NodeVisitor):
 
         index = self._const_int(expression.index)
         if index is None:
-            self._unreachable(
-                "an index with no compile-time value", expression.index.span
-            )
+            self._unreachable("an index with no compile-time value", expression.index.span)
             return None
 
         return QubitBit(ref=ref, index=index)
@@ -1066,9 +1035,7 @@ class _Lowerer(NodeVisitor):
         has run. Counted over the whole circuit, not per register: what a
         simulator cannot hold is the total, however it is divided up."""
         total = sum(ref.size for ref in self.module.qubits) + sum(
-            op.ref.size
-            for op in self.module.body.ops
-            if isinstance(op, DeclareAncillaOp)
+            op.ref.size for op in self.module.body.ops if isinstance(op, DeclareAncillaOp)
         )
         if total > MAX_SIMULABLE_QUBITS:
             self.bag.warning(
@@ -1116,9 +1083,7 @@ def _collect_reads(block: IRBlock, found: set[str], *, skip_assignments: bool) -
         if skip_assignments and isinstance(op, ClassicalAssignOp):
             continue
         for field in fields(op):
-            _collect_from(
-                getattr(op, field.name), found, skip_assignments=skip_assignments
-            )
+            _collect_from(getattr(op, field.name), found, skip_assignments=skip_assignments)
 
 
 def _collect_from(value: object, found: set[str], *, skip_assignments: bool) -> None:
@@ -1126,9 +1091,7 @@ def _collect_from(value: object, found: set[str], *, skip_assignments: bool) -> 
         _collect_reads(value, found, skip_assignments=skip_assignments)
     elif isinstance(value, Expression):
         for node in _walk(value):
-            if isinstance(node, Name) and isinstance(
-                node.resolved_symbol, ClassicalDecl
-            ):
+            if isinstance(node, Name) and isinstance(node.resolved_symbol, ClassicalDecl):
                 found.add(node.name)
     elif isinstance(value, list | tuple):
         for item in value:
@@ -1169,9 +1132,7 @@ def _walk(node: Node) -> Iterator[Node]:
 def _is_quantum_target(statement: AugAssign) -> bool:
     target = statement.target
     name = target.base if isinstance(target, Index) else target
-    return isinstance(name, Name) and isinstance(
-        name.resolved_symbol, QuantumDecl
-    )
+    return isinstance(name, Name) and isinstance(name.resolved_symbol, QuantumDecl)
 
 
 def _not_unitary(what: str) -> str:
@@ -1180,19 +1141,15 @@ def _not_unitary(what: str) -> str:
 
 def _is_non_unitary_quantum(name: str, signature: Signature) -> bool:
     """Whether `name` acts on qubits without being unitary -- example: `measure` and
-    `reset`. """
-    return name not in BUILTIN_GATES and any(
-        kind is not ArgKind.ANGLE for kind in signature.args
-    )
+    `reset`."""
+    return name not in BUILTIN_GATES and any(kind is not ArgKind.ANGLE for kind in signature.args)
 
 
 def _measured_initializer(node: Statement) -> bool:
     """A classical declaration whose value comes from a non-unitary quantum
     builtin. Its statement kind says `ClassicalDecl`, but what a qif body
     rejects about it is the measurement, not the declaration."""
-    if not isinstance(node, ClassicalDecl | RealtimeDecl) or not isinstance(
-        node.initializer, Call
-    ):
+    if not isinstance(node, ClassicalDecl | RealtimeDecl) or not isinstance(node.initializer, Call):
         return False
     signature = BUILTIN_SIGNATURES.get(node.initializer.callee.name)
     return signature is not None and _is_non_unitary_quantum(
@@ -1200,18 +1157,14 @@ def _measured_initializer(node: Statement) -> bool:
     )
 
 
-def _broadcast(
-    signature: Signature, targets: list[QubitOperand]
-) -> list[list[QubitOperand]]:
+def _broadcast(signature: Signature, targets: list[QubitOperand]) -> list[list[QubitOperand]]:
     """One row per emitted gate. Qiskit spreads a register operand itself, so
     normally a single row is enough; CCX is the exception -- Qiskit refuses it,
     so the register is unrolled here into one gate per bit."""
     if signature.qiskit_broadcasts:
         return [targets]
 
-    width = max(
-        (target.size for target in targets if isinstance(target, QubitRef)), default=1
-    )
+    width = max((target.size for target in targets if isinstance(target, QubitRef)), default=1)
     return [
         [
             QubitBit(ref=target, index=index) if isinstance(target, QubitRef) else target
@@ -1288,15 +1241,15 @@ def _is_boolean_param_expression(expression: Expression) -> bool:
             expression.resolved_symbol.declared_type, BoolType
         )
     if isinstance(expression, Index):
-        return isinstance(
-            expression.base.resolved_symbol, ParamArrayDecl
-        ) and isinstance(expression.base.resolved_symbol.declared_type, BoolType)
+        return isinstance(expression.base.resolved_symbol, ParamArrayDecl) and isinstance(
+            expression.base.resolved_symbol.declared_type, BoolType
+        )
     if isinstance(expression, UnaryOp):
         return _is_boolean_param_expression(expression.operand)
     if isinstance(expression, BinaryOp):
-        return _is_boolean_param_expression(
-            expression.left
-        ) or _is_boolean_param_expression(expression.right)
+        return _is_boolean_param_expression(expression.left) or _is_boolean_param_expression(
+            expression.right
+        )
     return False
 
 

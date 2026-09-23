@@ -159,9 +159,7 @@ def test_a_qif_body_rejects_a_non_unitary_operation(
 def test_a_qif_body_rejects_an_assignment(lower: LowerSource) -> None:
     """Assignment has no reversible form, so no controlled form either --
     the build-time target makes no difference."""
-    _, bag = lower(
-        "qint<2> a = 0; qbool f = false; int i = 0; qif(a == 2) { i = i + 1; X(f); }"
-    )
+    _, bag = lower("qint<2> a = 0; qbool f = false; int i = 0; qif(a == 2) { i = i + 1; X(f); }")
     (diagnostic,) = bag.errors
     assert diagnostic.message == _NOT_UNITARY.format("an assignment")
 
@@ -172,9 +170,7 @@ def test_a_qif_body_rejects_a_build_time_compound_assignment(
     """On a quantum variable `+=` is a reversible adder and a controlled
     body could hold one later; on a build-time variable it is an ordinary
     assignment, so no later work would make it belong here."""
-    _, bag = lower(
-        "qint<2> a = 0; qbool f = false; int i = 0; qif(a == 2) { i += 1; X(f); }"
-    )
+    _, bag = lower("qint<2> a = 0; qbool f = false; int i = 0; qif(a == 2) { i += 1; X(f); }")
     (diagnostic,) = bag.errors
     assert diagnostic.message == _NOT_UNITARY.format("a compound assignment")
 
@@ -183,8 +179,7 @@ def test_a_qif_body_holds_a_controlled_adder(lower: LowerSource) -> None:
     """`+=` on a quantum variable is a reversible adder, so it has a
     controlled form; the ancilla it needs is still declared at the top level,
     where every later statement can see it."""
-    module, bag = lower("qint<2> a = 0; qint<2> c = 0; qint<2> d = 1; "
-                        "qif(a == 2) { c += d; }")
+    module, bag = lower("qint<2> a = 0; qint<2> c = 0; qint<2> d = 1; qif(a == 2) { c += d; }")
     assert not bag.has_errors
 
     qif = module.body.ops[-1]
@@ -194,8 +189,7 @@ def test_a_qif_body_holds_a_controlled_adder(lower: LowerSource) -> None:
 
 
 def test_a_controlled_adder_warns_about_its_cost(lower: LowerSource) -> None:
-    _, bag = lower("qint<2> a = 0; qint<2> c = 0; qint<2> d = 1; "
-                   "qif(a == 2) { c += d; }")
+    _, bag = lower("qint<2> a = 0; qint<2> c = 0; qint<2> d = 1; qif(a == 2) { c += d; }")
     (warning,) = bag.warnings
     assert warning.message == (
         "the arithmetic on 'c' is controlled here, which costs far more gates "
@@ -209,8 +203,7 @@ def test_a_qif_body_holds_a_controlled_multiply_accumulate(
     """Compute, add, uncompute -- all three inside the body, so the scratch
     register comes back to zero whether or not the branch was taken."""
     module, bag = lower(
-        "qint<2> a = 0; qint<4> c = 0; qint<2> d = 2; qint<2> e = 3; "
-        "qif(a == 2) { c += d * e; }"
+        "qint<2> a = 0; qint<4> c = 0; qint<2> d = 2; qint<2> e = 3; qif(a == 2) { c += d * e; }"
     )
     assert not bag.has_errors
     qif = module.body.ops[-1]
@@ -238,9 +231,7 @@ def test_a_classical_declaration_becomes_an_assignment(lower: LowerSource) -> No
     module, bag = lower("qbool q = false; float x = 0.5; RX(x, q);")
     assert not bag.has_errors
     assert module.clbits == []
-    (assignment,) = [
-        op for op in module.body.ops if isinstance(op, ClassicalAssignOp)
-    ]
+    (assignment,) = [op for op in module.body.ops if isinstance(op, ClassicalAssignOp)]
     assert (assignment.name, assignment.op) == ("x", "=")
 
 
@@ -561,10 +552,7 @@ def test_qif_equality_condition_lowers_ctrl_state(lower: LowerSource) -> None:
 def test_qif_and_chain_concatenates_ctrl_state(lower: LowerSource) -> None:
     """a==2 (bits 0,1) then flag (bit 1) concatenate to a 3-bit ctrl_state:
     0 | (1<<1) | (1<<2) == 6."""
-    source = (
-        "qint<2> a = 0; qbool flag = false; qbool out = false; "
-        "qif(a == 2 && flag) { X(out); }"
-    )
+    source = "qint<2> a = 0; qbool flag = false; qbool out = false; qif(a == 2 && flag) { X(out); }"
     module, bag = lower(source)
     assert not bag.has_errors
 
@@ -600,8 +588,7 @@ def test_qif_negated_multi_qubit_equality_needs_an_ancilla(lower: LowerSource) -
 
 def test_qif_ancilla_name_collision_is_reported(lower: LowerSource) -> None:
     source = (
-        "qint<2> a = 0; qbool _ancilla_0 = false; qbool out = false; "
-        "qif(!(a == 2)) { X(out); }"
+        "qint<2> a = 0; qbool _ancilla_0 = false; qbool out = false; qif(!(a == 2)) { X(out); }"
     )
     _, bag = lower(source)
     assert bag.has_errors
@@ -609,9 +596,7 @@ def test_qif_ancilla_name_collision_is_reported(lower: LowerSource) -> None:
 
 
 def test_qif_phase_becomes_a_phase_op(lower: LowerSource) -> None:
-    module, bag = lower(
-        "qint<2> a = 0; qif(a == 2) { phase(1.5); }"
-    )
+    module, bag = lower("qint<2> a = 0; qif(a == 2) { phase(1.5); }")
     assert not bag.has_errors
 
     qif = module.body.ops[-1]
@@ -637,8 +622,7 @@ def test_unimplemented_statement_inside_qif_body(lower: LowerSource) -> None:
     mistake."""
     _, bag = lower("qint<2> a = 0; qif(a == 2) { qbool z = false; }")
     assert any(
-        diagnostic.message
-        == "a quantum declaration is not implemented inside a qif body yet; "
+        diagnostic.message == "a quantum declaration is not implemented inside a qif body yet; "
         "this is a limitation of the compiler, not an error in the program"
         for diagnostic in bag.errors
     )
@@ -657,9 +641,7 @@ def test_an_expanded_call_lowers_like_written_out_code(lower: LowerSource) -> No
         "qint<2> num1 = 1;\nqint<2> num2 = 2;\nadd(num1, num2);\n"
     )
     assert not bag.has_errors
-    written_out, _ = lower(
-        "qint<2> num1 = 1;\nqint<2> num2 = 2;\nnum1 += num2;\n"
-    )
+    written_out, _ = lower("qint<2> num1 = 1;\nqint<2> num2 = 2;\nnum1 += num2;\n")
     assert [type(op).__name__ for op in module.body.ops] == [
         type(op).__name__ for op in written_out.body.ops
     ]
@@ -694,8 +676,6 @@ def test_an_undefined_call_is_not_blamed_on_the_compiler(lower: LowerSource) -> 
     assert any("undefined name 'nosuchgate'" in message for message in messages)
     assert any("'nosuchgate' is not a gate" in message for message in messages)
     assert not any("limitation of the compiler" in message for message in messages)
-
-
 
 
 def test_qif_not_equal_is_sugar_for_negated_equality(lower: LowerSource) -> None:
@@ -764,9 +744,7 @@ def _computation_ops(module: IRModule) -> list[Op]:
 
 
 def _declared_ancillas(module: IRModule) -> list[QubitRef]:
-    return [
-        op.ref for op in module.body.ops if isinstance(op, DeclareAncillaOp)
-    ]
+    return [op.ref for op in module.body.ops if isinstance(op, DeclareAncillaOp)]
 
 
 @pytest.mark.parametrize(
@@ -782,13 +760,10 @@ def _declared_ancillas(module: IRModule) -> list[QubitRef]:
         "qint<2> a = 0; qint<2> b = 0; qint<5> c = 0; c += a * b;",
         "qint<2> a = 0; qint<2> b = 0; qint<4> c = 0; c += a * b; c += a * b;",
         "qint<2> a = 2; qbool t = false; qif(!(a == 2)) { X(t); }",
-        "qint<2> a = 2; qint<2> b = 3; qbool t = false;"
-        " qif(!(a == 2) && !(b == 3)) { X(t); }",
+        "qint<2> a = 2; qint<2> b = 3; qbool t = false; qif(!(a == 2) && !(b == 3)) { X(t); }",
     ],
 )
-def test_every_ancilla_is_declared_exactly_once(
-    lower: LowerSource, source: str
-) -> None:
+def test_every_ancilla_is_declared_exactly_once(lower: LowerSource, source: str) -> None:
     """The invariant the declaration op exists for. `c += a * b` used to
     declare the product register twice -- once for the multiply, once again
     because the addend looked like an undeclared ancilla."""
@@ -819,8 +794,7 @@ def _referenced_refs(op: Op) -> list[QubitRef]:
             elif isinstance(item, QIfClauseAncilla):
                 refs.append(item.ancilla)
                 refs += [
-                    entry if isinstance(entry, QubitRef) else entry.ref
-                    for entry in item.qubits
+                    entry if isinstance(entry, QubitRef) else entry.ref for entry in item.qubits
                 ]
     return refs
 
@@ -838,9 +812,7 @@ def _referenced_refs(op: Op) -> list[QubitRef]:
         ("!(a == 2) && !(a == 2)", 1),
     ],
 )
-def test_a_repeated_qif_test_is_dropped(
-    lower: LowerSource, condition: str, controls: int
-) -> None:
+def test_a_repeated_qif_test_is_dropped(lower: LowerSource, condition: str, controls: int) -> None:
     """A qubit tested twice would reach the same append list twice, which
     Qiskit rejects as duplicate bit arguments when the generated file runs."""
     module, bag = lower(f"qint<2> a = 2; qbool t = false; qif({condition}) {{ X(t); }}")
@@ -884,9 +856,7 @@ def test_a_qif_condition_no_state_can_satisfy_is_rejected(
 def test_a_dropped_clause_ancilla_leaves_no_declaration(lower: LowerSource) -> None:
     """The repeated negated test allocated an ancilla before it turned out to
     be a repetition; an ancilla nothing uses would still take a qubit."""
-    module, bag = lower(
-        "qint<2> a = 2; qbool t = false; qif(!(a == 2) && !(a == 2)) { X(t); }"
-    )
+    module, bag = lower("qint<2> a = 2; qbool t = false; qif(!(a == 2) && !(a == 2)) { X(t); }")
     assert not bag.has_errors
     assert len(_declared_ancillas(module)) == 1
 
@@ -1063,9 +1033,7 @@ def test_param_scalar_angle_is_accepted(lower: LowerSource) -> None:
 
 
 def test_param_expression_angle_is_accepted(lower: LowerSource) -> None:
-    module, bag = lower(
-        "param float theta; qbool q = false; RX(theta * 2 + PI / 4, q);"
-    )
+    module, bag = lower("param float theta; qbool q = false; RX(theta * 2 + PI / 4, q);")
     assert not bag.has_errors
     gate = module.body.ops[-1]
     assert isinstance(gate, GateOp)
@@ -1137,9 +1105,7 @@ REJECTED_SHAPES = [
 
 
 @pytest.mark.parametrize("source", REJECTED_SHAPES)
-def test_a_rejected_shape_does_not_crash_lowering(
-    lower: LowerSource, source: str
-) -> None:
+def test_a_rejected_shape_does_not_crash_lowering(lower: LowerSource, source: str) -> None:
     _, bag = lower(source)
     assert bag.has_errors
     assert not any("internal error" in error.message for error in bag.errors)
@@ -1278,9 +1244,7 @@ def test_an_if_inside_a_qif_body_is_folded_too(lower: LowerSource) -> None:
     assert [op.name for op in qif.body.ops] == ["X", "Y"]
 
 
-_RT_PRELUDE = (
-    "qint<3> a = []; qint<2> b = 0; qbool f = false; rt int<> m = measure(a); "
-)
+_RT_PRELUDE = "qint<3> a = []; qint<2> b = 0; qbool f = false; rt int<> m = measure(a); "
 
 
 def test_an_rt_if_becomes_its_own_op(lower: LowerSource) -> None:

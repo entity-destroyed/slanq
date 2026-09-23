@@ -85,9 +85,22 @@ def test_builtin_gate_name_is_not_reported(diagnostics_of: DiagnosticsOf) -> Non
 @pytest.mark.parametrize(
     "call",
     [
-        "H(q)", "X(q)", "Y(q)", "Z(q)", "S(q)", "T(q)", "Sdg(q)", "Tdg(q)",
-        "RX(PI, q)", "RY(PI, q)", "RZ(PI, q)",
-        "CX(q, r)", "CY(q, r)", "CZ(q, r)", "CH(q, r)", "SWAP(q, r)",
+        "H(q)",
+        "X(q)",
+        "Y(q)",
+        "Z(q)",
+        "S(q)",
+        "T(q)",
+        "Sdg(q)",
+        "Tdg(q)",
+        "RX(PI, q)",
+        "RY(PI, q)",
+        "RZ(PI, q)",
+        "CX(q, r)",
+        "CY(q, r)",
+        "CZ(q, r)",
+        "CH(q, r)",
+        "SWAP(q, r)",
         "CCX(q, r, s)",
     ],
 )
@@ -136,10 +149,7 @@ def test_process_call_rejects_the_same_variable_twice(
 def test_process_call_rejects_the_same_qubit_twice(diagnostics_of: DiagnosticsOf) -> None:
     """Aliasing is about physical qubits, not names: two different spellings
     of the same bit alias just as much."""
-    source = (
-        "process pair(qbool p, qbool r) { CX(p, r); }\n"
-        "qint<2> a = 0;\npair(a[0], a[0]);\n"
-    )
+    source = "process pair(qbool p, qbool r) { CX(p, r); }\nqint<2> a = 0;\npair(a[0], a[0]);\n"
     bag = diagnostics_of(source)
     assert any("same qubit(s) in more than one argument" in d.message for d in bag.errors)
 
@@ -147,10 +157,7 @@ def test_process_call_rejects_the_same_qubit_twice(diagnostics_of: DiagnosticsOf
 def test_two_distinct_qubits_of_one_register_are_accepted(
     diagnostics_of: DiagnosticsOf,
 ) -> None:
-    source = (
-        "process pair(qbool p, qbool r) { CX(p, r); }\n"
-        "qint<2> a = 0;\npair(a[0], a[1]);\n"
-    )
+    source = "process pair(qbool p, qbool r) { CX(p, r); }\nqint<2> a = 0;\npair(a[0], a[1]);\n"
     assert not diagnostics_of(source).has_errors
 
 
@@ -222,9 +229,7 @@ def test_index_within_range_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
 def test_non_constant_quantum_index_is_reported(diagnostics_of: DiagnosticsOf) -> None:
     """A genuinely runtime value (a measurement result) stays rejected -- a
     classical constant, tested just below, is a different case now."""
-    bag = diagnostics_of(
-        "qint<2> q = 0; qbool flag = false; rt int<> i = measure(flag); H(q[i]);"
-    )
+    bag = diagnostics_of("qint<2> q = 0; qbool flag = false; rt int<> i = measure(flag); H(q[i]);")
     assert bag.has_errors
     assert "an integer the compiler can compute" in bag.errors[0].message
 
@@ -264,8 +269,7 @@ def test_a_param_array_index_within_bounds_is_accepted(
         "param int gamma[4]; int x = gamma[99];",
         "param float gamma[2]; qbool q = false; RX(gamma[2], q);",
         "param float gamma[2]; qbool q = false; RX(gamma[-1], q);",
-        "param float gamma[3]; qbool q = false;"
-        " for(int i in range(4)) { RX(gamma[i], q); }",
+        "param float gamma[3]; qbool q = false; for(int i in range(4)) { RX(gamma[i], q); }",
     ],
 )
 def test_a_param_array_index_out_of_bounds_is_rejected(
@@ -340,16 +344,12 @@ def test_a_declared_size_of_zero_is_rejected(
 
 
 @pytest.mark.parametrize("source", ["qint<1> a = 1;", "param int g[1];"])
-def test_a_declared_size_of_one_is_accepted(
-    diagnostics_of: DiagnosticsOf, source: str
-) -> None:
+def test_a_declared_size_of_one_is_accepted(diagnostics_of: DiagnosticsOf, source: str) -> None:
     assert not diagnostics_of(source).has_errors
 
 
 @pytest.mark.parametrize("source", ["qint<2> a = true;", "qint<1> a = false;"])
-def test_a_boolean_does_not_initialize_a_qint(
-    diagnostics_of: DiagnosticsOf, source: str
-) -> None:
+def test_a_boolean_does_not_initialize_a_qint(diagnostics_of: DiagnosticsOf, source: str) -> None:
     bag = diagnostics_of(source)
     assert bag.has_errors
     assert "holds a number, not a boolean" in bag.errors[0].message
@@ -372,9 +372,7 @@ def test_an_empty_program_is_accepted_with_a_warning(
     assert "this program is empty" in bag.warnings[0].message
 
 
-@pytest.mark.parametrize(
-    "source", ["qbool ψ = false;", "qint<3> φ = 0;", "int θ = 1;"]
-)
+@pytest.mark.parametrize("source", ["qbool ψ = false;", "qint<3> φ = 0;", "int θ = 1;"])
 def test_a_name_with_letters_beyond_ascii_is_accepted(
     diagnostics_of: DiagnosticsOf, source: str
 ) -> None:
@@ -442,9 +440,7 @@ def test_index_inside_a_loop_is_not_reported(diagnostics_of: DiagnosticsOf) -> N
         ("RX(q, PI)", "expects a number here"),
     ],
 )
-def test_gate_misuse_is_reported(
-    diagnostics_of: DiagnosticsOf, call: str, fragment: str
-) -> None:
+def test_gate_misuse_is_reported(diagnostics_of: DiagnosticsOf, call: str, fragment: str) -> None:
     bag = diagnostics_of(f"qbool q = false; {call};")
     assert bag.has_errors
     assert fragment in bag.errors[0].message
@@ -482,9 +478,7 @@ def test_three_distinct_registers_of_equal_size_are_accepted(
         "SWAP(a[0], a[0])",
     ],
 )
-def test_aliased_qubit_arguments_are_rejected(
-    diagnostics_of: DiagnosticsOf, call: str
-) -> None:
+def test_aliased_qubit_arguments_are_rejected(diagnostics_of: DiagnosticsOf, call: str) -> None:
     """Qiskit raises 'duplicate bit arguments' at circuit-build time if the same
     physical qubit is passed twice into one gate call; caught here instead."""
     bag = diagnostics_of(f"qint<2> a = 0; qint<2> b = 0; {call};")
@@ -567,9 +561,7 @@ def test_a_name_starting_with_an_underscore_is_rejected(
     assert any("starts with '_'" in error.message for error in bag.errors)
 
 
-@pytest.mark.parametrize(
-    "source", ["qbool q_ = false;", "qbool a_b = false;", "int x2_ = 1;"]
-)
+@pytest.mark.parametrize("source", ["qbool q_ = false;", "qbool a_b = false;", "int x2_ = 1;"])
 def test_an_underscore_elsewhere_in_a_name_is_accepted(
     diagnostics_of: DiagnosticsOf, source: str
 ) -> None:
@@ -722,16 +714,11 @@ def test_qif_bare_qubit_condition_is_accepted(diagnostics_of: DiagnosticsOf) -> 
     assert not diagnostics_of(
         "qbool flag = false; qbool out = false; qif(flag) { X(out); }"
     ).has_errors
-    assert not diagnostics_of(
-        "qint<2> a = 0; qbool out = false; qif(a[0]) { X(out); }"
-    ).has_errors
+    assert not diagnostics_of("qint<2> a = 0; qbool out = false; qif(a[0]) { X(out); }").has_errors
 
 
 def test_qif_and_chain_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
-    source = (
-        "qint<2> a = 0; qbool flag = false; qbool out = false; "
-        "qif(a == 2 && flag) { X(out); }"
-    )
+    source = "qint<2> a = 0; qbool flag = false; qbool out = false; qif(a == 2 && flag) { X(out); }"
     assert not diagnostics_of(source).has_errors
 
 
@@ -750,9 +737,7 @@ def test_qif_leaf_and_top_level_negation_are_accepted(
 
 
 def test_qif_classical_condition_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
-    bag = diagnostics_of(
-        "int r = 5; qbool out = false; qif(r == 5) { X(out); }"
-    )
+    bag = diagnostics_of("int r = 5; qbool out = false; qif(r == 5) { X(out); }")
     assert bag.has_errors
     assert "may only reference quantum variables" in bag.errors[0].message
 
@@ -763,17 +748,14 @@ def test_qif_mixed_classical_and_quantum_is_rejected(
     """One unified rule, not two: every clause is checked on its own, so a
     mix is caught by the exact same check that catches a purely classical one."""
     bag = diagnostics_of(
-        "int r = 5; qint<2> a = 0; qbool out = false; "
-        "qif(r == 5 && a == 2) { X(out); }"
+        "int r = 5; qint<2> a = 0; qbool out = false; qif(r == 5 && a == 2) { X(out); }"
     )
     assert bag.has_errors
     assert "may only reference quantum variables" in bag.errors[0].message
 
 
 def test_qif_or_is_not_implemented(diagnostics_of: DiagnosticsOf) -> None:
-    bag = diagnostics_of(
-        "qint<2> a = 0; qbool out = false; qif(a == 2 || a == 1) { X(out); }"
-    )
+    bag = diagnostics_of("qint<2> a = 0; qbool out = false; qif(a == 2 || a == 1) { X(out); }")
     assert bag.has_errors
     assert "'||'" in bag.errors[0].message
 
@@ -848,8 +830,7 @@ def test_a_qif_body_emptied_by_unrolling_is_warned_about(
     """The body is written non-empty, so only the unrolled tree shows that
     nothing is left in it."""
     bag = diagnostics_of(
-        "qint<2> a = 0; qbool t = false;"
-        " qif(a == 2) { for(int i in range(0)) { X(t); } }"
+        "qint<2> a = 0; qbool t = false; qif(a == 2) { for(int i in range(0)) { X(t); } }"
     )
     assert not bag.has_errors
     assert any("this qif body is empty" in d.message for d in bag.warnings)
@@ -870,12 +851,10 @@ def test_qif_negated_wide_equality_combines_with_and(
     with other clauses via '&&' does not need OR-like machinery -- only
     negating a whole compound sub-expression (De Morgan) does."""
     assert not diagnostics_of(
-        "qint<2> a = 0; qbool flag = false; qbool out = false; "
-        "qif(flag && !(a == 2)) { X(out); }"
+        "qint<2> a = 0; qbool flag = false; qbool out = false; qif(flag && !(a == 2)) { X(out); }"
     ).has_errors
     assert not diagnostics_of(
-        "qint<2> a = 0; qint<2> b = 0; qbool out = false; "
-        "qif(!(a == 2) && !(b == 3)) { X(out); }"
+        "qint<2> a = 0; qint<2> b = 0; qbool out = false; qif(!(a == 2) && !(b == 3)) { X(out); }"
     ).has_errors
     assert not diagnostics_of(
         "qint<2> a = 0; qbool out = false; qif(a != 2) { X(out); }"
@@ -886,8 +865,7 @@ def test_qif_negated_single_qubit_equality_combines_fine(
     diagnostics_of: DiagnosticsOf,
 ) -> None:
     source = (
-        "qint<1> q = 0; qbool flag = false; qbool out = false; "
-        "qif(flag && !(q == 1)) { X(out); }"
+        "qint<1> q = 0; qbool flag = false; qbool out = false; qif(flag && !(q == 1)) { X(out); }"
     )
     assert not diagnostics_of(source).has_errors
 
@@ -1015,17 +993,13 @@ def test_param_complex_array_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
 
 
 @pytest.mark.parametrize("declared", ["float", "bool", "complex"])
-def test_a_loop_variable_must_be_an_int(
-    diagnostics_of: DiagnosticsOf, declared: str
-) -> None:
+def test_a_loop_variable_must_be_an_int(diagnostics_of: DiagnosticsOf, declared: str) -> None:
     bag = diagnostics_of(f"qbool q = false;\nfor({declared} i in range(2)) {{ X(q); }}\n")
     assert any("so it is an int" in error.message for error in bag.errors)
 
 
 def test_an_int_loop_variable_is_accepted(diagnostics_of: DiagnosticsOf) -> None:
-    assert not diagnostics_of(
-        "qbool q = false;\nfor(int i in range(2)) { X(q); }\n"
-    ).has_errors
+    assert not diagnostics_of("qbool q = false;\nfor(int i in range(2)) { X(q); }\n").has_errors
 
 
 _DECLS = "qint<2> a = 0;\nqbool f = false;\nint n = 5;\nbool t = true;\n"
@@ -1065,8 +1039,7 @@ def test_a_realtime_value_cannot_be_a_build_time_if_condition(
     bag = diagnostics_of(f"{_DECLS}rt int<> r = measure(a);\nif (r < 4) {{ X(f); }}\n")
     (diagnostic,) = bag.errors
     assert diagnostic.message == (
-        "'r' is a real-time value, which has no value while the circuit is "
-        "being built; use rt if"
+        "'r' is a real-time value, which has no value while the circuit is being built; use rt if"
     )
 
 
@@ -1095,9 +1068,7 @@ def test_a_declaration_in_an_if_body_is_rejected(
     ],
     ids=["if", "else"],
 )
-def test_an_empty_branch_warns(
-    diagnostics_of: DiagnosticsOf, body: str, message: str
-) -> None:
+def test_an_empty_branch_warns(diagnostics_of: DiagnosticsOf, body: str, message: str) -> None:
     bag = diagnostics_of(_DECLS + body + "\n")
     assert not bag.has_errors
     (warning,) = bag.warnings
@@ -1108,9 +1079,7 @@ def test_an_empty_branch_warns(
     "condition",
     ["t", "!t", "n > 3", "n > 1 && n < 9", "n > 9 || t", "floor(n / 2) == 2"],
 )
-def test_a_boolean_condition_is_accepted(
-    diagnostics_of: DiagnosticsOf, condition: str
-) -> None:
+def test_a_boolean_condition_is_accepted(diagnostics_of: DiagnosticsOf, condition: str) -> None:
     bag = diagnostics_of(f"{_DECLS}if ({condition}) {{ X(f); }}\n")
     assert not bag.has_errors
 
@@ -1145,9 +1114,7 @@ _RT_DECLS = (
     ],
     ids=["quantum", "no real-time value", "not boolean", "declaration", "wrong if"],
 )
-def test_an_rt_if_is_checked(
-    diagnostics_of: DiagnosticsOf, program: str, message: str
-) -> None:
+def test_an_rt_if_is_checked(diagnostics_of: DiagnosticsOf, program: str, message: str) -> None:
     (diagnostic,) = diagnostics_of(_RT_DECLS + program + "\n").errors
     assert diagnostic.message == message
 
@@ -1156,22 +1123,21 @@ def test_a_measurement_cannot_be_declared_build_time(
     diagnostics_of: DiagnosticsOf,
 ) -> None:
     (diagnostic,) = diagnostics_of("qbool q = false;\nint r = measure(q);\n").errors
-    assert diagnostic.message == (
-        "a measurement result is real-time; declare 'r' as rt int<>"
-    )
+    assert diagnostic.message == ("a measurement result is real-time; declare 'r' as rt int<>")
 
 
 @pytest.mark.parametrize(
     ("declaration", "message"),
     [
-        ("rt int<4> c = 1.5;", "a real-time variable holds a whole number or a "
-         "truth value, so 'c' cannot start from 1.5"),
-        ("rt int<4> c = 0 - 3;", "a real-time variable is unsigned, so 'c' cannot "
-         "start from -3"),
+        (
+            "rt int<4> c = 1.5;",
+            "a real-time variable holds a whole number or a "
+            "truth value, so 'c' cannot start from 1.5",
+        ),
+        ("rt int<4> c = 0 - 3;", "a real-time variable is unsigned, so 'c' cannot start from -3"),
         ("rt int<2> c = 12;", "12 does not fit in the 2 bits of 'c'"),
         ("rt int<0> c = 0;", "'c' must be at least one bit wide"),
-        ("rt int<2> w = measure(a);", "'a' measures into 3 bits, not the 2 "
-         "declared for 'w'"),
+        ("rt int<2> w = measure(a);", "'a' measures into 3 bits, not the 2 declared for 'w'"),
     ],
     ids=["float", "negative", "too wide", "zero width", "measured width"],
 )
@@ -1238,18 +1204,19 @@ _ASSIGN_DECLS = (
 @pytest.mark.parametrize(
     ("program", "message"),
     [
-        ("a = b;", "'a' is a quantum variable, which cannot be assigned to; use "
-         "reset() or a gate"),
+        ("a = b;", "'a' is a quantum variable, which cannot be assigned to; use reset() or a gate"),
         ("param int p;\np = 1;", "'p' is a param and is bound, not assigned"),
-        ("for(int j in range(2)) { j = 5; }",
-         "'j' is a loop variable and cannot be assigned to"),
+        ("for(int j in range(2)) { j = 5; }", "'j' is a loop variable and cannot be assigned to"),
         ("a[0] = 1;", "only a variable can be assigned to"),
-        ("int i = 0;\ni = m;",
-         "'i' is settled while the circuit is built, so it cannot be given a "
-         "real-time value"),
-        ("process g(int i) { i += 1; }\ng(1);",
-         "assigning to the process parameter 'i' is not implemented yet; this "
-         "is a limitation of the compiler, not an error in the program"),
+        (
+            "int i = 0;\ni = m;",
+            "'i' is settled while the circuit is built, so it cannot be given a real-time value",
+        ),
+        (
+            "process g(int i) { i += 1; }\ng(1);",
+            "assigning to the process parameter 'i' is not implemented yet; this "
+            "is a limitation of the compiler, not an error in the program",
+        ),
     ],
     ids=["quantum", "param", "loop variable", "indexed", "real-time value", "process parameter"],
 )
@@ -1297,9 +1264,7 @@ def test_a_build_time_assignment_inside_a_real_time_body_is_rejected(
 ) -> None:
     """A real-time body's Python runs when the circuit is built, so the
     assignment does not wait for the measurement."""
-    (diagnostic,) = diagnostics_of(
-        f"{_ASSIGN_DECLS}int i = 0;\n" + program + "\n"
-    ).errors
+    (diagnostic,) = diagnostics_of(f"{_ASSIGN_DECLS}int i = 0;\n" + program + "\n").errors
     assert diagnostic.message == message
 
 
@@ -1313,8 +1278,7 @@ def test_a_build_time_assignment_inside_a_real_time_body_is_rejected(
         ),
         (
             "b /= b;",
-            "'b' is a quantum variable, and division is not reversible, so it "
-            "has no circuit",
+            "'b' is a quantum variable, and division is not reversible, so it has no circuit",
         ),
     ],
     ids=["times-equals", "divide-equals"],
@@ -1378,8 +1342,7 @@ _LOOP_DECLS = (
         ),
         (
             "rt while (b == 2) { X(f); }",
-            "'b' is a quantum variable, so it cannot be an rt while "
-            "condition; use qif",
+            "'b' is a quantum variable, so it cannot be an rt while condition; use qif",
         ),
         (
             "rt while (n > 3) { X(f); }",
@@ -1402,9 +1365,7 @@ _LOOP_DECLS = (
         "stray continue",
     ],
 )
-def test_a_loop_is_checked(
-    diagnostics_of: DiagnosticsOf, program: str, message: str
-) -> None:
+def test_a_loop_is_checked(diagnostics_of: DiagnosticsOf, program: str, message: str) -> None:
     (diagnostic,) = diagnostics_of(_LOOP_DECLS + program + "\n").errors
     assert diagnostic.message == message
 

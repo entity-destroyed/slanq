@@ -232,18 +232,14 @@ class SlanqTransformer(Transformer):
         orelse = rest[0] if rest else None
         if isinstance(orelse, RealtimeIf):
             orelse = Block(span=orelse.span, statements=[orelse])
-        return RealtimeIf(
-            span=_span_from_meta(meta), condition=condition, body=body, orelse=orelse
-        )
+        return RealtimeIf(span=_span_from_meta(meta), condition=condition, body=body, orelse=orelse)
 
     def if_stmt(self, meta: Meta, children) -> If:
         condition, body, *rest = children
         orelse = rest[0] if rest else None
         if isinstance(orelse, If):
             orelse = Block(span=orelse.span, statements=[orelse])
-        return If(
-            span=_span_from_meta(meta), condition=condition, body=body, orelse=orelse
-        )
+        return If(span=_span_from_meta(meta), condition=condition, body=body, orelse=orelse)
 
     def qif_stmt(self, meta: Meta, children) -> QIf:
         condition, body = children
@@ -251,9 +247,7 @@ class SlanqTransformer(Transformer):
 
     def rt_while_stmt(self, meta: Meta, children) -> RealtimeWhile:
         condition, body = children
-        return RealtimeWhile(
-            span=_span_from_meta(meta), condition=condition, body=body
-        )
+        return RealtimeWhile(span=_span_from_meta(meta), condition=condition, body=body)
 
     def break_stmt(self, meta: Meta, children) -> Break:
         return Break(span=_span_from_meta(meta))

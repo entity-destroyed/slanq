@@ -359,15 +359,11 @@ def _qif_body_reference(items: list[tuple[str, float | None]]) -> QuantumCircuit
     for name, angle in items:
         if name == "phase":
             phase = QuantumCircuit(0, global_phase=angle)
-            circuit.append(
-                phase.to_gate().control(2, ctrl_state=2, annotated=False), [*a]
-            )
+            circuit.append(phase.to_gate().control(2, ctrl_state=2, annotated=False), [*a])
             continue
         body = QuantumCircuit(1)
         getattr(body, name)(0)
-        circuit.append(
-            body.to_gate().control(2, ctrl_state=2, annotated=False), [*a, t[0]]
-        )
+        circuit.append(body.to_gate().control(2, ctrl_state=2, annotated=False), [*a, t[0]])
     return circuit
 
 
@@ -565,10 +561,7 @@ def test_repeated_multiply_accumulate_reuses_its_registers() -> None:
 def test_a_non_ascii_name_survives_into_the_circuit() -> None:
     """A name beyond ASCII has to reach the whole way: the registers in the
     generated file are named exactly as the program wrote them."""
-    source = (
-        "qint<3> ψ = 5;\nfor(int i in range(3)) { X(ψ[i]); }\n"
-        "rt int<> result = measure(ψ);\n"
-    )
+    source = "qint<3> ψ = 5;\nfor(int i in range(3)) { X(ψ[i]); }\nrt int<> result = measure(ψ);\n"
     assert _counts(source) == {"010": SHOTS}
 
 
@@ -609,13 +602,10 @@ def test_process_call_runs_the_body_on_the_arguments() -> None:
 
 def test_a_process_is_equivalent_to_writing_the_body_out() -> None:
     inlined = _build_circuit(
-        "process add(qint x, qint y) { x += y; }\n"
-        "qint<3> a = 5;\nqint<2> b = 2;\nadd(a, b);\n"
+        "process add(qint x, qint y) { x += y; }\nqint<3> a = 5;\nqint<2> b = 2;\nadd(a, b);\n"
     )
     written = _build_circuit("qint<3> a = 5;\nqint<2> b = 2;\na += b;\n")
-    assert Statevector.from_instruction(inlined).equiv(
-        Statevector.from_instruction(written)
-    )
+    assert Statevector.from_instruction(inlined).equiv(Statevector.from_instruction(written))
 
 
 def test_two_calls_of_one_process_both_take_effect() -> None:
@@ -638,8 +628,7 @@ def test_a_classical_process_parameter_reaches_the_generated_file_unfolded() -> 
     """A classical parameter is substituted as an expression, so the "never
     fold a compile-time expression" rule still holds inside a body."""
     result = compile_source(
-        "process rot(qbool q, float angle) { RX(angle, q); }\n"
-        "qbool t = false;\nrot(t, PI / 2);\n",
+        "process rot(qbool q, float angle) { RX(angle, q); }\nqbool t = false;\nrot(t, PI / 2);\n",
         source_name="test.slanq",
     )
     assert result.qiskit_source is not None
@@ -688,20 +677,12 @@ def test_qif_controls_one_qubit_of_a_register_on_another() -> None:
     legal, and the compiler used to emit a file that died on `duplicate bit
     arguments` when the generated circuit was built."""
     for value, expected in [(2, "11"), (0, "00")]:
-        source = (
-            f"qint<2> a = {value};\n"
-            "qif(a[0]) { X(a[1]); }\n"
-            "rt int<> result = measure(a);\n"
-        )
+        source = f"qint<2> a = {value};\nqif(a[0]) {{ X(a[1]); }}\nrt int<> result = measure(a);\n"
         assert _counts(source) == {expected: SHOTS}
 
 
 def test_qif_controls_across_a_wider_register() -> None:
-    source = (
-        "qint<3> a = 4;\n"
-        "qif(a[0]) { X(a[2]); }\n"
-        "rt int<> result = measure(a);\n"
-    )
+    source = "qint<3> a = 4;\nqif(a[0]) { X(a[2]); }\nrt int<> result = measure(a);\n"
     assert _counts(source) == {"101": SHOTS}
 
 
@@ -720,10 +701,7 @@ def test_qif_top_level_negation_composes_with_a_clause_ancilla() -> None:
 
 
 def test_a_loop_flips_every_qubit_it_indexes() -> None:
-    source = (
-        "qint<3> a = 0;\nfor(int i in range(3)) { X(a[i]); }\n"
-        "rt int<> result = measure(a);\n"
-    )
+    source = "qint<3> a = 0;\nfor(int i in range(3)) { X(a[i]); }\nrt int<> result = measure(a);\n"
     assert _counts(source) == {"111": SHOTS}
 
 
@@ -821,10 +799,7 @@ def test_the_taken_branch_is_the_only_one_built() -> None:
 
 
 def test_the_untaken_branch_contributes_nothing() -> None:
-    source = (
-        "qbool q = false;\nbool t = false;\n"
-        "if (t) { X(q); }\nrt int<> result = measure(q);\n"
-    )
+    source = "qbool q = false;\nbool t = false;\nif (t) { X(q); }\nrt int<> result = measure(q);\n"
     assert _counts(source) == {"0": SHOTS}
 
 
@@ -866,9 +841,7 @@ _PHASE_DECLS = "qint<2> a = 0;\nqbool f = false;\nbool t = true;\n"
     ],
     ids=["taken", "untaken", "else", "added to an unconditional one", "negated qif"],
 )
-def test_a_conditional_phase_matches_the_branch_it_describes(
-    written: str, equivalent: str
-) -> None:
+def test_a_conditional_phase_matches_the_branch_it_describes(written: str, equivalent: str) -> None:
     """Exact operator equality, not equivalence: a phase inside a qif is a
     relative phase, so an overall factor would be a different circuit."""
     assert Operator(_build_circuit(_PHASE_DECLS + written + "\n")) == Operator(
@@ -957,9 +930,7 @@ def test_teleportation_delivers_the_state() -> None:
         "reset inside a branch",
     ],
 )
-def test_a_real_time_branch_runs_the_arm_it_describes(
-    program: str, expected: str
-) -> None:
+def test_a_real_time_branch_runs_the_arm_it_describes(program: str, expected: str) -> None:
     assert set(_realtime_counts(program)) == {expected}
 
 
@@ -976,8 +947,7 @@ def test_a_tracked_index_addresses_the_qubit_it_names() -> None:
 
 def test_an_assigned_angle_reaches_the_gate() -> None:
     source = (
-        "qbool q = false;\nfloat g = PI;\ng = g / 2;\nRX(g, q);\n"
-        "rt int<> result = measure(q);\n"
+        "qbool q = false;\nfloat g = PI;\ng = g / 2;\nRX(g, q);\nrt int<> result = measure(q);\n"
     )
     counts = _counts(source)
     assert set(counts) == {"0", "1"}
@@ -985,10 +955,7 @@ def test_an_assigned_angle_reaches_the_gate() -> None:
 
 
 def test_re_measuring_overwrites_the_same_register() -> None:
-    source = (
-        "qbool q = false;\nrt int<> result = measure(q);\nX(q);\n"
-        "result = measure(q);\n"
-    )
+    source = "qbool q = false;\nrt int<> result = measure(q);\nX(q);\nresult = measure(q);\n"
     assert _realtime_counts(source) == {"1": SHOTS}
 
 
@@ -1005,12 +972,9 @@ def test_an_index_a_branch_settles_reaches_the_right_qubit() -> None:
 @pytest.mark.parametrize(
     ("program", "expected"),
     [
-        ("qint<2> a = 2;\nqint<2> c = 0;\nqint<2> d = 1;\n"
-         "qif(a == 2) { c += d; }\n", "01"),
-        ("qint<2> a = 1;\nqint<2> c = 0;\nqint<2> d = 1;\n"
-         "qif(a == 2) { c += d; }\n", "00"),
-        ("qint<2> a = 2;\nqint<2> c = 3;\nqint<2> d = 1;\n"
-         "qif(a == 2) { c -= d; }\n", "10"),
+        ("qint<2> a = 2;\nqint<2> c = 0;\nqint<2> d = 1;\nqif(a == 2) { c += d; }\n", "01"),
+        ("qint<2> a = 1;\nqint<2> c = 0;\nqint<2> d = 1;\nqif(a == 2) { c += d; }\n", "00"),
+        ("qint<2> a = 2;\nqint<2> c = 3;\nqint<2> d = 1;\nqif(a == 2) { c -= d; }\n", "10"),
         ("qint<2> a = 2;\nqint<2> c = 1;\nqif(a == 2) { c += 2; }\n", "11"),
     ],
     ids=["adds when it holds", "leaves c alone", "subtracts", "constant addend"],
@@ -1034,17 +998,15 @@ _MAC_DECLS = "qint<2> c = 0;\nqint<1> d = 1;\nqint<1> e = 1;\n"
 def test_a_controlled_multiply_accumulate_fires_on_its_own_branch(
     condition: str, expected: str
 ) -> None:
-    source = (
-        condition + _MAC_DECLS + "qif(a == 2) { c += d * e; }\n"
-        "rt int<> result = measure(c);\n"
-    )
+    source = condition + _MAC_DECLS + "qif(a == 2) { c += d * e; }\nrt int<> result = measure(c);\n"
     assert _realtime_counts(source) == {expected: SHOTS}
 
 
 def test_a_controlled_multiply_accumulate_leaves_its_scratch_clean() -> None:
     """A dirty temporary would show as the wrong product the second time."""
     source = (
-        "qint<2> a = 2;\n" + _MAC_DECLS
+        "qint<2> a = 2;\n"
+        + _MAC_DECLS
         + "qif(a == 2) { c += d * e; }\nqif(a == 2) { c += d * e; }\n"
         "rt int<> result = measure(c);\n"
     )

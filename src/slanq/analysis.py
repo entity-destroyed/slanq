@@ -114,10 +114,23 @@ def _shadowing_message(name: str) -> str:
 # later (`_ancilla_N`, `_qif_body_N`, `_round`, `_sqrt`).
 _RESERVED_CODEGEN_NAMES = frozenset(
     {
-        "sys", "math", "cmath", "np",
-        "QuantumCircuit", "QuantumRegister", "ClassicalRegister", "Parameter",
-        "StatePreparation", "XGate", "CDKMRippleCarryAdder", "HRSCumulativeMultiplier",
-        "circuit", "build_circuit", "build_bound_circuit", "bindings", "used",
+        "sys",
+        "math",
+        "cmath",
+        "np",
+        "QuantumCircuit",
+        "QuantumRegister",
+        "ClassicalRegister",
+        "Parameter",
+        "StatePreparation",
+        "XGate",
+        "CDKMRippleCarryAdder",
+        "HRSCumulativeMultiplier",
+        "circuit",
+        "build_circuit",
+        "build_bound_circuit",
+        "bindings",
+        "used",
     }
 )
 
@@ -147,10 +160,7 @@ def _unusable_name_message(name: str) -> str:
             "Slanq name, because it would break the generated file"
         )
     if name.startswith("_"):
-        return (
-            f"'{name}' starts with '_', which is reserved for the compiler's "
-            "own generated names"
-        )
+        return f"'{name}' starts with '_', which is reserved for the compiler's own generated names"
     if not _survives_into_python(name):
         return (
             f"'{name}' cannot be used as a Slanq name, because it would not "
@@ -249,9 +259,7 @@ class _Checker(NodeVisitor):
         """A suffix naming the variable that has no value here, when one is
         the reason the expression could not be evaluated."""
         for node in _walk(expression):
-            if isinstance(node, Name) and isinstance(
-                node.effective_value, UnknownValue
-            ):
+            if isinstance(node, Name) and isinstance(node.effective_value, UnknownValue):
                 return f" -- '{node.name}': {node.effective_value.reason}"
         return ""
 
@@ -317,9 +325,7 @@ class _LoopVarAssignChecker(_Checker):
         self._check(node.target)
 
     def _check(self, target: Expression) -> None:
-        if isinstance(target, Name) and isinstance(
-            target.resolved_symbol, LoopVarDecl
-        ):
+        if isinstance(target, Name) and isinstance(target.resolved_symbol, LoopVarDecl):
             self._reject(
                 f"'{target.name}' is a loop variable and cannot be assigned to",
                 target,
@@ -344,8 +350,7 @@ class _DeclarationChecker(_Checker):
         size = qubit_count(node.declared_type)
         if size is not None and size < 1:
             self._reject(
-                f"'{node.name}' needs at least one qubit; a register with none "
-                "holds no value",
+                f"'{node.name}' needs at least one qubit; a register with none holds no value",
                 node,
             )
             return
@@ -356,8 +361,7 @@ class _DeclarationChecker(_Checker):
         if isinstance(value, bool) and isinstance(node.declared_type, QIntType):
             # `qbool q = 1` stays legal, because 0 and 1 are what one qubit holds
             self._reject(
-                f"'{node.name}' is a qint, so it holds a number, not a "
-                "boolean",
+                f"'{node.name}' is a qint, so it holds a number, not a boolean",
                 node.initializer,
             )
             return
@@ -421,8 +425,9 @@ class _ProbListChecker(_Checker):
 
         total = sum(probabilities)
         if total <= 0:
-            self._reject(f"the probabilities for '{node.name}' cannot sum to zero",
-                          node.initializer)
+            self._reject(
+                f"the probabilities for '{node.name}' cannot sum to zero", node.initializer
+            )
         elif abs(total - 1.0) > NORMALIZATION_TOLERANCE:
             self._warn(
                 f"the probabilities for '{node.name}' sum to {total}, not 1; "
@@ -449,8 +454,7 @@ class _AmplitudeListChecker(_Checker):
         expected = 2**size
         if len(elements) != expected:
             self._reject(
-                f"'{node.name}' needs {expected} amplitudes (2^{size}), "
-                f"got {len(elements)}",
+                f"'{node.name}' needs {expected} amplitudes (2^{size}), got {len(elements)}",
                 node.initializer,
             )
             return
@@ -464,9 +468,7 @@ class _AmplitudeListChecker(_Checker):
 
         norm_squared = sum(abs(value) ** 2 for value in amplitudes)
         if norm_squared == 0:
-            self._reject(
-                f"the amplitudes for '{node.name}' cannot all be zero", node.initializer
-            )
+            self._reject(f"the amplitudes for '{node.name}' cannot all be zero", node.initializer)
         elif abs(norm_squared - 1.0) > NORMALIZATION_TOLERANCE:
             self._warn(
                 f"the amplitudes for '{node.name}' have squared norm {norm_squared}, "
@@ -484,8 +486,7 @@ class _AmplitudeListChecker(_Checker):
             return None
         if value is None:
             self._reject(
-                f"the amplitude for value {index} of '{name}' is not a "
-                "compile-time constant",
+                f"the amplitude for value {index} of '{name}' is not a compile-time constant",
                 element,
             )
             return None
@@ -528,8 +529,6 @@ class _ForChecker(_Checker):
             return
 
 
-
-
 class _ArithmeticChecker(_Checker):
     """`+=`/`-=` and a quantum-times-quantum initializer are not general
     assignment -- both describe a fixed circuit shape over physical qubits,
@@ -544,8 +543,7 @@ class _ArithmeticChecker(_Checker):
             return
         if not isinstance(target, Name):
             self._reject(
-                "arithmetic assignment targets a whole quantum variable, "
-                "not a single qubit",
+                "arithmetic assignment targets a whole quantum variable, not a single qubit",
                 target,
             )
             return
@@ -586,9 +584,7 @@ class _ArithmeticChecker(_Checker):
             if operands is not None:
                 self._check_product_width(node, operands)
 
-    def _check_product_width(
-        self, node: QuantumDecl, operands: tuple[Name, Name]
-    ) -> None:
+    def _check_product_width(self, node: QuantumDecl, operands: tuple[Name, Name]) -> None:
         """A product is at least as wide as its widest factor. The multiplier
         pads both factors to their common width and writes into the target, and
         Qiskit's HRS refuses a target narrower than that"""
@@ -613,9 +609,7 @@ class _ArithmeticChecker(_Checker):
                 self._reject_self_reference(target, (value,))
             return
 
-        if isinstance(value, Index) and isinstance(
-            value.base.resolved_symbol, ParamArrayDecl
-        ):
+        if isinstance(value, Index) and isinstance(value.base.resolved_symbol, ParamArrayDecl):
             self._reject_param_addend(value)
             return
 
@@ -731,9 +725,7 @@ class _ProcessCallChecker(_Checker):
 
         expected = len(symbol.params)
         if len(node.args) != expected:
-            self._reject(
-                f"'{name}' takes {expected} argument(s), got {len(node.args)}", node
-            )
+            self._reject(f"'{name}' takes {expected} argument(s), got {len(node.args)}", node)
             return
 
         self._check_no_aliasing(name, node)
@@ -786,9 +778,7 @@ class _CallChecker(_Checker):
 
         expected = len(signature.args)
         if len(node.args) != expected:
-            self._reject(
-                f"'{name}' takes {expected} argument(s), got {len(node.args)}", node
-            )
+            self._reject(f"'{name}' takes {expected} argument(s), got {len(node.args)}", node)
             return
 
         widths: list[int] = []
@@ -811,9 +801,7 @@ class _CallChecker(_Checker):
         node.inferred_type = signature.returns
         self._check_position(name, signature, node)
 
-    def _check_no_aliasing(
-        self, name: str, qubit_args: list[Expression], node: Call
-    ) -> None:
+    def _check_no_aliasing(self, name: str, qubit_args: list[Expression], node: Call) -> None:
         seen: set[tuple[str, int]] = set()
         aliased: set[tuple[str, int]] = set()
         for argument in qubit_args:
@@ -823,14 +811,11 @@ class _CallChecker(_Checker):
         if aliased:
             names = ", ".join(sorted({bit_name for bit_name, _ in aliased}))
             self._reject(
-                f"'{name}' cannot use the same qubit(s) in more than one argument "
-                f"(here: {names})",
+                f"'{name}' cannot use the same qubit(s) in more than one argument (here: {names})",
                 node,
             )
 
-    def _check_argument(
-        self, name: str, kind: ArgKind, argument: Expression
-    ) -> int | None:
+    def _check_argument(self, name: str, kind: ArgKind, argument: Expression) -> int | None:
         operand = _quantum_operand(argument)
 
         if kind is ArgKind.ANGLE:
@@ -925,9 +910,7 @@ class _QIfConditionChecker(_Checker):
             self._check_equality_clause(clause)
             return
         if isinstance(clause, BinaryOp) and clause.op in _UNSUPPORTED_QIF_COMPARISONS:
-            self._reject(
-                f"'{clause.op}' in a qif condition is not implemented yet", clause
-            )
+            self._reject(f"'{clause.op}' in a qif condition is not implemented yet", clause)
             return
         self._reject("this qif condition shape is not implemented yet", clause)
 
@@ -935,8 +918,7 @@ class _QIfConditionChecker(_Checker):
         name, literal = _split_equality(clause)
         if name is None:
             self._reject(
-                "a qif equality test must compare a quantum variable to a "
-                "constant",
+                "a qif equality test must compare a quantum variable to a constant",
                 clause,
             )
             return
@@ -1004,8 +986,7 @@ class _QIfConditionChecker(_Checker):
         if overlap:
             names = ", ".join(sorted({name for name, _ in overlap}))
             self._reject(
-                f"a qif body may not modify a qubit its own condition tests "
-                f"(here: {names})",
+                f"a qif body may not modify a qubit its own condition tests (here: {names})",
                 node.body,
             )
 
@@ -1111,14 +1092,12 @@ def _is_boolean(expression: Expression) -> bool:
         return expression.op == "!"
     if isinstance(expression, Name):
         symbol = expression.resolved_symbol
-        return isinstance(
-            symbol, ClassicalDecl | ParamDecl | RealtimeDecl
-        ) and isinstance(symbol.declared_type, BoolType)
-    if isinstance(expression, Index):
-        symbol = expression.base.resolved_symbol
-        return isinstance(symbol, ParamArrayDecl) and isinstance(
+        return isinstance(symbol, ClassicalDecl | ParamDecl | RealtimeDecl) and isinstance(
             symbol.declared_type, BoolType
         )
+    if isinstance(expression, Index):
+        symbol = expression.base.resolved_symbol
+        return isinstance(symbol, ParamArrayDecl) and isinstance(symbol.declared_type, BoolType)
     return False
 
 
@@ -1127,9 +1106,7 @@ def _is_measurement(expression: Expression) -> bool:
 
 
 def _touches_realtime(expression: Expression) -> bool:
-    return any(
-        isinstance(symbol, RealtimeDecl) for symbol in _declarations_in(expression)
-    )
+    return any(isinstance(symbol, RealtimeDecl) for symbol in _declarations_in(expression))
 
 
 def _declarations_in(expression: Expression) -> list[Declaration]:
@@ -1165,14 +1142,12 @@ class _MeasurementDeclChecker(_Checker):
     def visit_ClassicalDecl(self, node: ClassicalDecl) -> None:
         if _is_measurement(node.initializer) and not self._in_qif:
             self._reject(
-                f"a measurement result is real-time; declare '{node.name}' as "
-                "rt int<>",
+                f"a measurement result is real-time; declare '{node.name}' as rt int<>",
                 node,
             )
 
 
 class _RealtimeDeclChecker(_Checker):
-
     def visit_RealtimeDecl(self, node: RealtimeDecl) -> None:
         self.generic_visit(node)
 
@@ -1202,8 +1177,7 @@ class _RealtimeDeclChecker(_Checker):
             return
         if value < 0:
             self._reject(
-                f"a real-time variable is unsigned, so '{node.name}' cannot "
-                f"start from {value}",
+                f"a real-time variable is unsigned, so '{node.name}' cannot start from {value}",
                 node,
             )
             return
@@ -1263,9 +1237,7 @@ class _RealtimeIfChecker(_Checker):
                 return
 
         if not _is_boolean(node.condition):
-            self._reject(
-                "an rt if condition must be a true/false value", node.condition
-            )
+            self._reject("an rt if condition must be a true/false value", node.condition)
             return
 
         if not _touches_realtime(node.condition):
@@ -1288,9 +1260,7 @@ class _RealtimeIfChecker(_Checker):
 
     def _check_arithmetic(self, expression: Expression) -> None:
         if isinstance(expression, BinaryOp):
-            if expression.op in ("+", "-", "*", "/", "%", "**") and _touches_realtime(
-                expression
-            ):
+            if expression.op in ("+", "-", "*", "/", "%", "**") and _touches_realtime(expression):
                 self._warn(
                     "Aer 0.17.2 cannot run arithmetic on a real-time value",
                     expression,
@@ -1423,9 +1393,7 @@ class _RealtimeBodyAssignChecker(_Checker):
         if not self._context:
             return
         target = node.target
-        if not isinstance(target, Name) or not isinstance(
-            target.resolved_symbol, ClassicalDecl
-        ):
+        if not isinstance(target, Name) or not isinstance(target.resolved_symbol, ClassicalDecl):
             return
         construct = self._context[-1]
         self._reject(
@@ -1480,8 +1448,6 @@ class _IfChecker(_Checker):
             self._warn("this if body is empty", node.body)
         if node.orelse is not None and not node.orelse.statements:
             self._warn("this else body is empty", node.orelse)
-
-
 
 
 ASSIGNABLE_NOT_YET = {
@@ -1571,17 +1537,11 @@ class _AugAssignChecker(_AssignChecker):
 def _check_realtime_value(checker: _Checker, value: Expression) -> None:
     if _is_measurement(value):
         return
-    if any(
-        isinstance(other, QuantumDecl) for other in _declarations_in(value)
-    ):
-        checker._reject(
-            "a quantum variable has no classical value; measure it first", value
-        )
+    if any(isinstance(other, QuantumDecl) for other in _declarations_in(value)):
+        checker._reject("a quantum variable has no classical value; measure it first", value)
         return
     if _has_realtime_arithmetic(value):
-        checker._warn(
-            "Aer 0.17.2 cannot run arithmetic on a real-time value", value
-        )
+        checker._warn("Aer 0.17.2 cannot run arithmetic on a real-time value", value)
 
 
 def _is_quantum_target(target: Name) -> bool:
@@ -1593,9 +1553,7 @@ def _is_quantum_target(target: Name) -> bool:
 
 def _has_realtime_arithmetic(expression: Expression) -> bool:
     if isinstance(expression, BinaryOp):
-        if expression.op in ("+", "-", "*", "/", "%", "**") and _touches_realtime(
-            expression
-        ):
+        if expression.op in ("+", "-", "*", "/", "%", "**") and _touches_realtime(expression):
             return True
         return _has_realtime_arithmetic(expression.left) or _has_realtime_arithmetic(
             expression.right
@@ -1606,7 +1564,6 @@ def _has_realtime_arithmetic(expression: Expression) -> bool:
 
 
 class _RealtimeWhileChecker(_Checker):
-
     def visit_RealtimeWhile(self, node: RealtimeWhile) -> None:
         self.generic_visit(node)
         if not _check_realtime_condition(self, node.condition, "rt while"):
@@ -1645,14 +1602,10 @@ class _LoopControlChecker(_Checker):
 
     def _check(self, node: Node, keyword: str) -> None:
         if not self._depth:
-            self._reject(
-                f"'{keyword}' is only meaningful inside an rt while loop", node
-            )
+            self._reject(f"'{keyword}' is only meaningful inside an rt while loop", node)
 
 
-def _check_realtime_condition(
-    checker: _Checker, condition: Expression, construct: str
-) -> bool:
+def _check_realtime_condition(checker: _Checker, condition: Expression, construct: str) -> bool:
     for symbol in _declarations_in(condition):
         if isinstance(symbol, QuantumDecl):
             checker._reject(
@@ -1669,9 +1622,7 @@ def _check_realtime_condition(
             )
             return False
     if not _is_boolean(condition):
-        checker._reject(
-            f"an {construct} condition must be a true/false value", condition
-        )
+        checker._reject(f"an {construct} condition must be a true/false value", condition)
         return False
     if not _touches_realtime(condition):
         checker._reject(
@@ -1696,9 +1647,7 @@ def _never_settles(condition: Expression, body: Block) -> bool:
 
 def _collect_written(statements: list[Statement], found: set[int]) -> None:
     for statement in statements:
-        if isinstance(statement, Assign | AugAssign) and isinstance(
-            statement.target, Name
-        ):
+        if isinstance(statement, Assign | AugAssign) and isinstance(statement.target, Name):
             symbol = statement.target.resolved_symbol
             if symbol is not None:
                 found.add(id(symbol))

@@ -282,9 +282,7 @@ def test_amplitude_list_keeps_its_elements_as_expressions(build_ast: BuildAst) -
     ("source", "op"),
     [("a / b", "/"), ("a % b", "%"), ("a ** b", "**")],
 )
-def test_new_binary_operators_keep_their_symbol(
-    build_ast: BuildAst, source: str, op: str
-) -> None:
+def test_new_binary_operators_keep_their_symbol(build_ast: BuildAst, source: str, op: str) -> None:
     (declaration,) = build_ast(f"float x = {source};").statements
     assert isinstance(declaration.initializer, BinaryOp)
     assert declaration.initializer.op == op
@@ -294,6 +292,7 @@ def test_unary_minus_becomes_a_unary_op(build_ast: BuildAst) -> None:
     (declaration,) = build_ast("int x = -a;").statements
     assert isinstance(declaration.initializer, UnaryOp)
     assert declaration.initializer.op == "-"
+
 
 def test_an_empty_program_gets_a_position(build_ast: Callable[[str], Program]) -> None:
     program = build_ast("")

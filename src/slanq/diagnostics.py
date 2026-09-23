@@ -42,9 +42,7 @@ class DiagnosticBag:
     """Messages collected during a single compilation run."""
 
     items: list[Diagnostic] = field(default_factory=list)
-    _seen: set[Diagnostic] = field(
-        default_factory=set, init=False, repr=False, compare=False
-    )
+    _seen: set[Diagnostic] = field(default_factory=set, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self._seen = set(self.items)

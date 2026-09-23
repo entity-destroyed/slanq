@@ -34,9 +34,23 @@ from slanq.ast_nodes import (
 
 BUILTIN_GATES: frozenset[str] = frozenset(
     {
-        "H", "X", "Y", "Z", "S", "T", "Sdg", "Tdg",
-        "RX", "RY", "RZ",
-        "CX", "CY", "CZ", "CH", "SWAP", "CCX",
+        "H",
+        "X",
+        "Y",
+        "Z",
+        "S",
+        "T",
+        "Sdg",
+        "Tdg",
+        "RX",
+        "RY",
+        "RZ",
+        "CX",
+        "CY",
+        "CZ",
+        "CH",
+        "SWAP",
+        "CCX",
         "phase",
     }
 )

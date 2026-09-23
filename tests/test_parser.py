@@ -74,6 +74,7 @@ def test_double_slash_is_a_comment_not_integer_division() -> None:
 def test_mvp_c_parses(mvp_c_source: str) -> None:
     assert parse_source(mvp_c_source) is not None
 
+
 @pytest.mark.parametrize(
     ("source", "line", "column", "found"),
     [
@@ -110,9 +111,7 @@ def test_an_unclosed_bracket_says_where_it_was_opened(
 ) -> None:
     with pytest.raises(SlanqError) as error:
         parse_source(source)
-    assert f"{bracket} at line {line}, column {column} is never closed" in str(
-        error.value
-    )
+    assert f"{bracket} at line {line}, column {column} is never closed" in str(error.value)
 
 
 def test_a_bracket_inside_a_comment_is_not_counted() -> None:

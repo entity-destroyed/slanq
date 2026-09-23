@@ -171,9 +171,7 @@ def test_index_is_mirrored_for_qiskit(span: Span) -> None:
     qubit = QubitRef(name="q", size=3)
     module = IRModule(
         qubits=[qubit],
-        body=IRBlock(
-            ops=[GateOp(span=span, name="H", targets=[QubitBit(ref=qubit, index=0)])]
-        ),
+        body=IRBlock(ops=[GateOp(span=span, name="H", targets=[QubitBit(ref=qubit, index=0)])]),
     )
     assert "circuit.h(q[2])" in _generate(module)
 
@@ -182,9 +180,7 @@ def test_single_qubit_register_needs_no_mirroring(span: Span) -> None:
     qubit = QubitRef(name="q", size=1)
     module = IRModule(
         qubits=[qubit],
-        body=IRBlock(
-            ops=[GateOp(span=span, name="H", targets=[QubitBit(ref=qubit, index=0)])]
-        ),
+        body=IRBlock(ops=[GateOp(span=span, name="H", targets=[QubitBit(ref=qubit, index=0)])]),
     )
     assert "circuit.h(q[0])" in _generate(module)
 
@@ -271,10 +267,24 @@ def test_classical_name_angle_keeps_its_name() -> None:
 @pytest.mark.parametrize(
     "slanq_source",
     [
-        "PI / 4", "-PI", "2 ** 3 ** 2", "-2 ** 2", "(-2) ** 2", "2 ** -1",
-        "1 - (2 - 3)", "(1 + 2) * 3", "1 + 2 * 3", "-7 % 3", "1 | 2 ^ 3 & 4",
-        "(1 | 2) ^ 3", "~5 + 1", "-(1 + 2)", "100 / (2 * 5)", "1 / 2 / 4",
-        "floor(PI * 2) + round(1.5)", "(1 - 2) ** 3",
+        "PI / 4",
+        "-PI",
+        "2 ** 3 ** 2",
+        "-2 ** 2",
+        "(-2) ** 2",
+        "2 ** -1",
+        "1 - (2 - 3)",
+        "(1 + 2) * 3",
+        "1 + 2 * 3",
+        "-7 % 3",
+        "1 | 2 ^ 3 & 4",
+        "(1 | 2) ^ 3",
+        "~5 + 1",
+        "-(1 + 2)",
+        "100 / (2 * 5)",
+        "1 / 2 / 4",
+        "floor(PI * 2) + round(1.5)",
+        "(1 - 2) ** 3",
     ],
 )
 def test_rendered_python_has_the_same_value_as_the_slanq_expression(
@@ -342,19 +352,12 @@ def test_amplitude_list_becomes_normalized_state_preparation(span: Span) -> None
     qubit = QubitRef(name="a", size=1)
     module = IRModule(
         qubits=[qubit],
-        body=IRBlock(
-            ops=[
-                InitOp(
-                    span=span, target=qubit, value=[1.0, 1j], is_amplitude=True
-                )
-            ]
-        ),
+        body=IRBlock(ops=[InitOp(span=span, target=qubit, value=[1.0, 1j], is_amplitude=True)]),
     )
     source = _generate(module)
     assert "from qiskit.circuit.library import StatePreparation" in source
     assert (
-        "circuit.append(StatePreparation([0.7071067811865475, "
-        "0.7071067811865475j]), a)" in source
+        "circuit.append(StatePreparation([0.7071067811865475, 0.7071067811865475j]), a)" in source
     )
 
 
@@ -415,9 +418,7 @@ def test_amplitude_list_preserves_complex_values(span: Span) -> None:
     qubit = QubitRef(name="a", size=1)
     module = IRModule(
         qubits=[qubit],
-        body=IRBlock(
-            ops=[InitOp(span=span, target=qubit, value=[1j, 0.0], is_amplitude=True)]
-        ),
+        body=IRBlock(ops=[InitOp(span=span, target=qubit, value=[1j, 0.0], is_amplitude=True)]),
     )
     source = _generate(module)
     assert "1j" in source
@@ -449,9 +450,7 @@ def test_qif_direct_control_when_not_negated(span: Span) -> None:
                     clause_ancillas=[],
                     negated=False,
                     ancilla=None,
-                    body=IRBlock(
-                        ops=[GateOp(span=span, name="X", targets=[body_target])]
-                    ),
+                    body=IRBlock(ops=[GateOp(span=span, name="X", targets=[body_target])]),
                 )
             ]
         ),
@@ -484,9 +483,7 @@ def test_qif_negated_uses_an_ancilla(span: Span) -> None:
                     clause_ancillas=[],
                     negated=True,
                     ancilla=ancilla,
-                    body=IRBlock(
-                        ops=[GateOp(span=span, name="X", targets=[body_target])]
-                    ),
+                    body=IRBlock(ops=[GateOp(span=span, name="X", targets=[body_target])]),
                 )
             ]
         ),
@@ -517,9 +514,7 @@ def _phase_only_qif(span: Span, ctrl_state: int) -> IRModule:
                     clause_ancillas=[],
                     negated=False,
                     ancilla=None,
-                    body=IRBlock(
-                        ops=[PhaseOp(span=span, angle=Literal(span=span, value=1.5))]
-                    ),
+                    body=IRBlock(ops=[PhaseOp(span=span, angle=Literal(span=span, value=1.5))]),
                 )
             ]
         ),
@@ -567,9 +562,7 @@ def test_qif_single_qubit_condition_takes_a_plain_phase_gate(span: Span) -> None
                     clause_ancillas=[],
                     negated=False,
                     ancilla=None,
-                    body=IRBlock(
-                        ops=[PhaseOp(span=span, angle=Literal(span=span, value=1.5))]
-                    ),
+                    body=IRBlock(ops=[PhaseOp(span=span, angle=Literal(span=span, value=1.5))]),
                 )
             ]
         ),
@@ -681,9 +674,7 @@ def test_qif_indexed_condition_qubit_mirrors(span: Span) -> None:
                     clause_ancillas=[],
                     negated=False,
                     ancilla=None,
-                    body=IRBlock(
-                        ops=[GateOp(span=span, name="X", targets=[body_target])]
-                    ),
+                    body=IRBlock(ops=[GateOp(span=span, name="X", targets=[body_target])]),
                 )
             ]
         ),
@@ -743,9 +734,7 @@ def test_qif_body_register_operand_becomes_a_qubit_list(span: Span) -> None:
                     clause_ancillas=[],
                     negated=False,
                     ancilla=None,
-                    body=IRBlock(
-                        ops=[GateOp(span=span, name="X", targets=[target])]
-                    ),
+                    body=IRBlock(ops=[GateOp(span=span, name="X", targets=[target])]),
                 )
             ]
         ),
@@ -784,9 +773,7 @@ def test_qif_multiple_clause_ancillas_compute_and_uncompute_in_order(
                     ],
                     negated=False,
                     ancilla=None,
-                    body=IRBlock(
-                        ops=[GateOp(span=span, name="X", targets=[body_target])]
-                    ),
+                    body=IRBlock(ops=[GateOp(span=span, name="X", targets=[body_target])]),
                 )
             ]
         ),
@@ -826,8 +813,7 @@ def test_arithmetic_op_renders_the_adder_call(span: Span) -> None:
     source = _generate(module)
     assert "from qiskit.circuit.library import CDKMRippleCarryAdder" in source
     assert (
-        "circuit.append(CDKMRippleCarryAdder(2, kind='fixed'), "
-        "[*b, *a, _ancilla_0[0]])" in source
+        "circuit.append(CDKMRippleCarryAdder(2, kind='fixed'), [*b, *a, _ancilla_0[0]])" in source
     )
 
 
@@ -949,7 +935,11 @@ def test_multiply_op_renders_the_multiplier_call(span: Span) -> None:
         body=IRBlock(
             ops=[
                 MultiplyOp(
-                    span=span, left=[a], right=[b], product=c, helper=helper,
+                    span=span,
+                    left=[a],
+                    right=[b],
+                    product=c,
+                    helper=helper,
                     inverse=False,
                 )
             ]
@@ -973,7 +963,11 @@ def test_multiply_op_inverse_renders_the_reversed_multiplier(span: Span) -> None
         body=IRBlock(
             ops=[
                 MultiplyOp(
-                    span=span, left=[a], right=[b], product=temp, helper=helper,
+                    span=span,
+                    left=[a],
+                    right=[b],
+                    product=temp,
+                    helper=helper,
                     inverse=True,
                 )
             ]
@@ -991,9 +985,7 @@ def test_declare_ancilla_op_is_the_only_thing_that_declares(span: Span) -> None:
     about whether it has been brought into the circuit yet, and guessing that
     from the operand is how one register came to be declared twice."""
     ancilla = QubitRef(name="_ancilla_0", size=3)
-    module = IRModule(
-        body=IRBlock(ops=[DeclareAncillaOp(span=span, ref=ancilla)])
-    )
+    module = IRModule(body=IRBlock(ops=[DeclareAncillaOp(span=span, ref=ancilla)]))
     source = _generate(module)
     assert '_ancilla_0 = QuantumRegister(3, "_ancilla_0")' in source
     assert "circuit.add_register(_ancilla_0)" in source
@@ -1026,9 +1018,7 @@ def test_the_generated_sqrt_agrees_with_the_compile_time_one(
     assert type(generated(value)) is type(_sqrt(value))
 
 
-@pytest.mark.parametrize(
-    "value", [-2.5, -1.5, -0.5, 0.0, 0.5, 1.5, 2.5, 3.49, -3.49, 1e15 + 0.5]
-)
+@pytest.mark.parametrize("value", [-2.5, -1.5, -0.5, 0.0, 0.5, 1.5, 2.5, 3.49, -3.49, 1e15 + 0.5])
 def test_the_generated_round_agrees_with_the_compile_time_one(value: float) -> None:
     generated = _generated_helper("_round", "round(1.5)")
     assert generated(value) == _round_half_away(value)
@@ -1070,9 +1060,7 @@ def _bound_names(tree: ast.Module) -> set[str]:
     private: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.comprehension):
-            private |= {
-                name.id for name in ast.walk(node.target) if isinstance(name, ast.Name)
-            }
+            private |= {name.id for name in ast.walk(node.target) if isinstance(name, ast.Name)}
         elif isinstance(node, ast.FunctionDef) and node.name.startswith("_"):
             private |= {argument.arg for argument in node.args.args}
             private |= {
@@ -1187,9 +1175,7 @@ _IF_DECLS = "qint<2> a = 0;\nqbool f = false;\nint n = 5;\nbool t = true;\n"
         ("~n > 3", "~n > 3"),
     ],
 )
-def test_a_condition_keeps_its_meaning_in_python(
-    condition: str, rendered: str
-) -> None:
+def test_a_condition_keeps_its_meaning_in_python(condition: str, rendered: str) -> None:
     """Slanq's `!` binds tighter than Python's `not`, and Python chains
     comparisons where Slanq forbids them, so both need parentheses the source
     did not have. A build-time truth value reaches the file as the initializer
@@ -1215,9 +1201,7 @@ def test_a_rendered_condition_means_what_slanq_evaluated(
     """The rendered form is run as Python and compared with the compiler's own
     answer, so a precedence slip shows up as a difference in value."""
     program = f"{_IF_DECLS}rt bool g = {condition};\n"
-    line = next(
-        line for line in _if_source(program).splitlines() if "int(" in line
-    )
+    line = next(line for line in _if_source(program).splitlines() if "int(" in line)
     rendered = line[line.index("int(") + 4 : line.rindex("), types.Uint")]
     ast = build_ast(program)
     analyze(ast, DiagnosticBag())
@@ -1235,9 +1219,7 @@ def test_only_the_arm_that_runs_reaches_the_file() -> None:
 
 
 def test_an_else_if_chain_picks_one_arm() -> None:
-    source = _if_source(
-        f"{_IF_DECLS}if (n > 9) {{ X(f); }} else if (n > 3) {{ Y(f); }}\n"
-    )
+    source = _if_source(f"{_IF_DECLS}if (n > 9) {{ X(f); }} else if (n > 3) {{ Y(f); }}\n")
     assert "circuit.y(f[0])" in source
     assert "circuit.x" not in source
 
@@ -1245,9 +1227,7 @@ def test_an_else_if_chain_picks_one_arm() -> None:
 def test_an_empty_real_time_branch_becomes_pass() -> None:
     """Python has no empty block, and dropping the branch would hide the
     warning's subject from the generated file."""
-    source = _if_source(
-        f"{_IF_DECLS}rt int<> m = measure(f);\nrt if (m == 1) {{ }}\n"
-    )
+    source = _if_source(f"{_IF_DECLS}rt int<> m = measure(f);\nrt if (m == 1) {{ }}\n")
     assert "        pass" in source
 
 
@@ -1275,9 +1255,7 @@ def test_an_unconditional_phase_still_renders_as_one_expression() -> None:
     assert "circuit.mcp(np.pi / 3, [a[0]], a[1])" in source
 
 
-_RT_SOURCE = (
-    "qint<3> a = [];\nqbool f = false;\nint n = 5;\nrt int<> m = measure(a);\n"
-)
+_RT_SOURCE = "qint<3> a = [];\nqbool f = false;\nint n = 5;\nrt int<> m = measure(a);\n"
 
 
 @pytest.mark.parametrize(
@@ -1298,9 +1276,7 @@ _RT_SOURCE = (
         ),
     ],
 )
-def test_a_real_time_condition_becomes_an_expr_tree(
-    condition: str, rendered: str
-) -> None:
+def test_a_real_time_condition_becomes_an_expr_tree(condition: str, rendered: str) -> None:
     source = _if_source(f"{_RT_SOURCE}rt if ({condition}) {{ X(f); }}\n")
     assert f"with circuit.if_test({rendered}):" in source
 
@@ -1342,9 +1318,7 @@ def test_expr_is_imported_only_when_a_condition_needs_it() -> None:
 def test_a_controlled_adder_uses_the_sub_circuits_own_wires() -> None:
     """Registers do not exist inside the body, and the body itself becomes a
     gate -- which the adder cannot be as it comes."""
-    source = _if_source(
-        "qint<2> a = 2;\nqint<2> c = 0;\nqint<2> d = 1;\nqif(a == 2) { c += d; }\n"
-    )
+    source = _if_source("qint<2> a = 2;\nqint<2> c = 0;\nqint<2> d = 1;\nqif(a == 2) { c += d; }\n")
     assert "CDKMRippleCarryAdder(2, kind='fixed').to_gate()" in source
     assert "_qif_body_1.qubits[0]" in source
     assert "_qif_body_1.append(CDKMRippleCarryAdder" in source
@@ -1356,24 +1330,19 @@ def test_a_controlled_multiplier_uses_the_sub_circuits_own_wires() -> None:
         "qif(a == 2) { c += d * e; }\n"
     )
     assert "HRSCumulativeMultiplier(2, num_result_qubits=4).to_gate()" in source
-    assert (
-        "HRSCumulativeMultiplier(2, num_result_qubits=4).inverse().to_gate()" in source
-    )
+    assert "HRSCumulativeMultiplier(2, num_result_qubits=4).inverse().to_gate()" in source
     assert "_qif_body_1.append(HRSCumulativeMultiplier" in source
 
 
 def test_an_adder_outside_a_qif_keeps_its_registers() -> None:
     source = _if_source("qint<2> a = 0;\nqint<2> b = 1;\na += b;\n")
     assert (
-        "circuit.append(CDKMRippleCarryAdder(2, kind='fixed'), "
-        "[*b, *a, _ancilla_0[0]])" in source
+        "circuit.append(CDKMRippleCarryAdder(2, kind='fixed'), [*b, *a, _ancilla_0[0]])" in source
     )
 
 
 def test_an_assigned_classical_variable_survives_as_a_python_variable() -> None:
-    source = _if_source(
-        "qbool q = false;\nfloat i = 0.0;\ni = i + 1.0;\nRX(i, q);\n"
-    )
+    source = _if_source("qbool q = false;\nfloat i = 0.0;\ni = i + 1.0;\nRX(i, q);\n")
     assert "    i = 0.0" in source
     assert "    i = i + 1.0" in source
 
@@ -1402,29 +1371,22 @@ def test_a_tracked_index_is_mirrored_per_use() -> None:
 
 
 def test_a_real_time_assignment_renders_as_a_store() -> None:
-    source = _if_source(
-        "qint<3> a = [];\nrt int<> m = measure(a);\nm = m ^ 1;\n"
-    )
+    source = _if_source("qint<3> a = [];\nrt int<> m = measure(a);\nm = m ^ 1;\n")
     assert "circuit.store(m, expr.bit_xor(m, expr.lift(1, types.Uint(3))))" in source
 
 
 def test_re_measuring_writes_the_same_register() -> None:
     source = _if_source("qint<2> a = [];\nrt int<> m = measure(a);\nm = measure(a);\n")
     assert source.count("circuit.measure(a, m)") == 2
-    assert source.count('m = ClassicalRegister') == 1
+    assert source.count("m = ClassicalRegister") == 1
 
 
 _LOOP_SOURCE = "qint<3> a = [];\nqbool f = false;\nbool t = true;\nrt int<> m = measure(a);\n"
 
 
 def test_a_real_time_loop_becomes_a_while_loop_block() -> None:
-    source = _if_source(
-        f"{_LOOP_SOURCE}rt while (m != 0) {{ reset(a); m = measure(a); }}\n"
-    )
-    assert (
-        "with circuit.while_loop(expr.not_equal(m, expr.lift(0, types.Uint(3)))):"
-        in source
-    )
+    source = _if_source(f"{_LOOP_SOURCE}rt while (m != 0) {{ reset(a); m = measure(a); }}\n")
+    assert "with circuit.while_loop(expr.not_equal(m, expr.lift(0, types.Uint(3)))):" in source
 
 
 def test_break_becomes_a_circuit_instruction() -> None:
@@ -1441,4 +1403,3 @@ def test_continue_follows_the_loop_it_belongs_to() -> None:
         "rt if (m == 1) { continue; } }\n"
     )
     assert "circuit.continue_loop()" in real_time
-

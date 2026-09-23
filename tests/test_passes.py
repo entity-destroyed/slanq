@@ -64,9 +64,7 @@ def test_call_becomes_the_body_with_arguments_substituted(expanded: Expanded) ->
 def test_substituted_name_keeps_its_resolved_symbol(expanded: Expanded) -> None:
     """The whole point of expanding after name resolution: the copy is already
     resolved, so no second resolution pass is needed."""
-    ast, bag = expanded(
-        "process flip(qbool b) { X(b); }\nqbool q = false;\nflip(q);\n"
-    )
+    ast, bag = expanded("process flip(qbool b) { X(b); }\nqbool q = false;\nflip(q);\n")
     assert not bag.has_errors
     statement = ast.statements[-1]
     assert isinstance(statement, ExprStatement)
@@ -83,9 +81,7 @@ def test_the_definition_stays_in_the_tree(expanded: Expanded) -> None:
 
 
 def test_an_indexed_argument_is_substituted_verbatim(expanded: Expanded) -> None:
-    ast, bag = expanded(
-        "process flip(qbool b) { X(b); }\nqint<2> a = 0;\nflip(a[1]);\n"
-    )
+    ast, bag = expanded("process flip(qbool b) { X(b); }\nqint<2> a = 0;\nflip(a[1]);\n")
     assert not bag.has_errors
     statement = ast.statements[-1]
     assert isinstance(statement, ExprStatement)
@@ -97,8 +93,7 @@ def test_a_classical_argument_is_substituted_as_an_expression(expanded: Expanded
     """A classical parameter needs no runtime representation: the caller's
     expression takes its place, so const_value sees it unchanged."""
     ast, bag = expanded(
-        "process rot(qbool q, float angle) { RX(angle, q); }\n"
-        "qbool t = false;\nrot(t, PI / 2);\n"
+        "process rot(qbool q, float angle) { RX(angle, q); }\nqbool t = false;\nrot(t, PI / 2);\n"
     )
     assert not bag.has_errors
     statement = ast.statements[-1]
@@ -109,9 +104,7 @@ def test_a_classical_argument_is_substituted_as_an_expression(expanded: Expanded
 
 
 def test_two_calls_expand_independently(expanded: Expanded) -> None:
-    ast, bag = expanded(
-        "process bump(qint x) { x += 1; }\nqint<2> a = 0;\nbump(a);\nbump(a);\n"
-    )
+    ast, bag = expanded("process bump(qint x) { x += 1; }\nqint<2> a = 0;\nbump(a);\nbump(a);\n")
     assert not bag.has_errors
     first, second = ast.statements[-2], ast.statements[-1]
     assert isinstance(first, AugAssign) and isinstance(second, AugAssign)
@@ -139,9 +132,7 @@ def test_a_qif_in_the_body_survives_expansion(expanded: Expanded) -> None:
 
 
 def test_a_call_may_precede_its_definition(expanded: Expanded) -> None:
-    _, bag = expanded(
-        "qbool q = false;\nflip(q);\nprocess flip(qbool b) { X(b); }\n"
-    )
+    _, bag = expanded("qbool q = false;\nflip(q);\nprocess flip(qbool b) { X(b); }\n")
     assert not bag.has_errors
 
 
@@ -158,9 +149,7 @@ def test_a_parameter_may_shadow_a_top_level_name(expanded: Expanded) -> None:
 
 
 def test_a_parameter_used_twice_gets_two_copies(expanded: Expanded) -> None:
-    ast, bag = expanded(
-        "process twice(qbool b) { X(b); X(b); }\nqbool q = true;\ntwice(q);\n"
-    )
+    ast, bag = expanded("process twice(qbool b) { X(b); X(b); }\nqbool q = true;\ntwice(q);\n")
     assert not bag.has_errors
     first, second = ast.statements[-2], ast.statements[-1]
     assert isinstance(first, ExprStatement) and isinstance(second, ExprStatement)
@@ -173,16 +162,12 @@ def test_a_parameter_used_twice_gets_two_copies(expanded: Expanded) -> None:
 def test_a_classical_parameter_can_be_a_qubit_index(expanded: Expanded) -> None:
     """The index is a compile-time value only after substitution, which is
     exactly why expansion runs before the index checks."""
-    _, bag = expanded(
-        "process poke(qint q, int i) { X(q[i]); }\nqint<2> a = 0;\npoke(a, 1);\n"
-    )
+    _, bag = expanded("process poke(qint q, int i) { X(q[i]); }\nqint<2> a = 0;\npoke(a, 1);\n")
     assert not bag.has_errors
 
 
 def test_an_index_from_an_argument_is_bounds_checked(expanded: Expanded) -> None:
-    _, bag = expanded(
-        "process poke(qint q, int i) { X(q[i]); }\nqint<2> a = 0;\npoke(a, 5);\n"
-    )
+    _, bag = expanded("process poke(qint q, int i) { X(q[i]); }\nqint<2> a = 0;\npoke(a, 5);\n")
     assert any("index 5 is out of range" in message for message in _messages(bag))
 
 
@@ -195,8 +180,7 @@ def test_mutual_recursion_is_rejected(expanded: Expanded) -> None:
     """The active-process stack catches a cycle of any length, not just a
     direct self-call."""
     _, bag = expanded(
-        "process f(qbool x) { g(x); }\nprocess g(qbool x) { f(x); }\n"
-        "qbool a = false;\nf(a);\n"
+        "process f(qbool x) { g(x); }\nprocess g(qbool x) { f(x); }\nqbool a = false;\nf(a);\n"
     )
     assert any("calls itself" in message for message in _messages(bag))
 
@@ -209,9 +193,7 @@ def test_a_nested_definition_is_rejected(expanded: Expanded) -> None:
 def test_a_body_declaration_is_reported_as_a_limitation(expanded: Expanded) -> None:
     """Copied once per call, two copies would claim the same register name and
     the generated file would fail to build."""
-    _, bag = expanded(
-        "process f(qint x) { qint<2> t = 0; x += t; }\nqint<2> a = 0;\nf(a);\n"
-    )
+    _, bag = expanded("process f(qint x) { qint<2> t = 0; x += t; }\nqint<2> a = 0;\nf(a);\n")
     messages = _messages(bag)
     assert messages == [
         "a declaration inside a process body is not implemented yet; this is a "
@@ -234,9 +216,7 @@ def test_a_body_declaration_is_reported_even_if_never_called(expanded: Expanded)
 def test_a_measure_in_a_body_is_a_declaration_too(expanded: Expanded) -> None:
     """`rt int<> r = measure(x)` is a declaration, so it hits the same limit -- and
     it has the same failure mode, a second `r` register per extra call."""
-    _, bag = expanded(
-        "process f(qint x) { rt int<> r = measure(x); }\nqint<2> a = 0;\nf(a);\n"
-    )
+    _, bag = expanded("process f(qint x) { rt int<> r = measure(x); }\nqint<2> a = 0;\nf(a);\n")
     assert any("declaration inside a process body" in m for m in _messages(bag))
 
 
@@ -253,9 +233,7 @@ def test_indexing_a_parameter_needs_a_whole_variable(expanded: Expanded) -> None
 def test_an_unbounded_expansion_is_rejected_without_hanging(expanded: Expanded) -> None:
     """Not recursive, so the cycle check does not fire: each level calls the
     next one twice, which is 2^20 statements by the bottom."""
-    source = "".join(
-        f"process p{i}(qbool x) {{ p{i + 1}(x); p{i + 1}(x); }}\n" for i in range(20)
-    )
+    source = "".join(f"process p{i}(qbool x) {{ p{i + 1}(x); p{i + 1}(x); }}\n" for i in range(20))
     source += "process p20(qbool x) { X(x); }\nqbool a = false;\np0(a);\n"
     _, bag = expanded(source)
     assert any(str(MAX_EXPANDED_STATEMENTS) in m for m in _messages(bag))
@@ -280,8 +258,7 @@ def test_a_body_error_is_reported_once_for_two_call_sites(expanded: Expanded) ->
     call sites and the definition itself all report the same mistake at the
     same place -- three times, before the bag started deduplicating."""
     _, bag = expanded(
-        "qint<2> a = 0;\nqint<2> b = 0;\n"
-        "process f(qint x) {\n    x += 1.5;\n}\nf(a);\nf(b);\n"
+        "qint<2> a = 0;\nqint<2> b = 0;\nprocess f(qint x) {\n    x += 1.5;\n}\nf(a);\nf(b);\n"
     )
     assert len(_messages(bag)) == 1
 
@@ -364,8 +341,7 @@ def test_a_nested_loop_may_count_from_the_outer_variable(expanded: Expanded) -> 
 
 def test_a_loop_inside_a_process_body_is_unrolled(expanded: Expanded) -> None:
     ast, bag = expanded(
-        "process f(qint x) { for(int i in range(3)) { X(x[i]); } }\n"
-        "qint<3> a = 0;\nf(a);\n"
+        "process f(qint x) { for(int i in range(3)) { X(x[i]); } }\nqint<3> a = 0;\nf(a);\n"
     )
     assert not bag.has_errors
     assert _gate_indices(ast.statements[2:]) == [0, 1, 2]
@@ -375,8 +351,7 @@ def test_a_process_call_inside_a_loop_is_expanded_per_iteration(
     expanded: Expanded,
 ) -> None:
     ast, bag = expanded(
-        "process bump(qint x) { x += 1; }\nqint<2> a = 0;\n"
-        "for(int i in range(3)) { bump(a); }\n"
+        "process bump(qint x) { x += 1; }\nqint<2> a = 0;\nfor(int i in range(3)) { bump(a); }\n"
     )
     assert not bag.has_errors
     assert sum(isinstance(s, AugAssign) for s in ast.statements) == 3
@@ -384,8 +359,7 @@ def test_a_process_call_inside_a_loop_is_expanded_per_iteration(
 
 def test_a_loop_in_a_qif_body_is_unrolled_in_place(expanded: Expanded) -> None:
     ast, bag = expanded(
-        "qint<2> c = 3;\nqint<2> t = 0;\n"
-        "qif(c == 3) { for(int i in range(2)) { X(t[i]); } }\n"
+        "qint<2> c = 3;\nqint<2> t = 0;\nqif(c == 3) { for(int i in range(2)) { X(t[i]); } }\n"
     )
     assert not bag.has_errors
     qif = ast.statements[2]
@@ -398,16 +372,12 @@ def test_a_loop_whose_body_touches_a_condition_qubit_is_rejected(
 ) -> None:
     """The qif overlap rule applies to what the loop expands to, not to what it
     is written as -- another check that comes for free after unrolling."""
-    _, bag = expanded(
-        "qint<2> a = 2;\nqif(a[0]) { for(int i in range(2)) { X(a[i]); } }\n"
-    )
+    _, bag = expanded("qint<2> a = 2;\nqif(a[0]) { for(int i in range(2)) { X(a[i]); } }\n")
     assert any("its own condition tests" in message for message in _messages(bag))
 
 
 def test_a_runtime_parameter_cannot_set_the_iteration_count(expanded: Expanded) -> None:
-    _, bag = expanded(
-        "param int n;\nqint<2> a = 0;\nfor(int i in range(n)) { X(a[0]); }\n"
-    )
+    _, bag = expanded("param int n;\nqint<2> a = 0;\nfor(int i in range(n)) { X(a[0]); }\n")
     (message,) = _messages(bag)
     assert "known when the circuit is built" in message
     assert "'n' only gets its value at runtime" in message
@@ -448,9 +418,7 @@ def test_a_loop_that_runs_zero_times_with_an_empty_body_is_warned_about_once(
 ) -> None:
     """Both are true, and the iteration count is the more useful one to hear."""
     _, bag = expanded("qint<2> a = 0;\nfor(int i in range(0)) { }\nX(a[0]);\n")
-    assert _warnings(bag) == [
-        "this loop runs zero times, so nothing in its body is compiled"
-    ]
+    assert _warnings(bag) == ["this loop runs zero times, so nothing in its body is compiled"]
 
 
 def test_an_empty_loop_body_in_a_template_is_not_warned_about(
@@ -476,9 +444,7 @@ def test_a_declaration_in_a_loop_body_is_reported_as_a_limitation(
 ) -> None:
     """Two iterations would claim one register name, exactly as two calls of a
     process would."""
-    _, bag = expanded(
-        "qint<2> a = 0;\nfor(int i in range(2)) { qint<2> t = 0; a += t; }\n"
-    )
+    _, bag = expanded("qint<2> a = 0;\nfor(int i in range(2)) { qint<2> t = 0; a += t; }\n")
     (message,) = _messages(bag)
     assert "a declaration inside a loop body is not implemented yet" in message
 
@@ -508,8 +474,7 @@ def test_an_empty_body_still_costs_an_iteration(expanded: Expanded) -> None:
 
 def test_nested_loops_share_one_budget(expanded: Expanded) -> None:
     _, bag = expanded(
-        "qint<2> a = 0;\n"
-        "for(int i in range(200)) { for(int j in range(200)) { X(a[0]); } }\n"
+        "qint<2> a = 0;\nfor(int i in range(200)) { for(int j in range(200)) { X(a[0]); } }\n"
     )
     assert any(str(MAX_EXPANDED_STATEMENTS) in message for message in _messages(bag))
 
@@ -530,8 +495,7 @@ def test_a_template_loop_that_cannot_be_unrolled_is_dropped_silently(
     expanded: Expanded,
 ) -> None:
     _, bag = expanded(
-        "process f(int n, qint x) { for(int i in range(n)) { X(x[i]); } }\n"
-        "qint<3> a = 0;\n"
+        "process f(int n, qint x) { for(int i in range(n)) { X(x[i]); } }\nqint<3> a = 0;\n"
     )
     assert not bag.has_errors
     assert not bag.warnings
@@ -543,9 +507,7 @@ def test_a_loop_in_an_uncalled_process_body_is_still_bounds_checked(
     """Silence in a template covers only what the template cannot know. A
     constant range still unrolls there, so this error survives -- which is why
     the pass descends into a definition at all."""
-    _, bag = expanded(
-        "qint<2> a = 0;\nprocess f() { for(int i in range(3)) { X(a[i]); } }\n"
-    )
+    _, bag = expanded("qint<2> a = 0;\nprocess f() { for(int i in range(3)) { X(a[i]); } }\n")
     assert any("index 2 is out of range" in message for message in _messages(bag))
 
 
@@ -598,9 +560,7 @@ def test_a_compound_assignment_folds_into_the_value(expanded: Expanded) -> None:
 def test_a_settled_branch_is_followed_not_merged(expanded: Expanded) -> None:
     """The condition has a value, so the arm that runs is the one the compiler
     walks, and what it writes stands afterwards."""
-    ast, _ = expanded(
-        "qint<3> a = 0;\nint i = 0;\nbool t = true;\nif (t) { i = 1; }\nX(a[i]);\n"
-    )
+    ast, _ = expanded("qint<3> a = 0;\nint i = 0;\nbool t = true;\nif (t) { i = 1; }\nX(a[i]);\n")
     statement = ast.statements[4]
     assert isinstance(statement, ExprStatement)
     (argument,) = statement.expr.args  # type: ignore[attr-defined]

@@ -135,9 +135,7 @@ def test_non_constant_expression_has_no_value(value_of) -> None:
 
 def test_classical_name_resolves_to_its_initializer(last_value_of) -> None:
     assert last_value_of("complex c = 0.5+0.3i; complex d = c;") == complex(0.5, 0.3)
-    assert last_value_of("float t = PI / 4; float u = t * 2;") == pytest.approx(
-        math.pi / 2
-    )
+    assert last_value_of("float t = PI / 4; float u = t * 2;") == pytest.approx(math.pi / 2)
 
 
 def test_classical_name_resolution_is_transitive(last_value_of) -> None:

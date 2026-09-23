@@ -63,10 +63,20 @@ QubitMap = dict[Qubit, str]
 BINARY_PRECEDENCE: dict[str, int] = {
     "||": 1,
     "&&": 2,
-    "==": 4, "!=": 4, "<": 4, "<=": 4, ">": 4, ">=": 4,
-    "|": 5, "^": 6, "&": 7,
-    "+": 8, "-": 8,
-    "*": 9, "/": 9, "%": 9,
+    "==": 4,
+    "!=": 4,
+    "<": 4,
+    "<=": 4,
+    ">": 4,
+    ">=": 4,
+    "|": 5,
+    "^": 6,
+    "&": 7,
+    "+": 8,
+    "-": 8,
+    "*": 9,
+    "/": 9,
+    "%": 9,
     "**": 11,
 }
 NOT_PRECEDENCE = 3
@@ -83,11 +93,23 @@ PYTHON_BINARY_OPS: dict[str, str] = {"&&": "and", "||": "or"}
 PYTHON_CONSTANTS: dict[str, str] = {"PI": "np.pi"}
 
 EXPR_BUILDERS: dict[str, str] = {
-    "==": "equal", "!=": "not_equal",
-    "<": "less", "<=": "less_equal", ">": "greater", ">=": "greater_equal",
-    "&&": "logic_and", "||": "logic_or", "!": "logic_not",
-    "&": "bit_and", "|": "bit_or", "^": "bit_xor", "~": "bit_not",
-    "+": "add", "-": "sub", "*": "mul", "/": "div",
+    "==": "equal",
+    "!=": "not_equal",
+    "<": "less",
+    "<=": "less_equal",
+    ">": "greater",
+    ">=": "greater_equal",
+    "&&": "logic_and",
+    "||": "logic_or",
+    "!": "logic_not",
+    "&": "bit_and",
+    "|": "bit_or",
+    "^": "bit_xor",
+    "~": "bit_not",
+    "+": "add",
+    "-": "sub",
+    "*": "mul",
+    "/": "div",
 }
 
 COMPARISON_BUILDERS: frozenset[str] = frozenset(
@@ -99,10 +121,23 @@ COMPARISON_BUILDERS: frozenset[str] = frozenset(
 # for anything whose Qiskit spelling differs. An explicit table fails loudly
 # instead, the same guard as the transformer's __default__.
 QISKIT_METHODS: dict[str, str] = {
-    "H": "h", "X": "x", "Y": "y", "Z": "z", "S": "s", "T": "t",
-    "Sdg": "sdg", "Tdg": "tdg",
-    "RX": "rx", "RY": "ry", "RZ": "rz",
-    "CX": "cx", "CY": "cy", "CZ": "cz", "CH": "ch", "SWAP": "swap", "CCX": "ccx",
+    "H": "h",
+    "X": "x",
+    "Y": "y",
+    "Z": "z",
+    "S": "s",
+    "T": "t",
+    "Sdg": "sdg",
+    "Tdg": "tdg",
+    "RX": "rx",
+    "RY": "ry",
+    "RZ": "rz",
+    "CX": "cx",
+    "CY": "cy",
+    "CZ": "cz",
+    "CH": "ch",
+    "SWAP": "swap",
+    "CCX": "ccx",
 }
 
 # Two of these are not Python's. Slanq rounds a half away from zero, Python to
@@ -208,9 +243,7 @@ def _bound_circuit_lines(module: IRModule) -> list[str]:
     bindings = ", ".join(
         f'"{param.name}": {param.name}'
         if param.kind == "scalar"
-        else ", ".join(
-            f'"{param.name}_{i}": {param.name}[{i}]' for i in range(_array_size(param))
-        )
+        else ", ".join(f'"{param.name}_{i}": {param.name}[{i}]' for i in range(_array_size(param)))
         for param in module.params
     )
     return [
@@ -256,9 +289,7 @@ class _Generator:
         if module.params:
             third_party.append("from qiskit.circuit import Parameter")
         if self.needs_expr:
-            third_party.append(
-                "from qiskit.circuit.classical import expr, types"
-            )
+            third_party.append("from qiskit.circuit.classical import expr, types")
 
         library_names = []
         if self.needs_state_preparation:
@@ -282,9 +313,7 @@ class _Generator:
     def body_lines(self, module: IRModule) -> list[str]:
         self._realtime_widths = {ref.name: ref.size for ref in module.clbits}
         _collect_realtime_widths(module.body, self._realtime_widths)
-        lines = [
-            f'{ref.name} = QuantumRegister({ref.size}, "{ref.name}")' for ref in module.qubits
-        ]
+        lines = [f'{ref.name} = QuantumRegister({ref.size}, "{ref.name}")' for ref in module.qubits]
         lines += [
             f'{ref.name} = ClassicalRegister({ref.size}, "{ref.name}")' for ref in module.clbits
         ]
@@ -329,9 +358,7 @@ class _Generator:
             return [f"{circuit_var}.{method}({', '.join(arguments)})"]
 
         if isinstance(op, MeasurementOp):
-            return [
-                f"{circuit_var}.measure({_operand_source(op.source)}, {op.target.name})"
-            ]
+            return [f"{circuit_var}.measure({_operand_source(op.source)}, {op.target.name})"]
 
         if isinstance(op, ResetOp):
             return [f"{circuit_var}.reset({_operand_source(op.target)})"]
@@ -373,9 +400,9 @@ class _Generator:
         if isinstance(op, RealtimeWhileOp):
             self.needs_expr = True
             condition = _as_truth(self._realtime_expr(op.condition))
-            return [
-                f"with {circuit_var}.while_loop({condition}):"
-            ] + self._indented(op.body, circuit_var, qubits)
+            return [f"with {circuit_var}.while_loop({condition}):"] + self._indented(
+                op.body, circuit_var, qubits
+            )
 
         if isinstance(op, LoopControlOp):
             return [f"{circuit_var}.{op.keyword}_loop()"]
@@ -412,15 +439,10 @@ class _Generator:
             assert isinstance(addend_ancilla, QubitRef)
             constant_ancilla = addend_ancilla
             encode_bits = [
-                bit
-                for bit in range(constant_ancilla.size)
-                if (op.encode_constant >> bit) & 1
+                bit for bit in range(constant_ancilla.size) if (op.encode_constant >> bit) & 1
             ]
             for bit in encode_bits:
-                lines.append(
-                    f"{circuit_var}.x("
-                    f"{_bit_source(constant_ancilla, bit, qubits)})"
-                )
+                lines.append(f"{circuit_var}.x({_bit_source(constant_ancilla, bit, qubits)})")
 
         self.needs_cdkm_adder = True
         adder = f"CDKMRippleCarryAdder({op.target.size}, kind='fixed')"
@@ -429,18 +451,13 @@ class _Generator:
             # The body itself becomes a gate, and a circuit holding an
             # instruction cannot: `to_gate` refuses the adder as it comes.
             gate = f"{gate}.to_gate()"
-        sources = [
-            _spread_sources(operand, qubits) for operand in (*op.addend, op.target)
-        ]
+        sources = [_spread_sources(operand, qubits) for operand in (*op.addend, op.target)]
         sources.append(_bit_source(op.helper, 0, qubits))
         lines.append(f"{circuit_var}.append({gate}, [{', '.join(sources)}])")
 
         if constant_ancilla is not None:
             for bit in encode_bits:
-                lines.append(
-                    f"{circuit_var}.x("
-                    f"{_bit_source(constant_ancilla, bit, qubits)})"
-                )
+                lines.append(f"{circuit_var}.x({_bit_source(constant_ancilla, bit, qubits)})")
 
         return lines
 
@@ -449,15 +466,12 @@ class _Generator:
     ) -> list[str]:
         self.needs_hrs_multiplier = True
         width = sum(_operand_width(operand) for operand in op.left)
-        multiplier = (
-            f"HRSCumulativeMultiplier({width}, num_result_qubits={op.product.size})"
-        )
+        multiplier = f"HRSCumulativeMultiplier({width}, num_result_qubits={op.product.size})"
         gate = f"{multiplier}.inverse()" if op.inverse else multiplier
         if qubits is not None:
             gate = f"{gate}.to_gate()"
         sources = [
-            _spread_sources(operand, qubits)
-            for operand in (*op.left, *op.right, op.product)
+            _spread_sources(operand, qubits) for operand in (*op.left, *op.right, op.product)
         ]
         sources.append(_bit_source(op.helper, 0, qubits))
         return [f"{circuit_var}.append({gate}, [{', '.join(sources)}])"]
@@ -467,10 +481,7 @@ class _Generator:
         values = op.value
 
         if not values:
-            return [
-                f"{circuit_var}.h({op.target.name}[{bit}])"
-                for bit in range(op.target.size)
-            ]
+            return [f"{circuit_var}.h({op.target.name}[{bit}])" for bit in range(op.target.size)]
 
         self.needs_state_preparation = True
         if op.is_amplitude:
@@ -478,9 +489,7 @@ class _Generator:
             already_normalized = abs(norm_squared - 1.0) <= AMPLITUDE_NORMALIZATION_TOLERANCE
             if op.value_expressions is not None and already_normalized:
                 rendered = ", ".join(self.expression(e) for e in op.value_expressions)
-                return [
-                    f"{circuit_var}.append(StatePreparation([{rendered}]), {op.target.name})"
-                ]
+                return [f"{circuit_var}.append(StatePreparation([{rendered}]), {op.target.name})"]
             norm = math.sqrt(norm_squared)
             amplitudes = [value / norm for value in values]
         else:
@@ -515,13 +524,8 @@ class _Generator:
             # runtime, for a program whose condition and body do touch
             # different qubits (`qif(a[0]) { X(a[1]); }`).
             body_qubits = _body_qubits(gates)
-            local = {
-                qubit: f"{body_var}.qubits[{wire}]"
-                for wire, qubit in enumerate(body_qubits)
-            }
-            lines.append(
-                f'{body_var} = QuantumCircuit({len(body_qubits)}, name="qif_body")'
-            )
+            local = {qubit: f"{body_var}.qubits[{wire}]" for wire, qubit in enumerate(body_qubits)}
+            lines.append(f'{body_var} = QuantumCircuit({len(body_qubits)}, name="qif_body")')
             for sub_op in gates.ops:
                 lines += self.op_lines(sub_op, body_var, qubits=local)
             body_sources = [f"{name}[{index}]" for name, index in body_qubits]
@@ -553,9 +557,7 @@ class _Generator:
             lines += self._controlled_body_lines(
                 circuit_var,
                 controls=condition_sources,
-                control_bits=[
-                    bit for entry in op.direct_qubits for bit in _operand_bits(entry)
-                ],
+                control_bits=[bit for entry in op.direct_qubits for bit in _operand_bits(entry)],
                 ctrl_state=op.ctrl_state,
                 body_var=body_var,
                 body_sources=body_sources,
@@ -569,8 +571,7 @@ class _Generator:
             assert op.ancilla is not None
             ancilla = op.ancilla.name
             compute = (
-                f"XGate().control({total_controls}, ctrl_state={op.ctrl_state}, "
-                "annotated=False)"
+                f"XGate().control({total_controls}, ctrl_state={op.ctrl_state}, annotated=False)"
             )
             compute_qubits = ", ".join([*condition_sources, f"{ancilla}[0]"])
             lines.append(f"{circuit_var}.append({compute}, [{compute_qubits}])")
@@ -646,18 +647,14 @@ class _Generator:
         # A phase gate fires on |1...1>, so a control the condition wants at
         # zero is conjugated into that basis first.
         zeros = [
-            bit
-            for position, bit in enumerate(control_bits)
-            if not (ctrl_state >> position) & 1
+            bit for position, bit in enumerate(control_bits) if not (ctrl_state >> position) & 1
         ]
         phase_lines = [f"{circuit_var}.x({bit})" for bit in zeros]
         if len(control_bits) == 1:
             phase_lines.append(f"{circuit_var}.p({angle}, {control_bits[0]})")
         else:
             rest = ", ".join(control_bits[:-1])
-            phase_lines.append(
-                f"{circuit_var}.mcp({angle}, [{rest}], {control_bits[-1]})"
-            )
+            phase_lines.append(f"{circuit_var}.mcp({angle}, [{rest}], {control_bits[-1]})")
         phase_lines += [f"{circuit_var}.x({bit})" for bit in zeros]
         return lines + phase_lines
 
@@ -669,14 +666,10 @@ class _Generator:
             self.needs_numpy = True
             return PYTHON_CONSTANTS[expression.name]
 
-        if isinstance(expression, Name) and isinstance(
-            expression.resolved_symbol, ParamDecl
-        ):
+        if isinstance(expression, Name) and isinstance(expression.resolved_symbol, ParamDecl):
             return expression.name
 
-        if isinstance(expression, Name) and isinstance(
-            expression.resolved_symbol, ClassicalDecl
-        ):
+        if isinstance(expression, Name) and isinstance(expression.resolved_symbol, ClassicalDecl):
             return expression.name
 
         if isinstance(expression, Index) and isinstance(
@@ -752,12 +745,8 @@ class _Generator:
             builder = EXPR_BUILDERS[expression.op]
             operand = self._realtime_expr(expression.operand)
             if expression.op == "!":
-                return _RealtimeValue(
-                    code=f"expr.logic_not({_as_truth(operand)})", width=None
-                )
-            return _RealtimeValue(
-                code=f"expr.{builder}({operand.code})", width=operand.width
-            )
+                return _RealtimeValue(code=f"expr.logic_not({_as_truth(operand)})", width=None)
+            return _RealtimeValue(code=f"expr.{builder}({operand.code})", width=operand.width)
 
         assert isinstance(expression, BinaryOp)
         builder = EXPR_BUILDERS[expression.op]
@@ -775,13 +764,9 @@ class _Generator:
             width=None if builder in COMPARISON_BUILDERS else width,
         )
 
-    def _indented(
-        self, block: IRBlock, circuit_var: str, qubits: QubitMap | None
-    ) -> list[str]:
+    def _indented(self, block: IRBlock, circuit_var: str, qubits: QubitMap | None) -> list[str]:
         lines = [
-            INDENT + line
-            for op in block.ops
-            for line in self.op_lines(op, circuit_var, qubits)
+            INDENT + line for op in block.ops for line in self.op_lines(op, circuit_var, qubits)
         ]
         return lines or [INDENT + "pass"]
 
@@ -870,9 +855,7 @@ def _widened(value: _RealtimeValue, width: int) -> str:
     """Qiskit refuses to mix widths: a narrower real-time value is cast up, a
     build-time value is lifted at the width it has to meet."""
     if value.is_constant:
-        literal = (
-            int(value.constant) if type(value.constant) is bool else value.code
-        )
+        literal = int(value.constant) if type(value.constant) is bool else value.code
         return f"expr.lift({literal}, types.Uint({width}))"
     if value.width is not None and value.width < width:
         return f"expr.cast({value.code}, types.Uint({width}))"

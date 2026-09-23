@@ -180,8 +180,7 @@ class _Expander(_Copier):
                     result.append(statement)
                 else:
                     self._error(
-                        "a process may only be defined at the top level of a "
-                        "program",
+                        "a process may only be defined at the top level of a program",
                         statement.span,
                     )
                 continue
@@ -325,9 +324,7 @@ class _Unroller(_Copier):
             message = "this loop has an empty body, so it does nothing"
         else:
             return
-        self.bag.warning(
-            message, line=node.span.start_line, column=node.span.start_col
-        )
+        self.bag.warning(message, line=node.span.start_line, column=node.span.start_col)
 
     def _substitute(self, node: Name) -> Expression | None:
         if node.resolved_symbol is not self.loop_var:
@@ -394,9 +391,7 @@ class _Unroller(_Copier):
 
         step = bounds[2] if len(bounds) == 3 else 1
         if step == 0:
-            self._error(
-                "the step of a for loop must not be zero", iterable.args[2].span
-            )
+            self._error("the step of a for loop must not be zero", iterable.args[2].span)
             return None
         start, stop = (bounds[0], bounds[1]) if len(bounds) > 1 else (0, bounds[0])
         return range(start, stop, step)
@@ -417,20 +412,16 @@ class _Unroller(_Copier):
                 argument.resolved_symbol, ParamDecl | ParamArrayDecl
             ):
                 detail = f"; '{argument.name}' only gets its value at runtime"
-            elif isinstance(argument, Name) and isinstance(
-                argument.effective_value, UnknownValue
-            ):
+            elif isinstance(argument, Name) and isinstance(argument.effective_value, UnknownValue):
                 detail = f"; '{argument.name}': {argument.effective_value.reason}"
             self._error(
-                "a for loop needs an iteration count known when the circuit is "
-                f"built{detail}",
+                f"a for loop needs an iteration count known when the circuit is built{detail}",
                 argument.span,
             )
             return None
         if type(value) is not int:
             self._error(
-                f"a for loop counts in whole numbers, so {RANGE}() cannot take "
-                f"{value!r}",
+                f"a for loop counts in whole numbers, so {RANGE}() cannot take {value!r}",
                 argument.span,
             )
             return None
@@ -462,13 +453,9 @@ def track_values(ast: Program) -> None:
     _Tracker().statements(ast.statements, {})
 
 
-def _collect_assigned(
-    statements: list[Statement], found: dict[int, ClassicalDecl]
-) -> None:
+def _collect_assigned(statements: list[Statement], found: dict[int, ClassicalDecl]) -> None:
     for statement in statements:
-        if isinstance(statement, Assign | AugAssign) and isinstance(
-            statement.target, Name
-        ):
+        if isinstance(statement, Assign | AugAssign) and isinstance(statement.target, Name):
             symbol = statement.target.resolved_symbol
             if isinstance(symbol, ClassicalDecl):
                 found[id(symbol)] = symbol
@@ -500,9 +487,7 @@ class _Tracker:
             env[id(statement)] = statement.initializer
             return
 
-        if isinstance(statement, Assign | AugAssign) and isinstance(
-            statement.target, Name
-        ):
+        if isinstance(statement, Assign | AugAssign) and isinstance(statement.target, Name):
             symbol = statement.target.resolved_symbol
             if isinstance(symbol, ClassicalDecl):
                 env[id(symbol)] = _written_value(statement, env.get(id(symbol)))
@@ -532,9 +517,7 @@ class _Tracker:
         if isinstance(node, Name):
             symbol = node.resolved_symbol
             if isinstance(symbol, ClassicalDecl):
-                node.effective_value = env.get(
-                    id(symbol), UnknownValue(reason=BEFORE_DECLARATION)
-                )
+                node.effective_value = env.get(id(symbol), UnknownValue(reason=BEFORE_DECLARATION))
         for child in iter_child_nodes(node):
             self._annotate(child, env)
 

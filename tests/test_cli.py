@@ -68,8 +68,7 @@ RUNNABLE_PROGRAMS = {
         "qint<2> q = 0;\nH(q[0]);\nCX(q[0], q[1]);\nrt int<> result = measure(q);\n"
     ),
     "arithmetic": (
-        "qint<3> a = 1;\nqint<2> b = 2;\na += b;\na -= 1;\n"
-        "rt int<> result = measure(a);\n"
+        "qint<3> a = 1;\nqint<2> b = 2;\na += b;\na -= 1;\nrt int<> result = measure(a);\n"
     ),
     "multiply accumulate": (
         "qint<2> a = 2;\nqint<2> b = 3;\nqint<4> c = 0;\nc += a * b;\n"
@@ -94,10 +93,7 @@ RUNNABLE_PROGRAMS = {
         "param float theta;\nparam int gamma[2];\nqbool q = false;\n"
         "RX(theta + gamma[1], q);\nrt int<> result = measure(q);\n"
     ),
-    "reset": (
-        "qint<2> a = 3;\nH(a[1]);\nreset(a);\nX(a[0]);\n"
-        "rt int<> result = measure(a);\n"
-    ),
+    "reset": ("qint<2> a = 3;\nH(a[1]);\nreset(a);\nX(a[0]);\nrt int<> result = measure(a);\n"),
     "build-time branches": (
         "qint<3> a = 0;\nint n = 5;\nbool t = true;\n"
         "if (n > 9) { X(a[0]); } else if (n > 3) { X(a[1]); } else { H(a); }\n"
@@ -163,4 +159,3 @@ def test_the_generated_file_runs_in_a_fresh_interpreter(program: str) -> None:
 
     assert finished.returncode == 0, finished.stderr
     assert finished.stdout.strip(), "the __main__ block prints the circuit"
-

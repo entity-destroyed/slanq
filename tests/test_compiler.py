@@ -56,9 +56,7 @@ def test_lowering_runs_despite_a_prior_analysis_error() -> None:
     each phase validates its own concerns, and gating lowering behind
     analysis would silently drop diagnostics that have nothing to do with
     the analysis error itself."""
-    result = compile_source(
-        "qint<2> a = 0; qbool q = false; H(unknown); qif(a == 2) { reset(q); }"
-    )
+    result = compile_source("qint<2> a = 0; qbool q = false; H(unknown); qif(a == 2) { reset(q); }")
     messages = [d.message for d in result.diagnostics.errors]
     assert any("undefined name" in message for message in messages)
     assert any("unitary operations" in message for message in messages)
