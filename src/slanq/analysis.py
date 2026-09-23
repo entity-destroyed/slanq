@@ -555,6 +555,22 @@ class _ArithmeticChecker(_Checker):
         if not _is_quantum_target(target):
             return
 
+        if node.op == "*=":
+            self._reject(
+                f"'{target.name}' is a quantum variable, and a product needs a "
+                "register of its own to land in; declare one, as in "
+                "'qint<n> r = a * b'",
+                node,
+            )
+            return
+        if node.op == "/=":
+            self._reject(
+                f"'{target.name}' is a quantum variable, and division is not "
+                "reversible, so it has no circuit",
+                node,
+            )
+            return
+
         if self._require_quantum(target) is not None:
             self._check_value_shape(node.value, target)
 

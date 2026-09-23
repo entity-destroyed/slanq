@@ -387,10 +387,10 @@ class _Generator:
             return self._qif_lines(op, circuit_var)
 
         if isinstance(op, ArithmeticOp):
-            return self._arithmetic_lines(op, circuit_var)
+            return self._arithmetic_lines(op, circuit_var, qubits)
 
         if isinstance(op, MultiplyOp):
-            return self._multiply_lines(op, circuit_var)
+            return self._multiply_lines(op, circuit_var, qubits)
 
         if isinstance(op, DeclareAncillaOp):
             return [
@@ -400,7 +400,9 @@ class _Generator:
 
         raise NotImplementedError(f"no code generation for {type(op).__name__}")
 
-    def _arithmetic_lines(self, op: ArithmeticOp, circuit_var: str) -> list[str]:
+    def _arithmetic_lines(
+        self, op: ArithmeticOp, circuit_var: str, qubits: QubitMap | None = None
+    ) -> list[str]:
         lines: list[str] = []
 
         constant_ancilla: QubitRef | None = None
@@ -415,44 +417,50 @@ class _Generator:
                 if (op.encode_constant >> bit) & 1
             ]
             for bit in encode_bits:
-                lines.append(f"{circuit_var}.x({constant_ancilla.name}[{bit}])")
+                lines.append(
+                    f"{circuit_var}.x("
+                    f"{_bit_source(constant_ancilla, bit, qubits)})"
+                )
 
         self.needs_cdkm_adder = True
         adder = f"CDKMRippleCarryAdder({op.target.size}, kind='fixed')"
         gate = f"{adder}.inverse()" if op.subtract else adder
-        qubits = ", ".join(
-            [
-                *(_spread_source(operand) for operand in op.addend),
-                _spread_source(op.target),
-                f"{op.helper.name}[0]",
-            ]
-        )
-        lines.append(f"{circuit_var}.append({gate}, [{qubits}])")
+        if qubits is not None:
+            # The body itself becomes a gate, and a circuit holding an
+            # instruction cannot: `to_gate` refuses the adder as it comes.
+            gate = f"{gate}.to_gate()"
+        sources = [
+            _spread_sources(operand, qubits) for operand in (*op.addend, op.target)
+        ]
+        sources.append(_bit_source(op.helper, 0, qubits))
+        lines.append(f"{circuit_var}.append({gate}, [{', '.join(sources)}])")
 
         if constant_ancilla is not None:
             for bit in encode_bits:
-                lines.append(f"{circuit_var}.x({constant_ancilla.name}[{bit}])")
+                lines.append(
+                    f"{circuit_var}.x("
+                    f"{_bit_source(constant_ancilla, bit, qubits)})"
+                )
 
         return lines
 
-    def _multiply_lines(self, op: MultiplyOp, circuit_var: str) -> list[str]:
-        lines: list[str] = []
+    def _multiply_lines(
+        self, op: MultiplyOp, circuit_var: str, qubits: QubitMap | None = None
+    ) -> list[str]:
         self.needs_hrs_multiplier = True
         width = sum(_operand_width(operand) for operand in op.left)
         multiplier = (
             f"HRSCumulativeMultiplier({width}, num_result_qubits={op.product.size})"
         )
         gate = f"{multiplier}.inverse()" if op.inverse else multiplier
-        qubits = ", ".join(
-            [
-                *(_spread_source(operand) for operand in op.left),
-                *(_spread_source(operand) for operand in op.right),
-                _spread_source(op.product),
-                f"{op.helper.name}[0]",
-            ]
-        )
-        lines.append(f"{circuit_var}.append({gate}, [{qubits}])")
-        return lines
+        if qubits is not None:
+            gate = f"{gate}.to_gate()"
+        sources = [
+            _spread_sources(operand, qubits)
+            for operand in (*op.left, *op.right, op.product)
+        ]
+        sources.append(_bit_source(op.helper, 0, qubits))
+        return [f"{circuit_var}.append({gate}, [{', '.join(sources)}])"]
 
     def _state_preparation_lines(self, op: InitOp, circuit_var: str) -> list[str]:
         assert isinstance(op.value, list)
@@ -932,12 +940,19 @@ def _collect_body_qubits(body: IRBlock, seen: dict[Qubit, None]) -> None:
     for op in body.ops:
         if isinstance(op, PhaseOp):
             continue  # a global phase touches no qubit
-        if isinstance(op, ClassicalAssignOp):
-            continue  # a Python line, not a circuit instruction
+        if isinstance(op, ArithmeticOp):
+            for operand in (*op.addend, op.target, op.helper):
+                for qubit in _operand_qubits(operand):
+                    seen[qubit] = None
+            continue
+        if isinstance(op, MultiplyOp):
+            for operand in (*op.left, *op.right, op.product, op.helper):
+                for qubit in _operand_qubits(operand):
+                    seen[qubit] = None
+            continue
         assert isinstance(op, GateOp), (
-            "a qif body holds only gates, phases, build-time branches and "
-            "build-time assignments; a new op kind allowed here must have its "
-            "operands mapped into the sub-circuit too"
+            "a qif body holds only gates, phases and arithmetic; a new op kind "
+            "allowed here must have its operands mapped into the sub-circuit too"
         )
         for target in op.targets:
             for qubit in _operand_qubits(target):
@@ -949,8 +964,24 @@ def _operand_qubits(operand: QubitOperand) -> list[Qubit]:
     of its qubits in Qiskit order -- the order Qiskit broadcasts it in."""
     if isinstance(operand, QubitBit):
         return [(operand.ref.name, _qiskit_index(operand))]
-    assert not isinstance(operand, QubitSlice), "a qif body has no sliced operands"
+    if isinstance(operand, QubitSlice):
+        return [(operand.ref.name, index) for index in range(operand.size)]
     return [(operand.name, index) for index in range(operand.size)]
+
+
+def _spread_sources(operand: QubitOperand, qubits: QubitMap | None) -> str:
+    """Every qubit of `operand` inside a `[...]` argument list: unpacked from
+    its register at the top level, one sub-circuit wire at a time inside a qif
+    body, where registers no longer exist."""
+    if qubits is None:
+        return _spread_source(operand)
+    return ", ".join(qubits[qubit] for qubit in _operand_qubits(operand))
+
+
+def _bit_source(ref: QubitRef, bit: int, qubits: QubitMap | None) -> str:
+    if qubits is None:
+        return f"{ref.name}[{bit}]"
+    return qubits[(ref.name, bit)]
 
 
 def _target_source(operand: QubitOperand, qubits: QubitMap | None) -> str:

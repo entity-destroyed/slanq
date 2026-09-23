@@ -68,7 +68,7 @@ compound_assignment: lvalue AUGOP expr
 ?lvalue: NAME            -> var
        | NAME "[" expr "]" -> index
 
-AUGOP: "+=" | "-="
+AUGOP: "+=" | "-=" | "*=" | "/="
 
 // --- Control structures ----------------------------------------------------
 

@@ -1339,6 +1339,37 @@ def test_expr_is_imported_only_when_a_condition_needs_it() -> None:
     assert "expr" not in without
 
 
+def test_a_controlled_adder_uses_the_sub_circuits_own_wires() -> None:
+    """Registers do not exist inside the body, and the body itself becomes a
+    gate -- which the adder cannot be as it comes."""
+    source = _if_source(
+        "qint<2> a = 2;\nqint<2> c = 0;\nqint<2> d = 1;\nqif(a == 2) { c += d; }\n"
+    )
+    assert "CDKMRippleCarryAdder(2, kind='fixed').to_gate()" in source
+    assert "_qif_body_1.qubits[0]" in source
+    assert "_qif_body_1.append(CDKMRippleCarryAdder" in source
+
+
+def test_a_controlled_multiplier_uses_the_sub_circuits_own_wires() -> None:
+    source = _if_source(
+        "qint<2> a = 2;\nqint<4> c = 0;\nqint<2> d = 2;\nqint<2> e = 3;\n"
+        "qif(a == 2) { c += d * e; }\n"
+    )
+    assert "HRSCumulativeMultiplier(2, num_result_qubits=4).to_gate()" in source
+    assert (
+        "HRSCumulativeMultiplier(2, num_result_qubits=4).inverse().to_gate()" in source
+    )
+    assert "_qif_body_1.append(HRSCumulativeMultiplier" in source
+
+
+def test_an_adder_outside_a_qif_keeps_its_registers() -> None:
+    source = _if_source("qint<2> a = 0;\nqint<2> b = 1;\na += b;\n")
+    assert (
+        "circuit.append(CDKMRippleCarryAdder(2, kind='fixed'), "
+        "[*b, *a, _ancilla_0[0]])" in source
+    )
+
+
 def test_an_assigned_classical_variable_survives_as_a_python_variable() -> None:
     source = _if_source(
         "qbool q = false;\nfloat i = 0.0;\ni = i + 1.0;\nRX(i, q);\n"

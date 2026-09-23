@@ -1303,6 +1303,39 @@ def test_a_build_time_assignment_inside_a_real_time_body_is_rejected(
     assert diagnostic.message == message
 
 
+@pytest.mark.parametrize(
+    ("program", "message"),
+    [
+        (
+            "b *= b;",
+            "'b' is a quantum variable, and a product needs a register of its "
+            "own to land in; declare one, as in 'qint<n> r = a * b'",
+        ),
+        (
+            "b /= b;",
+            "'b' is a quantum variable, and division is not reversible, so it "
+            "has no circuit",
+        ),
+    ],
+    ids=["times-equals", "divide-equals"],
+)
+def test_an_operator_a_quantum_variable_cannot_have(
+    diagnostics_of: DiagnosticsOf, program: str, message: str
+) -> None:
+    """`+=` and `-=` describe a reversible adder; these two do not, and
+    without the check the lowering would quietly add instead."""
+    (diagnostic,) = diagnostics_of(_ASSIGN_DECLS + program + "\n").errors
+    assert diagnostic.message == message
+
+
+def test_a_classical_variable_takes_every_compound_operator(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    assert not diagnostics_of(
+        f"{_ASSIGN_DECLS}float w = 1.0;\nw *= 2.0;\nw /= 4.0;\nRX(w, f);\n"
+    ).has_errors
+
+
 def test_a_loop_bound_says_why_it_has_no_value(diagnostics_of: DiagnosticsOf) -> None:
     (diagnostic,) = diagnostics_of(
         f"{_ASSIGN_DECLS}int k = 2;\nfor(int j in range(2)) {{ k = 3; }}\n"

@@ -112,6 +112,16 @@ RUNNABLE_PROGRAMS = {
         "rt if (m > 0) { X(a[2]); }\n"
         "rt int<> result = measure(a);\n"
     ),
+    "controlled arithmetic": (
+        "qint<2> a = 2;\nqint<2> c = 0;\nqint<2> d = 1;\n"
+        "qif(a == 2) { c += d; }\n"
+        "rt int<> result = measure(c);\n"
+    ),
+    "controlled multiply accumulate": (
+        "qint<2> a = 2;\nqint<2> c = 0;\nqint<1> d = 1;\nqint<1> e = 1;\n"
+        "qif(a == 2) { c += d * e; }\n"
+        "rt int<> result = measure(c);\n"
+    ),
     "repeat until success": (
         "qbool coin = false;\nH(coin);\nrt int<> m = measure(coin);\n"
         "rt while (m == 1) { reset(coin); H(coin); m = measure(coin); }\n"

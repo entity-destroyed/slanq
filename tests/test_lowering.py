@@ -179,6 +179,49 @@ def test_a_qif_body_rejects_a_build_time_compound_assignment(
     assert diagnostic.message == _NOT_UNITARY.format("a compound assignment")
 
 
+def test_a_qif_body_holds_a_controlled_adder(lower: LowerSource) -> None:
+    """`+=` on a quantum variable is a reversible adder, so it has a
+    controlled form; the ancilla it needs is still declared at the top level,
+    where every later statement can see it."""
+    module, bag = lower("qint<2> a = 0; qint<2> c = 0; qint<2> d = 1; "
+                        "qif(a == 2) { c += d; }")
+    assert not bag.has_errors
+
+    qif = module.body.ops[-1]
+    assert isinstance(qif, QIfOp)
+    assert [type(op).__name__ for op in qif.body.ops] == ["ArithmeticOp"]
+    assert any(isinstance(op, DeclareAncillaOp) for op in module.body.ops)
+
+
+def test_a_controlled_adder_warns_about_its_cost(lower: LowerSource) -> None:
+    _, bag = lower("qint<2> a = 0; qint<2> c = 0; qint<2> d = 1; "
+                   "qif(a == 2) { c += d; }")
+    (warning,) = bag.warnings
+    assert warning.message == (
+        "the arithmetic on 'c' is controlled here, which costs far more gates "
+        "than the same arithmetic outside a qif"
+    )
+
+
+def test_a_qif_body_holds_a_controlled_multiply_accumulate(
+    lower: LowerSource,
+) -> None:
+    """Compute, add, uncompute -- all three inside the body, so the scratch
+    register comes back to zero whether or not the branch was taken."""
+    module, bag = lower(
+        "qint<2> a = 0; qint<4> c = 0; qint<2> d = 2; qint<2> e = 3; "
+        "qif(a == 2) { c += d * e; }"
+    )
+    assert not bag.has_errors
+    qif = module.body.ops[-1]
+    assert isinstance(qif, QIfOp)
+    assert [type(op).__name__ for op in qif.body.ops] == [
+        "MultiplyOp",
+        "ArithmeticOp",
+        "MultiplyOp",
+    ]
+
+
 def test_numeric_arguments_become_params(lower: LowerSource) -> None:
     module, bag = lower("qbool q = false; RX(90, q);")
     assert not bag.has_errors
@@ -589,12 +632,16 @@ def test_measure_inside_qif_is_rejected(lower: LowerSource) -> None:
 
 
 def test_unimplemented_statement_inside_qif_body(lower: LowerSource) -> None:
-    _, bag = lower(
-        "qint<2> a = 0; qint<2> b = 0; qif(a == 2) { b += a; }"
+    """A declaration in the body is the one shape left that a qif could hold
+    later, so it says so as a limitation rather than as the program's
+    mistake."""
+    _, bag = lower("qint<2> a = 0; qif(a == 2) { qbool z = false; }")
+    assert any(
+        diagnostic.message
+        == "a quantum declaration is not implemented inside a qif body yet; "
+        "this is a limitation of the compiler, not an error in the program"
+        for diagnostic in bag.errors
     )
-    assert bag.has_errors
-    assert "compound assignment" in bag.errors[0].message
-    assert "inside a qif body" in bag.errors[0].message
 
 
 def test_a_process_definition_produces_no_operations(lower: LowerSource) -> None:

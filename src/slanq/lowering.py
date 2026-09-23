@@ -134,6 +134,7 @@ class _Lowerer(NodeVisitor):
         self.realtime: dict[str, ClbitRef] = {}
         self._ancilla_counter = 0
         self._realtime_loops = 0
+        self._qif_bodies = 0
 
     def generic_visit(self, node):
         if isinstance(node, Statement):
@@ -375,6 +376,15 @@ class _Lowerer(NodeVisitor):
             return
         subtract = node.op == "-="
 
+        if self._qif_bodies:
+            self.bag.warning(
+                f"the arithmetic on '{node.target.name}' is controlled here, "
+                "which costs far more gates than the same arithmetic outside "
+                "a qif",
+                line=node.span.start_line,
+                column=node.span.start_col,
+            )
+
         value = node.value
         if isinstance(value, BinaryOp) and value.op == "*":
             self._lower_multiply_augassign(node.span, target, value, subtract)
@@ -446,6 +456,14 @@ class _Lowerer(NodeVisitor):
                 ops = self._lower_gate_statement(statement, in_qif=True)
                 if ops is not None:
                     result.ops.extend(ops)
+            elif isinstance(statement, AugAssign) and _is_quantum_target(statement):
+                outer, self._block = self._block, result
+                self._qif_bodies += 1
+                try:
+                    self.visit(statement)
+                finally:
+                    self._block = outer
+                    self._qif_bodies -= 1
             elif isinstance(statement, If):
                 settled, taken = taken_branch(statement)
                 if not settled:

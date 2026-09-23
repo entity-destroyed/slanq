@@ -892,8 +892,10 @@ rt int<> result = measure(bob);
 
 
 def _realtime_counts(source: str) -> dict[str, int]:
-    """Run on Aer rather than StatevectorSampler: a feedforward branch is not
-    a unitary, so it needs a simulator that executes control flow."""
+    """Run on Aer rather than StatevectorSampler. A feedforward branch is not a
+    unitary, so it needs a simulator that executes control flow; a controlled
+    composite needs one too, for a different reason -- StatevectorSampler
+    decomposes it into a form that takes minutes where Aer takes a second."""
     circuit = _build_circuit(source)
     from qiskit import transpile
     from qiskit_aer import AerSimulator
@@ -998,6 +1000,68 @@ def test_an_index_a_branch_settles_reaches_the_right_qubit() -> None:
         "X(a[i]);\nrt int<> result = measure(a);\n"
     )
     assert _counts(source) == {"010": SHOTS}
+
+
+@pytest.mark.parametrize(
+    ("program", "expected"),
+    [
+        ("qint<2> a = 2;\nqint<2> c = 0;\nqint<2> d = 1;\n"
+         "qif(a == 2) { c += d; }\n", "01"),
+        ("qint<2> a = 1;\nqint<2> c = 0;\nqint<2> d = 1;\n"
+         "qif(a == 2) { c += d; }\n", "00"),
+        ("qint<2> a = 2;\nqint<2> c = 3;\nqint<2> d = 1;\n"
+         "qif(a == 2) { c -= d; }\n", "10"),
+        ("qint<2> a = 2;\nqint<2> c = 1;\nqif(a == 2) { c += 2; }\n", "11"),
+    ],
+    ids=["adds when it holds", "leaves c alone", "subtracts", "constant addend"],
+)
+def test_a_controlled_adder_fires_on_the_branch_its_condition_names(
+    program: str, expected: str
+) -> None:
+    assert _counts(program + "rt int<> result = measure(c);\n") == {expected: SHOTS}
+
+
+# One-qubit factors keep the circuit at ten qubits, where the whole battery
+# costs under a second. The wider cases live in verify_controlled_multiply.
+_MAC_DECLS = "qint<2> c = 0;\nqint<1> d = 1;\nqint<1> e = 1;\n"
+
+
+@pytest.mark.parametrize(
+    ("condition", "expected"),
+    [("qint<2> a = 2;\n", "01"), ("qint<2> a = 1;\n", "00")],
+    ids=["multiplies", "leaves c alone"],
+)
+def test_a_controlled_multiply_accumulate_fires_on_its_own_branch(
+    condition: str, expected: str
+) -> None:
+    source = (
+        condition + _MAC_DECLS + "qif(a == 2) { c += d * e; }\n"
+        "rt int<> result = measure(c);\n"
+    )
+    assert _realtime_counts(source) == {expected: SHOTS}
+
+
+def test_a_controlled_multiply_accumulate_leaves_its_scratch_clean() -> None:
+    """A dirty temporary would show as the wrong product the second time."""
+    source = (
+        "qint<2> a = 2;\n" + _MAC_DECLS
+        + "qif(a == 2) { c += d * e; }\nqif(a == 2) { c += d * e; }\n"
+        "rt int<> result = measure(c);\n"
+    )
+    assert _realtime_counts(source) == {"10": SHOTS}
+
+
+def test_a_controlled_adder_entangles_rather_than_always_adding() -> None:
+    """a[0] is the most significant qubit, so H there puts a in {0, 2}: the
+    adder must fire on that one branch, which leaves c correlated with a."""
+    source = (
+        "qint<2> a = 0;\nqint<2> c = 0;\nqint<2> d = 1;\n"
+        "H(a[0]);\nqif(a == 2) { c += d; }\n"
+        "rt int<> result = measure(c);\n"
+    )
+    counts = _counts(source)
+    assert set(counts) == {"00", "01"}
+    assert all(0.4 * SHOTS < count < 0.6 * SHOTS for count in counts.values())
 
 
 REPEAT_UNTIL_SUCCESS = """qbool coin = false;
