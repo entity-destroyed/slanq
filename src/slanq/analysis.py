@@ -57,6 +57,7 @@ from slanq.builtin import (
     const_value,
 )
 from slanq.diagnostics import DiagnosticBag
+from slanq.parser import reserved_words
 from slanq.passes import BEFORE_DECLARATION, expand_processes, track_values, unroll_loops
 from slanq.visitor import NodeVisitor, iter_child_nodes
 
@@ -85,6 +86,9 @@ def _build_symbol_table(ast: Program, bag: DiagnosticBag) -> Scope:
     for statement in ast.statements:
         if not isinstance(statement, Declaration):
             continue
+        if statement.name in reserved_words():
+            _error(bag, _keyword_message(statement.name), statement.span)
+            continue
         if statement.name in BUILTIN_SCOPE:
             _error(bag, _shadowing_message(statement.name), statement.span)
             continue
@@ -100,6 +104,10 @@ def _build_symbol_table(ast: Program, bag: DiagnosticBag) -> Scope:
 
 def _shadowing_message(name: str) -> str:
     return f"'{name}' is built into the language and cannot be redeclared"
+
+
+def _keyword_message(name: str) -> str:
+    return f"'{name}' is a keyword of the language and cannot be used as a name"
 
 
 # Bare identifiers the generated Python file emits as a module-level or
@@ -212,6 +220,9 @@ class _NameResolver(NodeVisitor):
         current = self.scopes[-1]
         existing = current.get(symbol.name)
         if existing is symbol:
+            return
+        if symbol.name in reserved_words():
+            _error(self.bag, _keyword_message(symbol.name), symbol.span)
             return
         if symbol.name in BUILTIN_SCOPE:
             _error(self.bag, _shadowing_message(symbol.name), symbol.span)

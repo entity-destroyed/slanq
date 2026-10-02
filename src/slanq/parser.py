@@ -10,6 +10,7 @@ from functools import lru_cache
 
 from lark import Lark, ParseTree
 from lark.exceptions import UnexpectedCharacters, UnexpectedInput
+from lark.lexer import Pattern, PatternStr
 
 from slanq.diagnostics import SlanqError
 from slanq.grammar import grammar_text
@@ -26,6 +27,38 @@ def get_parser() -> Lark:
         parser="earley",
         propagate_positions=True,
     )
+
+
+@lru_cache(maxsize=1)
+def reserved_words() -> frozenset[str]:
+    """Every word the grammar spells out as a keyword.
+
+    Derived from the compiled grammar rather than from a list, so a keyword
+    added to `slanq.lark` cannot be forgotten here.
+    """
+    words: set[str] = set()
+    for terminal in get_parser().terminals:
+        words |= _spelled_out_words(terminal.pattern)
+    return frozenset(words)
+
+
+def _spelled_out_words(pattern: Pattern) -> set[str]:
+    """The identifiers a terminal matches, when it matches nothing else.
+
+    A terminal is a keyword source if it is a literal word (`"qif"`) or an
+    alternation of literal words -- which is what Lark compiles `"int" |
+    "float"` into. Anything carrying regex structure (`NAME`, `NUMBER`) matches
+    more than a fixed set of words and contributes none.
+    """
+    text = pattern.value
+    if isinstance(pattern, PatternStr):
+        return {text} if text.isidentifier() else set()
+    if text.startswith("(?:") and text.endswith(")"):
+        text = text[3:-1]
+    alternatives = text.split("|")
+    if all(word.isidentifier() for word in alternatives):
+        return set(alternatives)
+    return set()
 
 
 def parse_source(source: str) -> ParseTree:
@@ -92,4 +125,4 @@ def _unclosed_bracket(source: str) -> tuple[str, int, int] | None:
     return stack[-1] if stack else None
 
 
-__all__ = ["get_parser", "parse_source"]
+__all__ = ["get_parser", "parse_source", "reserved_words"]

@@ -17,6 +17,7 @@ from slanq.ast_nodes import (
     RealtimeDecl,
 )
 from slanq.diagnostics import DiagnosticBag
+from slanq.parser import reserved_words
 
 BuildAst = Callable[[str], Program]
 AnalyzedAst = Callable[[str], Program]
@@ -559,6 +560,46 @@ def test_a_name_starting_with_an_underscore_is_rejected(
     bag = diagnostics_of(source)
     assert bag.has_errors
     assert any("starts with '_'" in error.message for error in bag.errors)
+
+
+@pytest.mark.parametrize("word", sorted(reserved_words()))
+def test_a_keyword_cannot_be_used_as_a_name(diagnostics_of: DiagnosticsOf, word: str) -> None:
+    """Parametrised over the derived set rather than a literal list, so a
+    keyword added to the grammar is covered here without anyone remembering to
+    add it."""
+    bag = diagnostics_of(f"int {word} = 3;")
+    assert [error.message for error in bag.errors] == [
+        f"'{word}' is a keyword of the language and cannot be used as a name"
+    ]
+
+
+@pytest.mark.parametrize(
+    "source,word",
+    [
+        ("process p(qint rt) { X(rt); }", "rt"),
+        ("qint<2> a = 0; for(int in in range(2)) { X(a[0]); }", "in"),
+        ("param int qif[2];", "qif"),
+    ],
+)
+def test_the_keyword_rule_covers_nested_declarations(
+    diagnostics_of: DiagnosticsOf, source: str, word: str
+) -> None:
+    bag = diagnostics_of(source)
+    assert bag.errors[0].message == (
+        f"'{word}' is a keyword of the language and cannot be used as a name"
+    )
+
+
+def test_keywords_are_derived_from_every_terminal_shape() -> None:
+    """The grammar spells keywords two ways -- as a bare literal in a rule
+    (`qif`) and as an alternation inside a terminal (`CTYPE`, `BOOL`) -- and
+    both must contribute. A terminal that matches more than a fixed set of
+    words contributes none, which is what keeps every user-chosen name legal."""
+    words = reserved_words()
+    assert {"qif", "process", "rt"} <= words
+    assert {"int", "float", "bool", "complex"} <= words
+    assert {"true", "false"} <= words
+    assert not {"measure", "PI", "theta", "a"} & words
 
 
 @pytest.mark.parametrize("source", ["qbool q_ = false;", "qbool a_b = false;", "int x2_ = 1;"])
