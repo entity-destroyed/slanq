@@ -577,7 +577,7 @@ def test_param_scalar_angle_binds_at_runtime() -> None:
 
 
 def test_param_array_indexed_angle_binds_at_runtime() -> None:
-    source = "param int gamma[2];\nqbool q = false;\nRX(gamma[1], q);\n"
+    source = "param int[2] gamma;\nqbool q = false;\nRX(gamma[1], q);\n"
     result = compile_source(source, source_name="test.slanq")
     assert not result.diagnostics.has_errors
     namespace: dict[str, Any] = {}

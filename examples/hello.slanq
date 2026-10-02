@@ -8,7 +8,7 @@ qbool flag = true;
 
 // Parameter and parameter array
 param float theta;
-param int gamma[4];
+param int[4] gamma;
 
 // Gates
 X(a[1]);

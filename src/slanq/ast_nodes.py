@@ -113,6 +113,7 @@ class AmplitudeList(Node):
 class QuantumDecl(Declaration):
     declared_type: Type
     initializer: Expression | ProbList | AmplitudeList
+    width_source: Expression | None = None
 
 
 @dataclass(kw_only=True)
@@ -130,6 +131,7 @@ class RealtimeDecl(Declaration):
     declared_type: Type
     initializer: Expression
     width: int | None = None
+    width_source: Expression | None = None
 
 
 @dataclass(kw_only=True)
@@ -140,7 +142,8 @@ class ParamDecl(Declaration):
 @dataclass(kw_only=True)
 class ParamArrayDecl(Declaration):
     declared_type: Type
-    size: int
+    size: int | None = None
+    size_source: Expression | None = None
 
 
 @dataclass(kw_only=True)

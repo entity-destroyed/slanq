@@ -14,7 +14,7 @@ from slanq.parser import parse_source
         "qint<2> c = [0, 0.5, 0.5, 0];",
         "qbool flag = true;",
         "param float theta;",
-        "param int gamma[4];",
+        "param int[4] gamma;",
         "rt int<> r = measure(a);",
         "a += b;",
         "X(a[1]);",
@@ -79,7 +79,7 @@ def test_mvp_c_parses(mvp_c_source: str) -> None:
     ("source", "line", "column", "found"),
     [
         ("qbool q = false;;\n", 1, 17, "';'"),
-        ("qint<-1> a = 0;\n", 1, 6, "'-'"),
+        ("qint<> a = 0;\n", 1, 6, "'>'"),
         ("qbool q = false;\nqif(1 < 2 < 3) { X(q); }\n", 2, 11, "'<'"),
     ],
 )

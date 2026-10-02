@@ -260,17 +260,17 @@ def test_fractional_index_is_reported(diagnostics_of: DiagnosticsOf) -> None:
 def test_a_param_array_index_within_bounds_is_accepted(
     diagnostics_of: DiagnosticsOf,
 ) -> None:
-    loop = "param float gamma[4]; qbool q = false; for(int i in range(4)) { RX(gamma[i], q); }"
+    loop = "param float[4] gamma; qbool q = false; for(int i in range(4)) { RX(gamma[i], q); }"
     assert not diagnostics_of(loop).has_errors
 
 
 @pytest.mark.parametrize(
     "source",
     [
-        "param int gamma[4]; int x = gamma[99];",
-        "param float gamma[2]; qbool q = false; RX(gamma[2], q);",
-        "param float gamma[2]; qbool q = false; RX(gamma[-1], q);",
-        "param float gamma[3]; qbool q = false; for(int i in range(4)) { RX(gamma[i], q); }",
+        "param int[4] gamma; int x = gamma[99];",
+        "param float[2] gamma; qbool q = false; RX(gamma[2], q);",
+        "param float[2] gamma; qbool q = false; RX(gamma[-1], q);",
+        "param float[3] gamma; qbool q = false; for(int i in range(4)) { RX(gamma[i], q); }",
     ],
 )
 def test_a_param_array_index_out_of_bounds_is_rejected(
@@ -330,7 +330,7 @@ def test_a_product_at_least_as_wide_as_its_operands_is_accepted(
     ("source", "expected"),
     [
         ("qint<0> a = 0;", "needs at least one qubit"),
-        ("param int g[0];", "needs at least one element"),
+        ("param int[0] g;", "needs at least one element"),
     ],
 )
 def test_a_declared_size_of_zero_is_rejected(
@@ -344,8 +344,73 @@ def test_a_declared_size_of_zero_is_rejected(
     assert expected in bag.errors[0].message
 
 
-@pytest.mark.parametrize("source", ["qint<1> a = 1;", "param int g[1];"])
+@pytest.mark.parametrize("source", ["qint<1> a = 1;", "param int[1] g;"])
 def test_a_declared_size_of_one_is_accepted(diagnostics_of: DiagnosticsOf, source: str) -> None:
+    assert not diagnostics_of(source).has_errors
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("qint<2.5> a = 0;", "a width must be a whole number, not a fraction"),
+        ("qint<true> a = 0;", "a width must be a whole number, not a boolean"),
+        ("qint<1 + 1i> a = 0;", "a width must be a whole number, not a complex number"),
+        ("param int[0.5] g;", "a length must be a whole number, not a fraction"),
+    ],
+)
+def test_a_width_that_is_not_a_whole_number_is_rejected(
+    diagnostics_of: DiagnosticsOf, source: str, expected: str
+) -> None:
+    assert [error.message for error in diagnostics_of(source).errors] == [expected]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "param float t;\nqint<t> a = 0;",
+            "a width must be a whole number the compiler can compute",
+        ),
+        (
+            "param float t;\nparam int[t] g;",
+            "a length must be a whole number the compiler can compute",
+        ),
+    ],
+)
+def test_a_width_the_compiler_cannot_compute_is_rejected(
+    diagnostics_of: DiagnosticsOf, source: str, expected: str
+) -> None:
+    """A `param` has no value until the circuit is bound, and a register's
+    width has to be known while the circuit is built."""
+    assert [error.message for error in diagnostics_of(source).errors] == [expected]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("qint<-1> a = 0;", "needs at least one qubit"),
+        ("param int[-1] g;", "needs at least one element"),
+    ],
+)
+def test_a_negative_declared_size_is_rejected(
+    diagnostics_of: DiagnosticsOf, source: str, expected: str
+) -> None:
+    """A width is an expression now, so a negative one reaches the same check
+    an explicit zero does rather than failing to parse."""
+    bag = diagnostics_of(source)
+    assert bag.has_errors
+    assert expected in bag.errors[0].message
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "int k = 2;\nqint<k * 2> a = 0;\nX(a[3]);",
+        "int k = 3;\nqint<3> a = 0;\nrt int<k> r = measure(a);",
+        "int k = 2;\nparam int[k + 1] g;\nqbool q = false;\nRX(g[2], q);",
+    ],
+)
+def test_a_computed_width_is_accepted(diagnostics_of: DiagnosticsOf, source: str) -> None:
     assert not diagnostics_of(source).has_errors
 
 
@@ -540,7 +605,7 @@ def test_reserved_name_check_covers_nested_declarations(
         "qint<2> _x = 0;",
         "int _x = 1;",
         "param float _x;",
-        "param int _x[2];",
+        "param int[2] _x;",
         "process _p(qint x) { X(x); }",
         "process p(qint _x) { X(_x); }",
         "qint<2> a = 0; for(int _i in range(2)) { X(a[_i]); }",
@@ -578,7 +643,7 @@ def test_a_keyword_cannot_be_used_as_a_name(diagnostics_of: DiagnosticsOf, word:
     [
         ("process p(qint rt) { X(rt); }", "rt"),
         ("qint<2> a = 0; for(int in in range(2)) { X(a[0]); }", "in"),
-        ("param int qif[2];", "qif"),
+        ("param int[2] qif;", "qif"),
     ],
 )
 def test_the_keyword_rule_covers_nested_declarations(
@@ -940,7 +1005,7 @@ def test_augassign_param_addend_is_rejected(diagnostics_of: DiagnosticsOf) -> No
 
 
 def test_augassign_param_array_addend_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
-    bag = diagnostics_of("qint<2> a = 0; param int gamma[2]; a += gamma[0];")
+    bag = diagnostics_of("qint<2> a = 0; param int[2] gamma; a += gamma[0];")
     assert bag.has_errors
     assert "runtime parameter" in bag.errors[0].message
 
@@ -1028,7 +1093,7 @@ def test_param_complex_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
 
 
 def test_param_complex_array_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
-    bag = diagnostics_of("param complex gamma[3];")
+    bag = diagnostics_of("param complex[3] gamma;")
     assert bag.has_errors
     assert "complex is not supported" in bag.errors[0].message
 

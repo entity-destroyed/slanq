@@ -1016,7 +1016,7 @@ def test_param_decl_registers_a_scalar_param(lower: LowerSource) -> None:
 
 
 def test_param_array_decl_registers_its_size(lower: LowerSource) -> None:
-    module, bag = lower("param int gamma[4];")
+    module, bag = lower("param int[4] gamma;")
     assert not bag.has_errors
     (param,) = module.params
     assert param.kind == "array"
@@ -1041,7 +1041,7 @@ def test_param_expression_angle_is_accepted(lower: LowerSource) -> None:
 
 
 def test_param_array_indexed_angle_is_accepted(lower: LowerSource) -> None:
-    module, bag = lower("param int gamma[4]; qbool q = false; RX(gamma[2], q);")
+    module, bag = lower("param int[4] gamma; qbool q = false; RX(gamma[2], q);")
     assert not bag.has_errors
     gate = module.body.ops[-1]
     assert isinstance(gate, GateOp)
@@ -1088,7 +1088,7 @@ REJECTED_SHAPES = [
     "qint<0> a = 0;\nqint<2> b = 0;\na += b;\n",
     "qint<0> a = 0;\nrt int<> r = measure(a);\n",
     "qint<2> a = 0;\nrt int<> r = measure(a, a);\n",
-    "qint<2> a = 0;\nparam int g[2];\na += g[0];\n",
+    "qint<2> a = 0;\nparam int[2] g;\na += g[0];\n",
     "qint<2> a = 0;\nqint<2> b = 0;\na += b[0];\n",
     "qint<2> a = 0;\na += 1.5;\n",
     "qint<2> a = 0;\nqint<2> b = 0;\na[0] += b;\n",

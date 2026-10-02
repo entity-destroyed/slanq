@@ -109,12 +109,13 @@ class SlanqTransformer(Transformer):
     # --- declarations ---
 
     def qint_decl(self, meta: Meta, children) -> QuantumDecl:
-        width_token, name_token, initializer = children
+        width, name_token, initializer = children
         return QuantumDecl(
             span=_span_from_meta(meta),
             name=str(name_token),
-            declared_type=QIntType(size=int(width_token)),
+            declared_type=QIntType(),
             initializer=initializer,
+            width_source=width,
         )
 
     def qbool_decl(self, meta: Meta, children) -> QuantumDecl:
@@ -144,12 +145,12 @@ class SlanqTransformer(Transformer):
         )
 
     def param_array_decl(self, meta: Meta, children) -> ParamArrayDecl:
-        type_token, name_token, size_token = children
+        type_token, size, name_token = children
         return ParamArrayDecl(
             span=_span_from_meta(meta),
             name=str(name_token),
             declared_type=_type_from_token(type_token),
-            size=int(size_token),
+            size_source=size,
         )
 
     def prob_list(self, meta: Meta, children) -> ProbList:
@@ -208,13 +209,13 @@ class SlanqTransformer(Transformer):
         )
 
     def rt_int_decl(self, meta: Meta, children) -> RealtimeDecl:
-        width_token, name_token, initializer = children
+        width, name_token, initializer = children
         return RealtimeDecl(
             span=_span_from_meta(meta),
             name=str(name_token),
             declared_type=IntType(),
             initializer=initializer,
-            width=None if width_token is None else int(width_token),
+            width_source=width,
         )
 
     def rt_bool_decl(self, meta: Meta, children) -> RealtimeDecl:

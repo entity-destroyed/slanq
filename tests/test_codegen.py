@@ -1037,7 +1037,7 @@ def test_no_sqrt_helper_without_a_sqrt() -> None:
 
 
 _AUDIT_SOURCE = (
-    "param float theta;\nparam int gamma[3];\n"
+    "param float theta;\nparam int[3] gamma;\n"
     "qint<3> a = 0;\nqint<2> b = 2;\nqint<4> c = 0;\nqbool flag = true;\n"
     "qint<1> amp = {0.6, 0.8};\nqint<2> mix = [0, 0.5, 0.5, 0];\n"
     "H(a);\nRX(theta, b[0]);\nRZ(gamma[1], b[1]);\n"
@@ -1143,7 +1143,7 @@ def test_expression_renders_a_param_leaf(build_ast) -> None:
 
 
 def test_expression_renders_a_param_array_leaf(build_ast) -> None:
-    ast = build_ast("param int gamma[4];\nfloat r = gamma[2];")
+    ast = build_ast("param int[4] gamma;\nfloat r = gamma[2];")
     analyze(ast, DiagnosticBag())
     (_, use) = ast.statements
     rendered = _Generator().expression(use.initializer)

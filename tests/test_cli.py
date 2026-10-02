@@ -90,7 +90,7 @@ RUNNABLE_PROGRAMS = {
         "RX(round(1.5) * PI / 4, q);\nrt int<> result = measure(amp);\n"
     ),
     "runtime parameters": (
-        "param float theta;\nparam int gamma[2];\nqbool q = false;\n"
+        "param float theta;\nparam int[2] gamma;\nqbool q = false;\n"
         "RX(theta + gamma[1], q);\nrt int<> result = measure(q);\n"
     ),
     "reset": ("qint<2> a = 3;\nH(a[1]);\nreset(a);\nX(a[0]);\nrt int<> result = measure(a);\n"),
@@ -122,6 +122,12 @@ RUNNABLE_PROGRAMS = {
         "qbool coin = false;\nH(coin);\nrt int<> m = measure(coin);\n"
         "rt while (m == 1) { reset(coin); H(coin); m = measure(coin); }\n"
         "rt int<> result = measure(coin);\n"
+    ),
+    "computed widths": (
+        "int bits = 2;\nqint<bits + 1> a = 0;\nrt int<bits * 2> wide = 0;\n"
+        "param int[bits] gamma;\n"
+        "X(a[0]);\nRX(gamma[0], a[1]);\n"
+        "rt int<> result = measure(a);\n"
     ),
     "teleportation": (
         "qbool msg = true;\nqbool alice = false;\nqbool bob = false;\n"

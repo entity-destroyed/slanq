@@ -69,9 +69,13 @@ def test_qbool_decl_becomes_quantum_decl(build_ast: BuildAst) -> None:
 
 
 def test_qint_decl_carries_its_width(build_ast: BuildAst) -> None:
+    """The transformer carries the width as written; `fold_widths` evaluates
+    it later, so the size is still empty here."""
     (declaration,) = build_ast("qint<3> a = 0;").statements
     assert isinstance(declaration, QuantumDecl)
-    assert declaration.declared_type == QIntType(size=3)
+    assert declaration.declared_type == QIntType(size=None)
+    assert isinstance(declaration.width_source, Literal)
+    assert declaration.width_source.value == 3
 
 
 def test_empty_prob_list_means_equal_superposition(build_ast: BuildAst) -> None:
@@ -89,12 +93,13 @@ def test_prob_list_keeps_its_values(build_ast: BuildAst) -> None:
 
 
 def test_param_declarations(build_ast: BuildAst) -> None:
-    scalar, array = build_ast("param float theta;\nparam int gamma[4];").statements
+    scalar, array = build_ast("param float theta;\nparam int[4] gamma;").statements
     assert isinstance(scalar, ParamDecl)
     assert scalar.name == "theta"
     assert isinstance(array, ParamArrayDecl)
     assert array.name == "gamma"
-    assert array.size == 4
+    assert isinstance(array.size_source, Literal)
+    assert array.size_source.value == 4
 
 
 def test_gate_call_becomes_expr_statement(build_ast: BuildAst) -> None:

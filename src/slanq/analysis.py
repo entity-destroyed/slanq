@@ -58,7 +58,13 @@ from slanq.builtin import (
 )
 from slanq.diagnostics import DiagnosticBag
 from slanq.parser import reserved_words
-from slanq.passes import BEFORE_DECLARATION, expand_processes, track_values, unroll_loops
+from slanq.passes import (
+    BEFORE_DECLARATION,
+    expand_processes,
+    fold_widths,
+    track_values,
+    unroll_loops,
+)
 from slanq.visitor import NodeVisitor, iter_child_nodes
 
 Scope = dict[str, Symbol]
@@ -75,6 +81,7 @@ def analyze(ast: Program, bag: DiagnosticBag) -> None:
     # Twice: the unroller needs the loop bound's value, and unrolling then
     # produces one copy of the body per iteration, each with its own values.
     track_values(ast)
+    fold_widths(ast, bag)
     _check_types(ast, bag)
     _check_affine(ast, bag)
 
@@ -312,7 +319,8 @@ class _IndexChecker(_Checker):
                 node.index,
             )
             return
-        self._check_bounds(node, symbol.size)
+        if symbol.size is not None:
+            self._check_bounds(node, symbol.size)
 
     def _check_bounds(self, node: Index, size: int) -> None:
         index = self._int(node.index)
@@ -389,7 +397,7 @@ class _DeclarationChecker(_Checker):
 
     def visit_ParamArrayDecl(self, node: ParamArrayDecl) -> None:
         self.generic_visit(node)
-        if node.size < 1:
+        if node.size is not None and node.size < 1:
             self._reject(
                 f"'{node.name}' needs at least one element; no index is in "
                 "range for an empty array",
@@ -744,17 +752,11 @@ class _ProcessCallChecker(_Checker):
     def _check_no_aliasing(self, name: str, node: Call) -> None:
         """A process is inlined, so passing the same variable twice would put
         it on both sides of whatever the body does to its parameters."""
-        seen: set[tuple[str, int]] = set()
-        aliased: set[tuple[str, int]] = set()
-        for argument in node.args:
-            bits = _touched_bits(argument) or set()
-            aliased |= seen & bits
-            seen |= bits
+        aliased = _aliased_arguments(node.args)
         if aliased:
-            names = ", ".join(sorted({bit_name for bit_name, _ in aliased}))
             self._reject(
                 f"'{name}' cannot be given the same qubit(s) in more than one "
-                f"argument (here: {names})",
+                f"argument (here: {', '.join(aliased)})",
                 node,
             )
 
@@ -813,16 +815,11 @@ class _CallChecker(_Checker):
         self._check_position(name, signature, node)
 
     def _check_no_aliasing(self, name: str, qubit_args: list[Expression], node: Call) -> None:
-        seen: set[tuple[str, int]] = set()
-        aliased: set[tuple[str, int]] = set()
-        for argument in qubit_args:
-            bits = _touched_bits(argument) or set()
-            aliased |= seen & bits
-            seen |= bits
+        aliased = _aliased_arguments(qubit_args)
         if aliased:
-            names = ", ".join(sorted({bit_name for bit_name, _ in aliased}))
             self._reject(
-                f"'{name}' cannot use the same qubit(s) in more than one argument (here: {names})",
+                f"'{name}' cannot use the same qubit(s) in more than one "
+                f"argument (here: {', '.join(aliased)})",
                 node,
             )
 
@@ -993,13 +990,39 @@ class _QIfConditionChecker(_Checker):
                 for argument in statement.expr.args:
                     body_bits |= _collect_bits(argument)
 
-        overlap = condition_bits & body_bits
+        overlap = _overlapping(condition_bits, body_bits)
         if overlap:
-            names = ", ".join(sorted({name for name, _ in overlap}))
             self._reject(
-                f"a qif body may not modify a qubit its own condition tests (here: {names})",
+                "a qif body may not modify a qubit its own condition tests "
+                f"(here: {', '.join(overlap)})",
                 node.body,
             )
+
+
+WHOLE_REGISTER = -1
+
+
+def _aliased_arguments(arguments: list[Expression]) -> list[str]:
+    """The variables more than one argument reaches."""
+    seen: set[tuple[str, int]] = set()
+    aliased: set[str] = set()
+    for argument in arguments:
+        bits = _touched_bits(argument) or set()
+        aliased |= set(_overlapping(seen, bits))
+        seen |= bits
+    return sorted(aliased)
+
+
+def _overlapping(left: set[tuple[str, int]], right: set[tuple[str, int]]) -> list[str]:
+    """The variables both sides reach. A WHOLE_REGISTER entry stands for every
+    bit, so it meets any bit of the same register."""
+    shared = []
+    for name in {name for name, _ in left} & {name for name, _ in right}:
+        bits_left = {bit for reached, bit in left if reached == name}
+        bits_right = {bit for reached, bit in right if reached == name}
+        if WHOLE_REGISTER in bits_left | bits_right or bits_left & bits_right:
+            shared.append(name)
+    return sorted(shared)
 
 
 def _collect_bits(expression: Expression) -> set[tuple[str, int]]:
@@ -1031,10 +1054,7 @@ def _touched_bits(expression: Expression) -> set[tuple[str, int]] | None:
         declared = _declared_type(expression)
         if declared is None:
             return None
-        size = qubit_count(declared)
-        if size is None:
-            return None
-        return {(expression.name, bit) for bit in range(size)}
+        return {(expression.name, WHOLE_REGISTER)}
 
     return None
 

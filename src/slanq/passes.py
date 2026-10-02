@@ -27,6 +27,9 @@ from slanq.ast_nodes import (
     ParamDecl,
     ProcessDef,
     Program,
+    QIntType,
+    QuantumDecl,
+    RealtimeDecl,
     Span,
     Statement,
     UnknownValue,
@@ -552,6 +555,55 @@ def _written_value(
     )
 
 
+def fold_widths(ast: Program, bag: DiagnosticBag) -> None:
+    """Evaluate every declared width into the integer the later phases read.
+
+    Runs after unrolling, so each width expression sees the values in effect
+    where it stands. A width that cannot be evaluated is reported here and
+    left as None, which is what an unsized declaration already looks like.
+    """
+    for node in _walk(ast):
+        if isinstance(node, QuantumDecl) and isinstance(node.declared_type, QIntType):
+            node.declared_type.size = _count(node.width_source, bag, "width")
+        elif isinstance(node, RealtimeDecl) and node.width_source is not None:
+            node.width = _count(node.width_source, bag, "width")
+        elif isinstance(node, ParamArrayDecl):
+            node.size = _count(node.size_source, bag, "length")
+
+
+def _count(source: Expression | None, bag: DiagnosticBag, noun: str) -> int | None:
+    if source is None:
+        return None
+    try:
+        value = const_value(source)
+    except ConstEvalError as exc:
+        bag.error(str(exc), line=source.span.start_line, column=source.span.start_col)
+        return None
+    if type(value) is int:
+        return value
+    message = (
+        f"a {noun} must be a whole number the compiler can compute"
+        if value is None
+        else f"a {noun} must be a whole number, not {_shape_of(value)}"
+    )
+    bag.error(message, line=source.span.start_line, column=source.span.start_col)
+    return None
+
+
+def _shape_of(value: int | float | bool | complex) -> str:
+    if isinstance(value, bool):
+        return "a boolean"
+    if isinstance(value, complex):
+        return "a complex number"
+    return "a fraction"
+
+
+def _walk(node: Node):
+    yield node
+    for child in iter_child_nodes(node):
+        yield from _walk(child)
+
+
 def _child_blocks(statement: Statement) -> list[Block]:
     blocks = []
     for f in dataclasses.fields(statement):
@@ -561,4 +613,4 @@ def _child_blocks(statement: Statement) -> list[Block]:
     return blocks
 
 
-__all__ = ["expand_processes", "taken_branch", "track_values", "unroll_loops"]
+__all__ = ["expand_processes", "fold_widths", "taken_branch", "track_values", "unroll_loops"]

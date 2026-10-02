@@ -145,11 +145,13 @@ class _Lowerer(NodeVisitor):
     def visit_QuantumDecl(self, node: QuantumDecl) -> None:
         size = qubit_count(node.declared_type)
         if size is None:
-            self._error(
-                f"the type of '{node.name}' is not implemented yet; this is a "
-                "limitation of the compiler, not an error in the program",
-                node.span,
-            )
+            # A rejected width leaves the size unfilled; that error is already out.
+            if node.width_source is None:
+                self._error(
+                    f"the type of '{node.name}' is not implemented yet; this is a "
+                    "limitation of the compiler, not an error in the program",
+                    node.span,
+                )
             return
 
         initializer = node.initializer
@@ -338,6 +340,8 @@ class _Lowerer(NodeVisitor):
         type_name = _PARAM_TYPE_NAMES.get(type(node.declared_type))
         if type_name is None:
             self._unreachable("a param array of an unsupported type", node.span)
+            return
+        if node.size is None:
             return
         self.module.params.append(
             ParamInfo(

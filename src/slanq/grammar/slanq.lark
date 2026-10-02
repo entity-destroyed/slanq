@@ -38,16 +38,16 @@ continue_stmt: "continue"
             | param_array_decl
             | param_decl
 
-qint_decl:        "qint" "<" INT ">" NAME "=" q_initializer ";"
+qint_decl:        "qint" "<" expr ">" NAME "=" q_initializer ";"
 // A real-time classical variable: it lives on the processor beside the QPU,
 // where bits are scarce, so the width is written out. Empty angle brackets
 // take it from the initializer.
-rt_int_decl:      "rt" "int" "<" [INT] ">" NAME "=" expr ";"
+rt_int_decl:      "rt" "int" "<" [expr] ">" NAME "=" expr ";"
 rt_bool_decl:     "rt" "bool" NAME "=" expr ";"
 qbool_decl:       "qbool" NAME "=" q_initializer ";"
 classical_decl:   CTYPE NAME "=" expr ";"
 param_decl:       "param" CTYPE NAME ";"
-param_array_decl: "param" CTYPE NAME "[" INT "]" ";"
+param_array_decl: "param" CTYPE "[" expr "]" NAME ";"
 
 ?q_initializer: prob_list
               | amplitude_list
@@ -167,7 +167,6 @@ BOOL:  "true" | "false"
 NAME:      /[^\W\d]\w*/
 NUMBER:    /\d+(\.\d+)?/
 IMAGINARY: /\d+(\.\d+)?i/
-INT:       /\d+/
 
 COMMENT: "//" /[^\n]*/
 

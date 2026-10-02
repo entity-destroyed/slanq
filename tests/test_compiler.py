@@ -62,6 +62,16 @@ def test_lowering_runs_despite_a_prior_analysis_error() -> None:
     assert any("unitary operations" in message for message in messages)
 
 
+def test_a_rejected_width_reports_once() -> None:
+    """Lowering runs even after an analysis error, and a register whose width
+    was rejected has no size for it to read -- without the guard that reads as
+    an unimplemented type, which blames the compiler for the program's bug."""
+    result = compile_source("qint<2.5> a = 0;")
+    assert [d.message for d in result.diagnostics.errors] == [
+        "a width must be a whole number, not a fraction"
+    ]
+
+
 def test_reserved_name_never_reaches_codegen() -> None:
     """`circuit` used to compile clean and only fail at generated-file
     runtime (IndexError, from shadowing the compiler's own variable) --

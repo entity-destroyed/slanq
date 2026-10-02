@@ -19,11 +19,15 @@ from slanq.ast_nodes import (
     Index,
     Literal,
     Name,
+    ParamArrayDecl,
     ProcessDef,
     Program,
     QIf,
+    QuantumDecl,
+    RealtimeDecl,
     Statement,
     UnknownValue,
+    qubit_count,
 )
 from slanq.builtin import const_value
 from slanq.diagnostics import DiagnosticBag
@@ -583,3 +587,35 @@ def test_a_name_used_before_its_declaration_has_no_value(expanded: Expanded) -> 
     assert isinstance(statement, ExprStatement)
     (argument,) = statement.expr.args  # type: ignore[attr-defined]
     assert isinstance(argument.index.effective_value, UnknownValue)
+
+
+def test_a_declared_width_is_folded_into_the_type(expanded: Expanded) -> None:
+    ast, bag = expanded("int bits = 2;\nqint<bits * 2> a = 0;\nparam int[bits] g;\n")
+    assert not bag.has_errors
+    qint, param = ast.statements[1], ast.statements[2]
+    assert isinstance(qint, QuantumDecl)
+    assert isinstance(param, ParamArrayDecl)
+    assert qubit_count(qint.declared_type) == 4
+    assert param.size == 2
+
+
+def test_a_width_follows_the_value_in_effect_where_it_stands(expanded: Expanded) -> None:
+    """Folding runs after value tracking and unrolling, so a reassignment above
+    the declaration counts -- the initializer alone does not decide."""
+    ast, bag = expanded("int bits = 2;\nbits = 5;\nqint<bits> a = 0;\n")
+    assert not bag.has_errors
+    declaration = ast.statements[2]
+    assert isinstance(declaration, QuantumDecl)
+    assert qubit_count(declaration.declared_type) == 5
+
+
+def test_folding_leaves_a_width_that_was_never_written(expanded: Expanded) -> None:
+    """`rt bool` is one bit by construction and `rt int<>` takes its width from
+    the initializer; neither has a written width for folding to replace."""
+    ast, bag = expanded("qbool q = false;\nrt bool f = true;\nrt int<> m = measure(q);\n")
+    assert not bag.has_errors
+    flag, measured = ast.statements[1], ast.statements[2]
+    assert isinstance(flag, RealtimeDecl)
+    assert isinstance(measured, RealtimeDecl)
+    assert flag.width == 1
+    assert measured.width == 1
