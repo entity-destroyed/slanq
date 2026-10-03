@@ -1491,3 +1491,96 @@ def test_a_loop_is_checked(diagnostics_of: DiagnosticsOf, program: str, message:
 )
 def test_an_accepted_loop(diagnostics_of: DiagnosticsOf, program: str) -> None:
     assert not diagnostics_of(_LOOP_DECLS + program + "\n").has_errors
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "qubit[3] a = 0;",
+            "'a' is a sequence of qubits, not a number; leave it at |0> or give "
+            "a state in [] or {}",
+        ),
+        (
+            "qubit[1] a = true;",
+            "'a' is a sequence of qubits, not a number; leave it at |0> or give "
+            "a state in [] or {}",
+        ),
+        (
+            "qubit[2] a;\nqubit[2] b;\na += b;",
+            "'a' is a sequence of qubits, not a number, so arithmetic has no meaning on it",
+        ),
+        (
+            "qubit[2] a;\nqint<4> c = 0;\nqint<2> d = 1;\nc += d * a;",
+            "'a' is a sequence of qubits, not a number, so arithmetic has no meaning on it",
+        ),
+        (
+            "qubit[2] a;\nqbool t = false;\nqif(a == 2) { X(t); }",
+            "'a' is a sequence of qubits, not a number; test one of its qubits instead",
+        ),
+        (
+            "qubit[2] a;\nqbool t = false;\nqif(a) { X(t); }",
+            "'a' has 2 qubits; a bare qif condition needs exactly one -- index a "
+            "single qubit of it",
+        ),
+    ],
+)
+def test_a_qubit_array_is_not_a_number(
+    diagnostics_of: DiagnosticsOf, source: str, expected: str
+) -> None:
+    """The point of the type: n qubits with no numeric meaning, so everything
+    that reads them as one value is rejected."""
+    assert [error.message for error in diagnostics_of(source).errors] == [expected]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "qubit[2] a;\nqubit[2] b = a;",
+        "qint<2> a = 1;\nqint<2> b = a;",
+        "qbool a = true;\nqbool b = a;",
+    ],
+)
+def test_a_quantum_variable_cannot_be_copied(diagnostics_of: DiagnosticsOf, source: str) -> None:
+    """Section 3.1's no-cloning ban. It used to surface as an unimplemented
+    initializer, which blamed the compiler for a rule of physics."""
+    assert [error.message for error in diagnostics_of(source).errors] == [
+        "'b' cannot copy the quantum variable 'a'; no-cloning forbids it -- measure 'a' instead"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("qubit[] a;", "'a' has no length to take from its initializer; write one out"),
+        ("qint<> a = [];", "'a' has no width to take from its initializer; write one out"),
+        ("qubit[] a = {};", "'a' has no length to take from its initializer; write one out"),
+        ("qint<> a = [0.5, 0.3, 0.2];", "'a' needs 2^n probabilities, got 3"),
+        ("qubit[] a = {1, 0, 0};", "'a' needs 2^n amplitudes, got 3"),
+    ],
+)
+def test_a_size_that_cannot_be_derived_is_reported(
+    diagnostics_of: DiagnosticsOf, source: str, expected: str
+) -> None:
+    """An empty list is equal superposition over however many qubits there are,
+    which is exactly what is missing here."""
+    assert [error.message for error in diagnostics_of(source).errors] == [expected]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "qubit[3] a;",
+        "qubit[3] a;\nH(a);",
+        "qubit[2] a;\nCX(a[0], a[1]);",
+        "qubit[2] a = [0.5, 0, 0, 0.5];",
+        "qubit[1] a = {1 / sqrt(2), 1 / sqrt(2)};",
+        "qubit[2] a = [];",
+        "qubit[2] a;\nreset(a);",
+        "qubit[2] a;\nqbool t = false;\nqif(a[0]) { X(t); }",
+        "qubit[2] a;\nrt int<> m = measure(a);",
+        "int n = 2;\nqubit[n + 1] a;\nX(a[2]);",
+    ],
+)
+def test_a_qubit_array_is_accepted(diagnostics_of: DiagnosticsOf, source: str) -> None:
+    assert not diagnostics_of(source).has_errors

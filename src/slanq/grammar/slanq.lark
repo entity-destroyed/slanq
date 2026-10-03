@@ -32,13 +32,15 @@ continue_stmt: "continue"
 
 ?declaration: qint_decl
             | qbool_decl
+            | qubit_array_decl
             | rt_int_decl
             | rt_bool_decl
             | classical_decl
             | param_array_decl
             | param_decl
 
-qint_decl:        "qint" "<" expr ">" NAME "=" q_initializer ";"
+qint_decl:        "qint" "<" [expr] ">" NAME "=" q_initializer ";"
+qubit_array_decl: "qubit" "[" [expr] "]" NAME ["=" q_initializer] ";"
 // A real-time classical variable: it lives on the processor beside the QPU,
 // where bits are scarce, so the width is written out. Empty angle brackets
 // take it from the initializer.

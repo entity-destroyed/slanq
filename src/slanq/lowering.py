@@ -38,6 +38,7 @@ from slanq.ast_nodes import (
     Statement,
     Type,
     UnaryOp,
+    is_quantum,
     qubit_count,
 )
 from slanq.builtin import (
@@ -145,8 +146,9 @@ class _Lowerer(NodeVisitor):
     def visit_QuantumDecl(self, node: QuantumDecl) -> None:
         size = qubit_count(node.declared_type)
         if size is None:
-            # A rejected width leaves the size unfilled; that error is already out.
-            if node.width_source is None:
+            # A quantum type with no size got its size rejected, and that error
+            # is already out; anything else is a type nothing here can build.
+            if not is_quantum(node.declared_type):
                 self._error(
                     f"the type of '{node.name}' is not implemented yet; this is a "
                     "limitation of the compiler, not an error in the program",
@@ -165,11 +167,13 @@ class _Lowerer(NodeVisitor):
 
         value = self._init_value(initializer)
         if value is None:
-            self._error(
-                f"this way of initializing '{node.name}' is not implemented yet; "
-                "this is a limitation of the compiler, not an error in the program",
-                node.span,
-            )
+            # Copying a quantum variable is rejected by no-cloning, already reported.
+            if not (isinstance(initializer, Name) and initializer.name in self.qubits):
+                self._error(
+                    f"this way of initializing '{node.name}' is not implemented yet; "
+                    "this is a limitation of the compiler, not an error in the program",
+                    node.span,
+                )
             return
 
         ref = QubitRef(name=node.name, size=size)
@@ -1002,7 +1006,12 @@ class _Lowerer(NodeVisitor):
             self._error(f"'{name.name}' is not a quantum variable", name.span)
         return ref
 
-    def _init_value(self, initializer: Expression | ProbList) -> int | bool | list[float] | None:
+    def _init_value(
+        self, initializer: Expression | ProbList | None
+    ) -> int | bool | list[float] | None:
+        if initializer is None:
+            # No initializer written: every qubit of the register starts at |0>.
+            return 0
         if isinstance(initializer, ProbList):
             return initializer.probabilities
 

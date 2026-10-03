@@ -1403,3 +1403,12 @@ def test_continue_follows_the_loop_it_belongs_to() -> None:
         "rt if (m == 1) { continue; } }\n"
     )
     assert "circuit.continue_loop()" in real_time
+
+
+def test_a_qubit_array_index_mirrors_like_a_qint() -> None:
+    """Index 0 is the first element and, as in a qint, the highest-order qubit;
+    Qiskit stores that one last, so the two types index alike."""
+    result = compile_source("qubit[3] a;\nX(a[0]);\n")
+    assert not result.diagnostics.has_errors
+    assert result.qiskit_source is not None
+    assert "circuit.x(a[2])" in result.qiskit_source

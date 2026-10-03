@@ -129,6 +129,11 @@ RUNNABLE_PROGRAMS = {
         "X(a[0]);\nRX(gamma[0], a[1]);\n"
         "rt int<> result = measure(a);\n"
     ),
+    "qubit array": (
+        "qubit[3] a;\nH(a[0]);\nCX(a[0], a[1]);\nCX(a[1], a[2]);\n"
+        "qubit[] flags = [0.5, 0.5];\nX(flags[0]);\n"
+        "rt int<> result = measure(a);\n"
+    ),
     "teleportation": (
         "qbool msg = true;\nqbool alice = false;\nqbool bob = false;\n"
         "H(alice);\nCX(alice, bob);\nCX(msg, alice);\nH(msg);\n"

@@ -1321,3 +1321,23 @@ def test_a_real_time_assignment_becomes_a_store(lower: LowerSource) -> None:
     store = module.body.ops[-1]
     assert isinstance(store, RealtimeStoreOp)
     assert (store.name, store.size) == ("m", 3)
+
+
+def test_a_qubit_array_starts_at_zero(lower: LowerSource) -> None:
+    """No initializer is not a missing one: every qubit of the register is |0>,
+    which is the same InitOp a written zero would produce."""
+    module, bag = lower("qubit[3] a;")
+    assert not bag.has_errors
+    (declaration,) = module.body.ops
+    assert isinstance(declaration, InitOp)
+    assert declaration.target == QubitRef(name="a", size=3)
+    assert declaration.value == 0
+
+
+def test_a_qubit_array_operand_carries_the_written_index(lower: LowerSource) -> None:
+    """The IR holds the index as written; mirroring to Qiskit's order is the
+    code generator's job, the same as for a qint."""
+    module, _ = lower("qubit[3] a;\nX(a[0]);")
+    gate = module.body.ops[1]
+    assert isinstance(gate, GateOp)
+    assert gate.targets == [QubitBit(ref=QubitRef(name="a", size=3), index=0)]

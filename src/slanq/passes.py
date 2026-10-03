@@ -7,6 +7,7 @@ import dataclasses
 from typing import Any
 
 from slanq.ast_nodes import (
+    AmplitudeList,
     Assign,
     AugAssign,
     BinaryOp,
@@ -25,14 +26,17 @@ from slanq.ast_nodes import (
     Node,
     ParamArrayDecl,
     ParamDecl,
+    ProbList,
     ProcessDef,
     Program,
     QIntType,
     QuantumDecl,
+    QubitArrayType,
     RealtimeDecl,
     Span,
     Statement,
     UnknownValue,
+    qubit_count,
 )
 from slanq.builtin import RANGE, ConstEvalError, const_value
 from slanq.diagnostics import DiagnosticBag
@@ -563,12 +567,81 @@ def fold_widths(ast: Program, bag: DiagnosticBag) -> None:
     left as None, which is what an unsized declaration already looks like.
     """
     for node in _walk(ast):
-        if isinstance(node, QuantumDecl) and isinstance(node.declared_type, QIntType):
-            node.declared_type.size = _count(node.width_source, bag, "width")
+        if isinstance(node, QuantumDecl) and isinstance(
+            node.declared_type, QIntType | QubitArrayType
+        ):
+            node.declared_type.size = _declared_size(node, bag)
         elif isinstance(node, RealtimeDecl) and node.width_source is not None:
             node.width = _count(node.width_source, bag, "width")
         elif isinstance(node, ParamArrayDecl):
             node.size = _count(node.size_source, bag, "length")
+
+
+def _declared_size(node: QuantumDecl, bag: DiagnosticBag) -> int | None:
+    noun = "length" if isinstance(node.declared_type, QubitArrayType) else "width"
+    if node.width_source is not None:
+        return _count(node.width_source, bag, noun)
+    return _size_from_initializer(node, bag, noun)
+
+
+def _size_from_initializer(node: QuantumDecl, bag: DiagnosticBag, noun: str) -> int | None:
+    """The smallest register the initializer needs, for the forms that say so.
+
+    A qubit is an expensive resource, so an omitted size takes the fewest that
+    still hold the value -- never a rounder number.
+    """
+    initializer = node.initializer
+    if isinstance(initializer, ProbList | AmplitudeList):
+        elements = (
+            initializer.probabilities if isinstance(initializer, ProbList) else initializer.elements
+        )
+        if elements and len(elements) & (len(elements) - 1) == 0:
+            return len(elements).bit_length() - 1
+        if elements:
+            kind = "probabilities" if isinstance(initializer, ProbList) else "amplitudes"
+            _report_error(bag, f"'{node.name}' needs 2^n {kind}, got {len(elements)}", initializer.span)
+            return None
+    elif not isinstance(node.declared_type, QubitArrayType):
+        size = _number_width(initializer)
+        if size is not None:
+            return size
+
+    _report_error(
+        bag,
+        f"'{node.name}' has no {noun} to take from its initializer; write one out",
+        node.span,
+    )
+    return None
+
+
+def _number_width(initializer: Expression | ProbList | AmplitudeList | None) -> int | None:
+    """How many qubits the value needs: a product is as wide as its factors
+    together, any other number as wide as its own bits."""
+    if isinstance(initializer, BinaryOp) and initializer.op == "*":
+        widths = [_operand_width(initializer.left), _operand_width(initializer.right)]
+        return None if None in widths else sum(widths)  # type: ignore[arg-type]
+    if not isinstance(initializer, Expression):
+        return None
+    try:
+        value = const_value(initializer)
+    except ConstEvalError:
+        return None
+    if type(value) is not int or value < 0:
+        return None
+    return max(1, value.bit_length())
+
+
+def _operand_width(operand: Expression) -> int | None:
+    if not isinstance(operand, Name):
+        return None
+    symbol = operand.resolved_symbol
+    if not isinstance(symbol, QuantumDecl):
+        return None
+    return qubit_count(symbol.declared_type)
+
+
+def _report_error(bag: DiagnosticBag, message: str, span: Span) -> None:
+    bag.error(message, line=span.start_line, column=span.start_col)
 
 
 def _count(source: Expression | None, bag: DiagnosticBag, noun: str) -> int | None:
@@ -577,7 +650,7 @@ def _count(source: Expression | None, bag: DiagnosticBag, noun: str) -> int | No
     try:
         value = const_value(source)
     except ConstEvalError as exc:
-        bag.error(str(exc), line=source.span.start_line, column=source.span.start_col)
+        _report_error(bag, str(exc), source.span)
         return None
     if type(value) is int:
         return value
@@ -586,7 +659,7 @@ def _count(source: Expression | None, bag: DiagnosticBag, noun: str) -> int | No
         if value is None
         else f"a {noun} must be a whole number, not {_shape_of(value)}"
     )
-    bag.error(message, line=source.span.start_line, column=source.span.start_col)
+    _report_error(bag, message, source.span)
     return None
 
 

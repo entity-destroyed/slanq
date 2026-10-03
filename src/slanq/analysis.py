@@ -36,6 +36,7 @@ from slanq.ast_nodes import (
     QIf,
     QIntType,
     QuantumDecl,
+    QubitArrayType,
     RealtimeDecl,
     RealtimeIf,
     RealtimeWhile,
@@ -366,6 +367,9 @@ class _DeclarationChecker(_Checker):
     def visit_QuantumDecl(self, node: QuantumDecl) -> None:
         self.generic_visit(node)
 
+        if not self._check_initializer_kind(node):
+            return
+
         size = qubit_count(node.declared_type)
         if size is not None and size < 1:
             self._reject(
@@ -394,6 +398,26 @@ class _DeclarationChecker(_Checker):
                 f"qubit(s) (allowed: 0..{largest})",
                 node.initializer,
             )
+
+    def _check_initializer_kind(self, node: QuantumDecl) -> bool:
+        """Whether the initializer is one this declaration can have at all."""
+        initializer = node.initializer
+        if isinstance(initializer, Name) and _declared_type(initializer) is not None:
+            self._reject(
+                f"'{node.name}' cannot copy the quantum variable "
+                f"'{initializer.name}'; no-cloning forbids it -- measure "
+                f"'{initializer.name}' instead",
+                initializer,
+            )
+            return False
+        if isinstance(node.declared_type, QubitArrayType) and isinstance(initializer, Expression):
+            self._reject(
+                f"'{node.name}' is a sequence of qubits, not a number; leave it "
+                "at |0> or give a state in [] or {}",
+                initializer,
+            )
+            return False
+        return True
 
     def visit_ParamArrayDecl(self, node: ParamArrayDecl) -> None:
         self.generic_visit(node)
@@ -424,6 +448,8 @@ class _ProbListChecker(_Checker):
             return
 
         size = qubit_count(node.declared_type)
+        if size is None:
+            return
         expected = 2**size
         if len(probabilities) != expected:
             self._reject(
@@ -703,6 +729,14 @@ class _ArithmeticChecker(_Checker):
                 "assignment applies only to quantum variables",
                 name,
             )
+            return None
+        if isinstance(declared, QubitArrayType):
+            self._reject(
+                f"'{name.name}' is a sequence of qubits, not a number, so "
+                "arithmetic has no meaning on it",
+                name,
+            )
+            return None
         return declared
 
 
@@ -934,6 +968,13 @@ class _QIfConditionChecker(_Checker):
         declared = self._require_quantum(name)
         if declared is None:
             return
+        if isinstance(declared, QubitArrayType):
+            self._reject(
+                f"'{name.name}' is a sequence of qubits, not a number; test one "
+                "of its qubits instead",
+                name,
+            )
+            return
 
         size = qubit_count(declared)
         if size is None:
@@ -972,10 +1013,14 @@ class _QIfConditionChecker(_Checker):
             return None
         size = qubit_count(declared)
         if size is not None and size != 1:
+            advice = (
+                "index a single qubit of it"
+                if isinstance(declared, QubitArrayType)
+                else "index a specific bit, or compare the whole register with =="
+            )
             self._reject(
                 f"'{name.name}' has {size} qubits; a bare qif condition needs "
-                "exactly one -- index a specific bit, or compare the whole "
-                "register with ==",
+                f"exactly one -- {advice}",
                 name,
             )
             return None

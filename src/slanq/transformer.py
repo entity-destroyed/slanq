@@ -35,6 +35,7 @@ from slanq.ast_nodes import (
     QIf,
     QIntType,
     QuantumDecl,
+    QubitArrayType,
     RealtimeDecl,
     RealtimeIf,
     RealtimeWhile,
@@ -116,6 +117,16 @@ class SlanqTransformer(Transformer):
             declared_type=QIntType(),
             initializer=initializer,
             width_source=width,
+        )
+
+    def qubit_array_decl(self, meta: Meta, children) -> QuantumDecl:
+        length, name_token, initializer = children
+        return QuantumDecl(
+            span=_span_from_meta(meta),
+            name=str(name_token),
+            declared_type=QubitArrayType(),
+            initializer=initializer,
+            width_source=length,
         )
 
     def qbool_decl(self, meta: Meta, children) -> QuantumDecl:

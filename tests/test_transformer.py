@@ -33,6 +33,7 @@ from slanq.ast_nodes import (
     QIf,
     QIntType,
     QuantumDecl,
+    QubitArrayType,
     RealtimeDecl,
     UnaryOp,
 )
@@ -304,3 +305,19 @@ def test_an_empty_program_gets_a_position(build_ast: Callable[[str], Program]) -
     assert program.statements == []
     assert program.span.start_line == 1
     assert program.span.start_col == 1
+
+
+def test_a_qubit_array_may_have_no_initializer(build_ast: BuildAst) -> None:
+    (declaration,) = build_ast("qubit[3] a;").statements
+    assert isinstance(declaration, QuantumDecl)
+    assert declaration.declared_type == QubitArrayType(size=None)
+    assert declaration.initializer is None
+
+
+def test_a_qubit_array_takes_a_state(build_ast: BuildAst) -> None:
+    sized, derived = build_ast("qubit[1] a = {};\nqubit[] b = [0.5, 0.5];").statements
+    assert isinstance(sized, QuantumDecl)
+    assert isinstance(derived, QuantumDecl)
+    assert isinstance(sized.initializer, AmplitudeList)
+    assert isinstance(derived.initializer, ProbList)
+    assert derived.width_source is None

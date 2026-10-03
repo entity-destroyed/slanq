@@ -619,3 +619,27 @@ def test_folding_leaves_a_width_that_was_never_written(expanded: Expanded) -> No
     assert isinstance(measured, RealtimeDecl)
     assert flag.width == 1
     assert measured.width == 1
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("qint<> a = 12;", 4),
+        ("qint<> a = 1;", 1),
+        ("qint<> a = 0;", 1),
+        ("qint<> a = [0.5, 0, 0, 0.5];", 2),
+        ("qint<2> b = 2;\nqint<3> c = 3;\nqint<> a = b * c;", 5),
+        ("qubit[] a = [0.5, 0.5];", 1),
+        ("qubit[] a = {0, 0, 0, 1};", 2),
+    ],
+)
+def test_an_omitted_size_comes_from_the_initializer(
+    expanded: Expanded, source: str, expected: int
+) -> None:
+    """A qubit is expensive, so a size nobody wrote is the smallest one that
+    still holds the value."""
+    ast, bag = expanded(source)
+    assert not bag.has_errors
+    declaration = ast.statements[-1]
+    assert isinstance(declaration, QuantumDecl)
+    assert qubit_count(declaration.declared_type) == expected

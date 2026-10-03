@@ -79,7 +79,7 @@ def test_mvp_c_parses(mvp_c_source: str) -> None:
     ("source", "line", "column", "found"),
     [
         ("qbool q = false;;\n", 1, 17, "';'"),
-        ("qint<> a = 0;\n", 1, 6, "'>'"),
+        ("qint<3 a = 0;\n", 1, 8, "'a'"),
         ("qbool q = false;\nqif(1 < 2 < 3) { X(q); }\n", 2, 11, "'<'"),
     ],
 )

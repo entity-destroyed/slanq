@@ -33,14 +33,22 @@ class QIntType(Type):
     size: int | None = None
 
 
+@dataclass(kw_only=True)
+class QubitArrayType(Type):
+    """`qubit[n]`: n qubits with no number meaning. Unsized while the length is
+    still to be derived from the initializer."""
+
+    size: int | None = None
+
+
 def is_quantum(declared: Type) -> bool:
-    return isinstance(declared, QBoolType | QIntType)
+    return isinstance(declared, QBoolType | QIntType | QubitArrayType)
 
 
 def qubit_count(declared: Type) -> int | None:
     if isinstance(declared, QBoolType):
         return 1
-    if isinstance(declared, QIntType):
+    if isinstance(declared, QIntType | QubitArrayType):
         return declared.size
     return None
 
@@ -112,7 +120,7 @@ class AmplitudeList(Node):
 @dataclass(kw_only=True)
 class QuantumDecl(Declaration):
     declared_type: Type
-    initializer: Expression | ProbList | AmplitudeList
+    initializer: Expression | ProbList | AmplitudeList | None
     width_source: Expression | None = None
 
 
@@ -327,6 +335,7 @@ __all__ = [
     "QBoolType",
     "QIf",
     "QIntType",
+    "QubitArrayType",
     "QuantumDecl",
     "RealtimeDecl",
     "RealtimeIf",
