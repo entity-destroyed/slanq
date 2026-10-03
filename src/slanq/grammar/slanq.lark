@@ -35,6 +35,7 @@ continue_stmt: "continue"
             | qubit_array_decl
             | rt_int_decl
             | rt_bool_decl
+            | rt_bool_array_decl
             | classical_decl
             | param_array_decl
             | param_decl
@@ -46,6 +47,7 @@ qubit_array_decl: "qubit" "[" [expr] "]" NAME ["=" q_initializer] ";"
 // take it from the initializer.
 rt_int_decl:      "rt" "int" "<" [expr] ">" NAME "=" expr ";"
 rt_bool_decl:     "rt" "bool" NAME "=" expr ";"
+rt_bool_array_decl: "rt" "bool" "[" [expr] "]" NAME "=" expr ";"
 qbool_decl:       "qbool" NAME "=" q_initializer ";"
 classical_decl:   CTYPE NAME "=" expr ";"
 param_decl:       "param" CTYPE NAME ";"

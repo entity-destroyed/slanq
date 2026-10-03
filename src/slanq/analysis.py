@@ -9,6 +9,7 @@ from slanq.ast_nodes import (
     AugAssign,
     BinaryOp,
     Block,
+    BoolArrayType,
     BoolType,
     Break,
     BuiltinDecl,
@@ -295,7 +296,11 @@ class _IndexChecker(_Checker):
 
         size = _quantum_size_of(node.base)
         if size is None:
-            self._check_param_array_index(node)
+            symbol = node.base.resolved_symbol
+            if isinstance(symbol, RealtimeDecl):
+                self._check_realtime_index(node, symbol)
+            else:
+                self._check_param_array_index(node)
             return
 
         index = self._int(node.index)
@@ -308,6 +313,23 @@ class _IndexChecker(_Checker):
             return
 
         self._check_bounds(node, size)
+
+    def _check_realtime_index(self, node: Index, symbol: RealtimeDecl) -> None:
+        if not isinstance(symbol.declared_type, BoolArrayType):
+            self._reject(
+                f"'{symbol.name}' is a number, not a sequence of bits, so it cannot be indexed",
+                node,
+            )
+            return
+        if self._int(node.index) is None:
+            self._reject(
+                "a bit index must be an integer the compiler can compute"
+                + self._no_value_reason(node.index),
+                node.index,
+            )
+            return
+        if symbol.width is not None:
+            self._check_bounds(node, symbol.width)
 
     def _check_param_array_index(self, node: Index) -> None:
         symbol = node.base.resolved_symbol
@@ -1173,6 +1195,8 @@ def _is_boolean(expression: Expression) -> bool:
         )
     if isinstance(expression, Index):
         symbol = expression.base.resolved_symbol
+        if isinstance(symbol, RealtimeDecl):
+            return isinstance(symbol.declared_type, BoolArrayType)
         return isinstance(symbol, ParamArrayDecl) and isinstance(symbol.declared_type, BoolType)
     return False
 
@@ -1197,6 +1221,49 @@ def _walk(node: Node):
     yield node
     for child in iter_child_nodes(node):
         yield from _walk(child)
+
+
+class _RealtimeArrayUseChecker(_Checker):
+    """A sequence of bits has no value of its own: every use is one bit of it,
+    the one exception being measuring into it again."""
+
+    def visit_Index(self, node: Index) -> None:
+        self.visit(node.index)
+
+    def visit_Assign(self, node: Assign) -> None:
+        self.visit(node.value)
+        if not _is_bit_sequence(node.target):
+            self.visit(node.target)
+        elif not _is_measurement(node.value):
+            self._reject_whole(node.target)
+
+    def visit_BinaryOp(self, node: BinaryOp) -> None:
+        self.generic_visit(node)
+        if node.op not in COMPARISONS:
+            return
+        for side in (node.left, node.right):
+            if isinstance(side, Index) and _is_bit_sequence(side.base):
+                self._reject(
+                    f"a bit of '{side.base.name}' is already a truth value; test "
+                    "it on its own, or negate it with !",
+                    node,
+                )
+                return
+
+    def visit_Name(self, node: Name) -> None:
+        if _is_bit_sequence(node):
+            self._reject_whole(node)
+
+    def _reject_whole(self, node: Expression) -> None:
+        name = node.name if isinstance(node, Name) else "it"
+        self._reject(f"'{name}' is a sequence of bits; index it to use one", node)
+
+
+def _is_bit_sequence(expression: Expression) -> bool:
+    if not isinstance(expression, Name):
+        return False
+    symbol = expression.resolved_symbol
+    return isinstance(symbol, RealtimeDecl) and isinstance(symbol.declared_type, BoolArrayType)
 
 
 class _MeasurementDeclChecker(_Checker):
@@ -1229,6 +1296,13 @@ class _RealtimeDeclChecker(_Checker):
 
         if _is_measurement(node.initializer):
             self._check_measured_width(node)
+            return
+
+        if isinstance(node.declared_type, BoolArrayType):
+            self._reject(
+                f"'{node.name}' is the bits of a measurement, so it must start from one",
+                node,
+            )
             return
 
         self._warn(
@@ -1777,6 +1851,7 @@ def _check_loops(ast: Program, bag: DiagnosticBag) -> None:
 def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _ProgramChecker(bag).visit(ast)
     _DeclarationChecker(bag).visit(ast)
+    _RealtimeDeclChecker(bag).visit(ast)
     _IndexChecker(bag).visit(ast)
     _CallChecker(bag).visit(ast)
     _ProbListChecker(bag).visit(ast)
@@ -1786,8 +1861,8 @@ def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _IfChecker(bag).visit(ast)
     _BeforeDeclarationChecker(bag).visit(ast)
     _RealtimeBodyAssignChecker(bag).visit(ast)
+    _RealtimeArrayUseChecker(bag).visit(ast)
     _MeasurementDeclChecker(bag).visit(ast)
-    _RealtimeDeclChecker(bag).visit(ast)
     _RealtimeIfChecker(bag).visit(ast)
     _AssignChecker(bag).visit(ast)
     _AugAssignChecker(bag).visit(ast)

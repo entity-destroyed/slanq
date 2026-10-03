@@ -356,6 +356,14 @@ def test_a_declared_size_of_one_is_accepted(diagnostics_of: DiagnosticsOf, sourc
         ("qint<true> a = 0;", "a width must be a whole number, not a boolean"),
         ("qint<1 + 1i> a = 0;", "a width must be a whole number, not a complex number"),
         ("param int[0.5] g;", "a length must be a whole number, not a fraction"),
+        (
+            "qint<2> a = 0;\nrt int<2.5> r = measure(a);",
+            "a width must be a whole number, not a fraction",
+        ),
+        (
+            "qint<2> a = 0;\nrt bool[2.5] m = measure(a);",
+            "a length must be a whole number, not a fraction",
+        ),
     ],
 )
 def test_a_width_that_is_not_a_whole_number_is_rejected(
@@ -1583,4 +1591,65 @@ def test_a_size_that_cannot_be_derived_is_reported(
     ],
 )
 def test_a_qubit_array_is_accepted(diagnostics_of: DiagnosticsOf, source: str) -> None:
+    assert not diagnostics_of(source).has_errors
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "qint<2> a = 0;\nrt bool[] m = measure(a);\nrt if (m == 2) { X(a[0]); }",
+            "'m' is a sequence of bits; index it to use one",
+        ),
+        (
+            "qint<2> a = 0;\nrt bool[] m = measure(a);\nm = 3;",
+            "'m' is a sequence of bits; index it to use one",
+        ),
+        (
+            "qint<2> a = 0;\nrt bool[] m = measure(a);\nrt if (m[0] == 1) { X(a[0]); }",
+            "a bit of 'm' is already a truth value; test it on its own, or negate it with !",
+        ),
+        (
+            "qint<2> a = 0;\nrt bool[] m = measure(a);\nrt if (m[5]) { X(a[0]); }",
+            "index 5 is out of range for 'm' of size 2",
+        ),
+        (
+            "rt bool[2] m = 3;",
+            "'m' is the bits of a measurement, so it must start from one",
+        ),
+        (
+            "qint<3> a = 0;\nrt bool[2] m = measure(a);",
+            "'a' measures into 3 bits, not the 2 declared for 'm'",
+        ),
+    ],
+)
+def test_a_bit_sequence_is_used_one_bit_at_a_time(
+    diagnostics_of: DiagnosticsOf, source: str, expected: str
+) -> None:
+    assert diagnostics_of(source).errors[0].message == expected
+
+
+def test_a_number_cannot_be_indexed_as_bits(diagnostics_of: DiagnosticsOf) -> None:
+    """`rt int<n>` is one number of n bits, not n bits -- indexing it used to
+    fall through to the condition check, which blamed the wrong thing."""
+    bag = diagnostics_of("qint<2> a = 0;\nrt int<2> r = measure(a);\nrt if (r[0]) { X(a[0]); }")
+    assert bag.errors[0].message == (
+        "'r' is a number, not a sequence of bits, so it cannot be indexed"
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "qint<2> a = 0;\nrt bool[] m = measure(a);\nrt if (m[0]) { X(a[0]); }",
+        "qint<2> a = 0;\nrt bool[] m = measure(a);\nrt if (!m[1]) { X(a[0]); }",
+        "qint<2> a = 0;\nrt bool[] m = measure(a);\nrt if (m[0] && m[1]) { X(a[0]); }",
+        "qubit[2] a;\nrt bool[2] m = measure(a);\nrt if (m[0]) { X(a[0]); }",
+        "qbool q = false;\nrt bool[] m = measure(q);\nrt if (m[0]) { X(q); }",
+        "qint<2> a = 0;\nrt bool[] m = measure(a);\nm = measure(a);\nrt if (m[0]) { X(a[0]); }",
+        "qint<2> a = 0;\nrt int<> r = measure(a);\nrt bool[] m = measure(a);\n"
+        "rt if (m[0] && r == 1) { X(a[0]); }",
+    ],
+)
+def test_a_bit_sequence_is_accepted(diagnostics_of: DiagnosticsOf, source: str) -> None:
     assert not diagnostics_of(source).has_errors

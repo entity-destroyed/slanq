@@ -74,6 +74,12 @@ class ComplexType(Type):
 
 
 @dataclass(kw_only=True)
+class BoolArrayType(Type):
+    """`rt bool[n]`: the bits of a measurement, indexed one at a time. The
+    length lives on the declaration, as its width does for `rt int<n>`."""
+
+
+@dataclass(kw_only=True)
 class Node:
     span: Span
 
@@ -308,6 +314,7 @@ __all__ = [
     "BinaryOp",
     "Block",
     "Break",
+    "BoolArrayType",
     "BoolType",
     "BuiltinDecl",
     "Call",

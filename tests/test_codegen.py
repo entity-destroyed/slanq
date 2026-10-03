@@ -1412,3 +1412,14 @@ def test_a_qubit_array_index_mirrors_like_a_qint() -> None:
     assert not result.diagnostics.has_errors
     assert result.qiskit_source is not None
     assert "circuit.x(a[2])" in result.qiskit_source
+
+
+def test_a_measured_bit_mirrors_and_needs_no_comparison() -> None:
+    """A clbit is already a Bool to Qiskit (measured: `expr.equal(c[0], 1)` is a
+    type error), and bit i answers for qubit i, which Qiskit stores reversed."""
+    result = compile_source(
+        "qubit[3] a;\nqbool t = false;\nrt bool[] m = measure(a);\nrt if (m[0]) { X(t); }\n"
+    )
+    assert not result.diagnostics.has_errors
+    assert result.qiskit_source is not None
+    assert "circuit.if_test(expr.lift(m[2]))" in result.qiskit_source

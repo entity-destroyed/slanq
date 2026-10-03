@@ -9,6 +9,7 @@ from slanq.ast_nodes import (
     AugAssign,
     BinaryOp,
     Block,
+    BoolArrayType,
     BoolType,
     Break,
     Call,
@@ -227,6 +228,16 @@ class SlanqTransformer(Transformer):
             declared_type=IntType(),
             initializer=initializer,
             width_source=width,
+        )
+
+    def rt_bool_array_decl(self, meta: Meta, children) -> RealtimeDecl:
+        length, name_token, initializer = children
+        return RealtimeDecl(
+            span=_span_from_meta(meta),
+            name=str(name_token),
+            declared_type=BoolArrayType(),
+            initializer=initializer,
+            width_source=length,
         )
 
     def rt_bool_decl(self, meta: Meta, children) -> RealtimeDecl:

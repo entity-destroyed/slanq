@@ -643,3 +643,11 @@ def test_an_omitted_size_comes_from_the_initializer(
     declaration = ast.statements[-1]
     assert isinstance(declaration, QuantumDecl)
     assert qubit_count(declaration.declared_type) == expected
+
+
+def test_a_bit_sequence_length_is_folded(expanded: Expanded) -> None:
+    ast, bag = expanded("int n = 2;\nqint<2> a = 0;\nrt bool[n] m = measure(a);\n")
+    assert not bag.has_errors
+    declaration = ast.statements[2]
+    assert isinstance(declaration, RealtimeDecl)
+    assert declaration.width == 2

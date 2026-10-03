@@ -12,6 +12,7 @@ from slanq.ast_nodes import (
     AugAssign,
     BinaryOp,
     Block,
+    BoolArrayType,
     Call,
     ClassicalDecl,
     ComplexType,
@@ -321,3 +322,14 @@ def test_a_qubit_array_takes_a_state(build_ast: BuildAst) -> None:
     assert isinstance(sized.initializer, AmplitudeList)
     assert isinstance(derived.initializer, ProbList)
     assert derived.width_source is None
+
+
+def test_a_bit_sequence_takes_its_length_from_the_measurement(build_ast: BuildAst) -> None:
+    _, derived, sized = build_ast(
+        "qint<2> a = 0;\nrt bool[] m = measure(a);\nrt bool[2] n = measure(a);"
+    ).statements
+    assert isinstance(derived, RealtimeDecl)
+    assert isinstance(sized, RealtimeDecl)
+    assert derived.declared_type == BoolArrayType()
+    assert derived.width_source is None
+    assert sized.width_source is not None

@@ -134,6 +134,13 @@ RUNNABLE_PROGRAMS = {
         "qubit[] flags = [0.5, 0.5];\nX(flags[0]);\n"
         "rt int<> result = measure(a);\n"
     ),
+    "measured bits": (
+        "qubit[2] a;\nH(a);\nqbool t = false;\n"
+        "rt bool[] m = measure(a);\n"
+        "rt if (m[0] && m[1]) { X(t); }\n"
+        "rt if (!m[0]) { Z(t); }\n"
+        "rt int<> result = measure(t);\n"
+    ),
     "teleportation": (
         "qbool msg = true;\nqbool alice = false;\nqbool bob = false;\n"
         "H(alice);\nCX(alice, bob);\nCX(msg, alice);\nH(msg);\n"

@@ -741,6 +741,15 @@ class _Generator:
                 code=expression.name, width=self._realtime_widths[expression.name]
             )
 
+        if isinstance(expression, Index):
+            # A measured bit is already a Bool to Qiskit, so it needs no
+            # comparison to become a condition. Mirrored like any other index.
+            name = expression.base.name
+            index = const_value(expression.index)
+            assert isinstance(index, int)
+            bit = self._realtime_widths[name] - 1 - index
+            return _RealtimeValue(code=f"expr.lift({name}[{bit}])", width=None)
+
         if isinstance(expression, UnaryOp):
             builder = EXPR_BUILDERS[expression.op]
             operand = self._realtime_expr(expression.operand)
@@ -873,8 +882,9 @@ def _as_truth(value: _RealtimeValue) -> str:
 
 
 def _touches_realtime(expression: Expression) -> bool:
-    if isinstance(expression, Name):
-        return isinstance(expression.resolved_symbol, RealtimeDecl)
+    if isinstance(expression, Name | Index):
+        base = expression.base if isinstance(expression, Index) else expression
+        return isinstance(base.resolved_symbol, RealtimeDecl)
     if isinstance(expression, UnaryOp):
         return _touches_realtime(expression.operand)
     if isinstance(expression, BinaryOp):

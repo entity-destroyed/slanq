@@ -12,6 +12,7 @@ from slanq.ast_nodes import (
     AugAssign,
     BinaryOp,
     Block,
+    BoolArrayType,
     Call,
     ClassicalDecl,
     Declaration,
@@ -572,7 +573,8 @@ def fold_widths(ast: Program, bag: DiagnosticBag) -> None:
         ):
             node.declared_type.size = _declared_size(node, bag)
         elif isinstance(node, RealtimeDecl) and node.width_source is not None:
-            node.width = _count(node.width_source, bag, "width")
+            noun = "length" if isinstance(node.declared_type, BoolArrayType) else "width"
+            node.width = _count(node.width_source, bag, noun)
         elif isinstance(node, ParamArrayDecl):
             node.size = _count(node.size_source, bag, "length")
 
@@ -599,7 +601,9 @@ def _size_from_initializer(node: QuantumDecl, bag: DiagnosticBag, noun: str) -> 
             return len(elements).bit_length() - 1
         if elements:
             kind = "probabilities" if isinstance(initializer, ProbList) else "amplitudes"
-            _report_error(bag, f"'{node.name}' needs 2^n {kind}, got {len(elements)}", initializer.span)
+            _report_error(
+                bag, f"'{node.name}' needs 2^n {kind}, got {len(elements)}", initializer.span
+            )
             return None
     elif not isinstance(node.declared_type, QubitArrayType):
         size = _number_width(initializer)
