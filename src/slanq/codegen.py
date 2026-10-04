@@ -48,6 +48,7 @@ from slanq.ir import (
     RealtimeIfOp,
     RealtimeStoreOp,
     RealtimeWhileOp,
+    RenameOp,
     ResetOp,
 )
 
@@ -418,6 +419,9 @@ class _Generator:
 
         if isinstance(op, MultiplyOp):
             return self._multiply_lines(op, circuit_var, qubits)
+
+        if isinstance(op, RenameOp):
+            return [f"{op.target.name} = {op.source.name}"]
 
         if isinstance(op, DeclareAncillaOp):
             return [

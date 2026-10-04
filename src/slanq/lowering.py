@@ -45,6 +45,7 @@ from slanq.builtin import (
     BUILTIN_CONSTANTS,
     BUILTIN_GATES,
     BUILTIN_SIGNATURES,
+    CONVERSIONS,
     ArgKind,
     ConstEvalError,
     Signature,
@@ -77,9 +78,10 @@ from slanq.ir import (
     RealtimeIfOp,
     RealtimeStoreOp,
     RealtimeWhileOp,
+    RenameOp,
     ResetOp,
 )
-from slanq.passes import taken_branch
+from slanq.passes import moved_source, taken_branch
 from slanq.visitor import NodeVisitor, iter_child_nodes
 
 _PARAM_TYPE_NAMES: dict[type[Type], TypingLiteral["int", "float", "bool"]] = {
@@ -157,6 +159,13 @@ class _Lowerer(NodeVisitor):
             return
 
         initializer = node.initializer
+        if isinstance(initializer, Call) and initializer.callee.name in CONVERSIONS:
+            source = moved_source(initializer)
+            # A source that is not a quantum variable is reported in analysis.
+            if source is not None:
+                self._lower_move(node, source, size)
+            return
+
         if isinstance(initializer, BinaryOp) and initializer.op == "*":
             self._lower_multiply_decl(node, size, initializer)
             return
@@ -180,6 +189,17 @@ class _Lowerer(NodeVisitor):
         self.qubits[node.name] = ref
         self.module.qubits.append(ref)
         self._block.ops.append(InitOp(span=node.span, target=ref, value=value))
+
+    def _lower_move(self, node: QuantumDecl, source: Name, size: int) -> None:
+        """The source register under the new name. Nothing is built: the move
+        is a rename, which is why it costs no gate and no qubit."""
+        origin = self.qubits.get(source.name)
+        if origin is None:
+            self._unreachable(f"a move from '{source.name}', which has no register", node.span)
+            return
+        ref = QubitRef(name=node.name, size=size)
+        self.qubits[node.name] = ref
+        self._block.ops.append(RenameOp(span=node.span, target=ref, source=origin))
 
     def visit_ClassicalDecl(self, node: ClassicalDecl) -> None:
         initializer = node.initializer
@@ -977,7 +997,9 @@ class _Lowerer(NodeVisitor):
             return self._indexed_operand(expression)
 
         if not isinstance(expression, Name):
-            self._error("expected a quantum variable", expression.span)
+            # A conversion standing here is reported where its placement is.
+            if moved_source(expression) is None:
+                self._error("expected a quantum variable", expression.span)
             return None
 
         ref = self._register(expression)

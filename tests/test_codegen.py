@@ -1423,3 +1423,14 @@ def test_a_measured_bit_mirrors_and_needs_no_comparison() -> None:
     assert not result.diagnostics.has_errors
     assert result.qiskit_source is not None
     assert "circuit.if_test(expr.lift(m[2]))" in result.qiskit_source
+
+
+def test_a_move_binds_the_new_name_to_the_old_register() -> None:
+    """The generated file keeps the name the source used after the move, so the
+    two can still be read side by side."""
+    result = compile_source("qint<3> n = 0;\nqubit[3] b = to_qubits(n);\nX(b[0]);\n")
+    assert not result.diagnostics.has_errors
+    assert result.qiskit_source is not None
+    assert "b = n" in result.qiskit_source
+    assert "circuit.x(b[2])" in result.qiskit_source
+    assert result.qiskit_source.count("QuantumRegister(3") == 1

@@ -26,6 +26,8 @@ from slanq.ast_nodes import (
     IntType,
     Literal,
     Name,
+    QIntType,
+    QubitArrayType,
     Span,
     Type,
     UnaryOp,
@@ -87,6 +89,8 @@ BUILTIN_SIGNATURES: dict[str, Signature] = {
     ),
     "phase": Signature(args=(ArgKind.ANGLE,)),
     "measure": Signature(args=(ArgKind.QVAR,), returns=IntType()),
+    "to_qint": Signature(args=(ArgKind.QVAR,), returns=QIntType()),
+    "to_qubits": Signature(args=(ArgKind.QVAR,), returns=QubitArrayType()),
     "reset": Signature(args=(ArgKind.QUBITS,)),
     **_gates("floor ceil round", ArgKind.ANGLE, returns=IntType()),
     "sqrt": Signature(args=(ArgKind.ANGLE,), returns=FloatType()),
@@ -281,10 +285,14 @@ def const_int(expression: Expression) -> int | None:
     return None
 
 
+CONVERSIONS = {"to_qint": "a qint", "to_qubits": "a qubit sequence"}
+
+
 __all__ = [
     "BINARY_OPS",
     "BUILTIN_SCOPE",
     "BUILTIN_SIGNATURES",
+    "CONVERSIONS",
     "BUILTIN_SPAN",
     "BUILTIN_CONSTANTS",
     "BUILTIN_FUNCTIONS",

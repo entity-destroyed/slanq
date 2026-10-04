@@ -1740,3 +1740,89 @@ def test_a_parameter_width_cannot_name_a_parameter(diagnostics_of: DiagnosticsOf
     process -- not the parameters it is being written beside."""
     bag = diagnostics_of("process f(qint<x> x) { X(x[0]); }\nqint<2> a = 0;\nf(a);")
     assert bag.errors[0].message == "undefined name 'x'"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "qint<4> n = 5;\nqubit[4] b = to_qubits(n);\nX(n[0]);",
+            "'n' was moved into 'b' on line 2, so it cannot be used again",
+        ),
+        (
+            "qint<4> n = 5;\nqubit[4] b = to_qubits(n);\nqubit[4] c = to_qubits(n);",
+            "'n' was moved into 'b' on line 2, so it cannot be used again",
+        ),
+        (
+            "qint<4> n = 5;\nqubit[4] b = to_qubits(n);\nrt int<> m = measure(n);",
+            "'n' was moved into 'b' on line 2, so it cannot be used again",
+        ),
+        (
+            "qubit[2] b;\nqint<2> n = to_qint(b);\nqbool t = false;\nqif(b[0]) { X(t); }",
+            "'b' was moved into 'n' on line 2, so it cannot be used again",
+        ),
+    ],
+)
+def test_a_moved_variable_cannot_be_used_again(
+    diagnostics_of: DiagnosticsOf, source: str, expected: str
+) -> None:
+    """The qubits answer to the new name now. Two live names for the same
+    qubits is exactly what the affine discipline rules out."""
+    assert [error.message for error in diagnostics_of(source).errors] == [expected]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "qint<4> n = 5;\nqint<4> b = to_qubits(n);",
+            "'to_qubits' gives a qubit sequence, which is not what 'b' was declared as",
+        ),
+        (
+            "qubit[4] b;\nqubit[4] c = to_qint(b);",
+            "'to_qint' gives a qint, which is not what 'c' was declared as",
+        ),
+        (
+            "qubit[4] b;\nqubit[4] c = to_qubits(b);",
+            "'b' is already a qubit sequence",
+        ),
+        (
+            "qint<4> n = 5;\nqint<4> b = to_qint(n);",
+            "'n' is already a qint",
+        ),
+        (
+            "qint<4> n = 5;\nqubit[2] b = to_qubits(n);",
+            "'n' has 4 qubit(s), so 'b' cannot have 2: a move takes the qubits as they are",
+        ),
+        (
+            "qint<4> n = 5;\nX(to_qubits(n));",
+            "'to_qubits' renames qubits, so its result has to be given a name: "
+            "write it as the initializer of a declaration",
+        ),
+        (
+            "qint<4> n = 5;\nto_qubits(n);",
+            "'to_qubits' renames qubits, so its result has to be given a name: "
+            "write it as the initializer of a declaration",
+        ),
+    ],
+)
+def test_a_conversion_is_a_move_with_rules(
+    diagnostics_of: DiagnosticsOf, source: str, expected: str
+) -> None:
+    assert [error.message for error in diagnostics_of(source).errors] == [expected]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "qint<4> n = 5;\nqubit[4] b = to_qubits(n);\nX(b[0]);",
+        "qint<4> n = 5;\nqubit[] b = to_qubits(n);\nX(b[3]);",
+        "qubit[4] b;\nqint<4> n = to_qint(b);\nn += 1;",
+        "qubit[4] b;\nqint<> n = to_qint(b);\nrt int<> m = measure(n);",
+        "qbool q = false;\nqubit[1] b = to_qubits(q);\nX(b[0]);",
+        "qint<4> n = 5;\nqubit[4] b = to_qubits(n);\nqint<4> back = to_qint(b);\nX(back[0]);",
+        "qint<2> n = 1;\nqubit[2] b = to_qubits(n);\nprocess f(qubit[] x) { H(x); }\nf(b);",
+    ],
+)
+def test_a_move_is_accepted(diagnostics_of: DiagnosticsOf, source: str) -> None:
+    assert not diagnostics_of(source).has_errors

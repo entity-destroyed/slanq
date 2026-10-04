@@ -53,6 +53,7 @@ from slanq.ast_nodes import (
 )
 from slanq.builtin import (
     BUILTIN_SCOPE,
+    CONVERSIONS,
     RANGE,
     ArgKind,
     ConstEvalError,
@@ -66,6 +67,7 @@ from slanq.passes import (
     Binding,
     expand_processes,
     fold_widths,
+    moved_source,
     track_values,
     unroll_loops,
 )
@@ -438,6 +440,8 @@ class _DeclarationChecker(_Checker):
                 initializer,
             )
             return False
+        if _conversion_name(initializer) is not None:
+            return True
         if isinstance(node.declared_type, QubitArrayType) and isinstance(initializer, Expression):
             self._reject(
                 f"'{node.name}' is a sequence of qubits, not a number; leave it "
@@ -920,6 +924,9 @@ class _CallChecker(_Checker):
             )
 
     def _check_argument(self, name: str, kind: ArgKind, argument: Expression) -> int | None:
+        if _conversion_name(argument) is not None:
+            # Where a conversion may stand is its own rule, reported there.
+            return None
         operand = _quantum_operand(argument)
 
         if kind is ArgKind.ANGLE:
@@ -942,6 +949,8 @@ class _CallChecker(_Checker):
         return 1 if indexed else qubit_count(declared)
 
     def _check_position(self, name: str, signature, node: Call) -> None:
+        if _conversion_name(node) is not None:
+            return
         in_statement = node is self.statement_call
         if in_statement and signature.returns is not None:
             self._reject(f"the result of '{name}' must be assigned", node)
@@ -1261,6 +1270,96 @@ def _walk(node: Node):
     yield node
     for child in iter_child_nodes(node):
         yield from _walk(child)
+
+
+def _conversion_name(expression: object) -> str | None:
+    if isinstance(expression, Call) and expression.callee.name in CONVERSIONS:
+        return expression.callee.name
+    return None
+
+
+class _ConversionChecker(_Checker):
+    """`to_qint`/`to_qubits` rename qubits rather than producing a value, so
+    they only stand where a name is being given: a declaration's initializer."""
+
+    def visit_QuantumDecl(self, node: QuantumDecl) -> None:
+        name = _conversion_name(node.initializer)
+        if name is None:
+            self.generic_visit(node)
+            return
+        assert isinstance(node.initializer, Call)
+        self._check_conversion(node, name, node.initializer)
+
+    def visit_Call(self, node: Call) -> None:
+        self.generic_visit(node)
+        name = _conversion_name(node)
+        if name is not None:
+            self._reject(
+                f"'{name}' renames qubits, so its result has to be given a name: "
+                "write it as the initializer of a declaration",
+                node,
+            )
+
+    def _check_conversion(self, node: QuantumDecl, name: str, call: Call) -> None:
+        wanted = QIntType if name == "to_qint" else QubitArrayType
+        if not isinstance(node.declared_type, wanted):
+            self._reject(
+                f"'{name}' gives {CONVERSIONS[name]}, which is not what "
+                f"'{node.name}' was declared as",
+                node,
+            )
+            return
+        source = moved_source(call)
+        if source is None:
+            return
+        declared = _declared_type(source)
+        if declared is None:
+            return
+        if isinstance(declared, wanted):
+            self._reject(f"'{source.name}' is already {CONVERSIONS[name]}", source)
+            return
+        if name == "to_qint" and not isinstance(declared, QubitArrayType):
+            self._reject(
+                f"'to_qint' takes a qubit sequence, but '{source.name}' is a number",
+                source,
+            )
+            return
+        target = qubit_count(node.declared_type)
+        given = qubit_count(declared)
+        if target is not None and given is not None and target != given:
+            self._reject(
+                f"'{source.name}' has {given} qubit(s), so '{node.name}' cannot "
+                f"have {target}: a move takes the qubits as they are",
+                node,
+            )
+
+
+class _MoveChecker(_Checker):
+    """A move ends the name it took from: the qubits answer to the new name,
+    and two live names for the same qubits is what affine discipline forbids."""
+
+    def __init__(self, bag: DiagnosticBag) -> None:
+        super().__init__(bag)
+        self.moved: dict[int, tuple[str, int]] = {}
+
+    def visit_ProcessDef(self, node: ProcessDef) -> None:
+        # A template, not a place in the program; its expansions are visited.
+        return
+
+    def visit_QuantumDecl(self, node: QuantumDecl) -> None:
+        self.generic_visit(node)
+        source = moved_source(node.initializer)
+        if source is not None and source.resolved_symbol is not None:
+            self.moved[id(source.resolved_symbol)] = (node.name, node.span.start_line)
+
+    def visit_Name(self, node: Name) -> None:
+        taken = self.moved.get(id(node.resolved_symbol))
+        if taken is not None:
+            self._reject(
+                f"'{node.name}' was moved into '{taken[0]}' on line {taken[1]}, "
+                "so it cannot be used again",
+                node,
+            )
 
 
 class _RealtimeArrayUseChecker(_Checker):
@@ -1902,6 +2001,7 @@ def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _BeforeDeclarationChecker(bag).visit(ast)
     _RealtimeBodyAssignChecker(bag).visit(ast)
     _RealtimeArrayUseChecker(bag).visit(ast)
+    _ConversionChecker(bag).visit(ast)
     _MeasurementDeclChecker(bag).visit(ast)
     _RealtimeIfChecker(bag).visit(ast)
     _AssignChecker(bag).visit(ast)
@@ -1952,7 +2052,7 @@ def _argument_qubits(argument: Expression) -> int | None:
 
 
 def _check_affine(ast: Program, bag: DiagnosticBag) -> None:
-    pass
+    _MoveChecker(bag).visit(ast)
 
 
 def _error(bag: DiagnosticBag, message: str, span: Span) -> None:

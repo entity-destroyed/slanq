@@ -148,6 +148,13 @@ RUNNABLE_PROGRAMS = {
         "spread(a);\nflip(b);\n"
         "rt int<> result = measure(a);\n"
     ),
+    "moving between a number and its qubits": (
+        "qubit[3] bits;\nX(bits[1]);\nH(bits[0]);\n"
+        "qint<> n = to_qint(bits);\nn += 1;\n"
+        "qubit[] back = to_qubits(n);\nZ(back[2]);\n"
+        "qint<3> again = to_qint(back);\n"
+        "rt int<> result = measure(again);\n"
+    ),
     "teleportation": (
         "qbool msg = true;\nqbool alice = false;\nqbool bob = false;\n"
         "H(alice);\nCX(alice, bob);\nCX(msg, alice);\nH(msg);\n"

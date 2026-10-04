@@ -661,3 +661,11 @@ def test_a_parameter_width_is_folded(expanded: Expanded) -> None:
     definition = ast.statements[1]
     assert isinstance(definition, ProcessDef)
     assert qubit_count(definition.params[0].declared_type) == 4
+
+
+def test_a_move_takes_its_width_from_the_source(expanded: Expanded) -> None:
+    ast, bag = expanded("qubit[3] b;\nqint<> n = to_qint(b);\n")
+    assert not bag.has_errors
+    declaration = ast.statements[1]
+    assert isinstance(declaration, QuantumDecl)
+    assert qubit_count(declaration.declared_type) == 3

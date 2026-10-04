@@ -63,6 +63,16 @@ class DeclareAncillaOp(Op):
 
 
 @dataclass(kw_only=True, eq=False)
+class RenameOp(Op):
+    """A move: `target` and `source` are the same physical qubits under two
+    names, the second of which has ended. No gate, no register -- the generated
+    file binds the new name to the old register."""
+
+    target: QubitRef
+    source: QubitRef
+
+
+@dataclass(kw_only=True, eq=False)
 class InitOp(Op):
     target: QubitRef
     value: int | bool | list[float] | list[complex | float]
@@ -292,6 +302,7 @@ __all__ = [
     "QubitOperand",
     "QubitRef",
     "QubitSlice",
+    "RenameOp",
     "RealtimeIfOp",
     "RealtimeStoreOp",
     "RealtimeWhileOp",

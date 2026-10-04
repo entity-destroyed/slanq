@@ -40,7 +40,7 @@ from slanq.ast_nodes import (
     UnknownValue,
     qubit_count,
 )
-from slanq.builtin import RANGE, ConstEvalError, const_value
+from slanq.builtin import CONVERSIONS, RANGE, ConstEvalError, const_value
 from slanq.diagnostics import DiagnosticBag
 from slanq.visitor import iter_child_nodes
 
@@ -615,6 +615,9 @@ def _size_from_initializer(node: QuantumDecl, bag: DiagnosticBag, noun: str) -> 
     still hold the value -- never a rounder number.
     """
     initializer = node.initializer
+    source = moved_source(initializer)
+    if source is not None:
+        return qubit_count(source.resolved_symbol.declared_type)  # type: ignore[union-attr]
     if isinstance(initializer, ProbList | AmplitudeList):
         elements = (
             initializer.probabilities if isinstance(initializer, ProbList) else initializer.elements
@@ -638,6 +641,17 @@ def _size_from_initializer(node: QuantumDecl, bag: DiagnosticBag, noun: str) -> 
         node.span,
     )
     return None
+
+
+def moved_source(initializer: Expression | ProbList | AmplitudeList | None) -> Name | None:
+    """The variable a conversion moves from, when the expression is one."""
+    if not isinstance(initializer, Call) or initializer.callee.name not in CONVERSIONS:
+        return None
+    if len(initializer.args) != 1 or not isinstance(initializer.args[0], Name):
+        return None
+    argument = initializer.args[0]
+    symbol = argument.resolved_symbol
+    return argument if isinstance(symbol, QuantumDecl) else None
 
 
 def _number_width(initializer: Expression | ProbList | AmplitudeList | None) -> int | None:
@@ -716,6 +730,7 @@ __all__ = [
     "Binding",
     "expand_processes",
     "fold_widths",
+    "moved_source",
     "taken_branch",
     "track_values",
     "unroll_loops",

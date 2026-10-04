@@ -48,6 +48,7 @@ from slanq.ir import (
     QubitSlice,
     RealtimeIfOp,
     RealtimeStoreOp,
+    RenameOp,
     ResetOp,
 )
 from slanq.lowering import lower_to_ir
@@ -1341,3 +1342,15 @@ def test_a_qubit_array_operand_carries_the_written_index(lower: LowerSource) -> 
     gate = module.body.ops[1]
     assert isinstance(gate, GateOp)
     assert gate.targets == [QubitBit(ref=QubitRef(name="a", size=3), index=0)]
+
+
+def test_a_move_builds_no_register_and_no_gate(lower: LowerSource) -> None:
+    """The point of the move: the same physical qubits under another name, so
+    it costs nothing -- one register in, one register out."""
+    module, bag = lower("qint<3> n = 0;\nqubit[3] b = to_qubits(n);\nX(b[0]);")
+    assert not bag.has_errors
+    assert [register.name for register in module.qubits] == ["n"]
+    rename = module.body.ops[1]
+    assert isinstance(rename, RenameOp)
+    assert rename.target == QubitRef(name="b", size=3)
+    assert rename.source == QubitRef(name="n", size=3)
