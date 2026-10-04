@@ -46,7 +46,10 @@ target-version = "py312"
 exclude = ["generated"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = ["E", "F", "I", "UP", "B", "S"]
+# S101 (assert) is off everywhere: a test says what it means with assert,
+# and the compiler's own asserts are invariants mypy narrows on.
+ignore = ["S101"]
 
 [tool.mypy]
 python_version = "3.12"
