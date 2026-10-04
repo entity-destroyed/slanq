@@ -173,6 +173,7 @@ class BuiltinDecl(Declaration):
 class ProcParam(Node):
     name: str
     declared_type: Type
+    width_source: Expression | None = None
 
 
 @dataclass(kw_only=True)

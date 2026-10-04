@@ -34,6 +34,7 @@ from slanq.ast_nodes import (
     ProcessDef,
     ProcParam,
     Program,
+    QBoolType,
     QIf,
     QIntType,
     QuantumDecl,
@@ -62,6 +63,7 @@ from slanq.diagnostics import DiagnosticBag
 from slanq.parser import reserved_words
 from slanq.passes import (
     BEFORE_DECLARATION,
+    Binding,
     expand_processes,
     fold_widths,
     track_values,
@@ -76,7 +78,7 @@ def analyze(ast: Program, bag: DiagnosticBag) -> None:
     scope = _build_symbol_table(ast, bag)
     _resolve_names(ast, bag, scope)
     _check_process_calls(ast, bag)
-    expand_processes(ast, bag)
+    bindings = expand_processes(ast, bag)
     track_values(ast)
     _check_loops(ast, bag)
     unroll_loops(ast, bag)
@@ -84,6 +86,7 @@ def analyze(ast: Program, bag: DiagnosticBag) -> None:
     # produces one copy of the body per iteration, each with its own values.
     track_values(ast)
     fold_widths(ast, bag)
+    _check_parameter_widths(bindings, bag)
     _check_types(ast, bag)
     _check_affine(ast, bag)
 
@@ -212,6 +215,9 @@ class _NameResolver(NodeVisitor):
 
     def visit_ProcessDef(self, node: ProcessDef) -> None:
         self._declare(node)
+        for parameter in node.params:
+            if parameter.width_source is not None:
+                self.visit(parameter.width_source)
         self.scopes.append({})
         for parameter in node.params:
             self._declare(parameter)
@@ -762,6 +768,13 @@ class _ArithmeticChecker(_Checker):
         return declared
 
 
+_KIND_NAMES: dict[type[Type], str] = {
+    QIntType: "a qint",
+    QBoolType: "a qbool",
+    QubitArrayType: "a qubit sequence",
+}
+
+
 class _ProcessCallChecker(_Checker):
     """Everything about a `process` call that is a property of the call rather
     than of the body: arity, the aliasing ban, and being called as a statement.
@@ -804,6 +817,33 @@ class _ProcessCallChecker(_Checker):
             return
 
         self._check_no_aliasing(name, node)
+        self._check_parameter_kinds(name, symbol, node)
+
+    def _check_parameter_kinds(self, name: str, process: ProcessDef, node: Call) -> None:
+        """A parameter's type says what may arrive. A single qubit fits any
+        quantum parameter: what the body makes of it is checked there, once the
+        argument has taken the parameter's place."""
+        for parameter, argument in zip(process.params, node.args, strict=True):
+            declared = parameter.declared_type
+            indexed = isinstance(argument, Index) and _declared_type(argument.base) is not None
+            given = _declared_type(argument) if isinstance(argument, Name) else None
+
+            if not is_quantum(declared):
+                if indexed or given is not None:
+                    self._reject(
+                        f"'{name}' takes a classical value for '{parameter.name}', "
+                        f"but got a quantum variable",
+                        argument,
+                    )
+                continue
+            if given is None:
+                continue
+            if type(given) is not type(declared):
+                self._reject(
+                    f"'{name}' takes {_KIND_NAMES[type(declared)]} for "
+                    f"'{parameter.name}', but got {_KIND_NAMES[type(given)]}",
+                    argument,
+                )
 
     def _check_no_aliasing(self, name: str, node: Call) -> None:
         """A process is inlined, so passing the same variable twice would put
@@ -1870,6 +1910,45 @@ def _check_types(ast: Program, bag: DiagnosticBag) -> None:
     _LoopControlChecker(bag).visit(ast)
     _ArithmeticChecker(bag).visit(ast)
     _ParamTypeChecker(bag).visit(ast)
+
+
+def _check_parameter_widths(bindings: list[Binding], bag: DiagnosticBag) -> None:
+    """A width written on a parameter against the argument that arrived.
+
+    Runs here rather than with the other call-site checks because a width is
+    only settled after expansion and value tracking, and the call is gone by
+    then -- which is what `Binding` keeps.
+    """
+    for binding in bindings:
+        expected = qubit_count(binding.parameter.declared_type)
+        given = _argument_qubits(binding.argument)
+        if expected is None or given is None or expected == given:
+            continue
+        if _wrong_kind(binding):
+            continue
+        _error(
+            bag,
+            f"'{binding.process}' takes {expected} qubit(s) for "
+            f"'{binding.parameter.name}', but got {given}",
+            binding.span,
+        )
+
+
+def _wrong_kind(binding: Binding) -> bool:
+    """Whether the kinds already disagree, which the call site has reported."""
+    if not isinstance(binding.argument, Name):
+        return False
+    given = _declared_type(binding.argument)
+    return given is not None and type(given) is not type(binding.parameter.declared_type)
+
+
+def _argument_qubits(argument: Expression) -> int | None:
+    if isinstance(argument, Index):
+        return 1 if _declared_type(argument.base) is not None else None
+    if isinstance(argument, Name):
+        declared = _declared_type(argument)
+        return None if declared is None else qubit_count(declared)
+    return None
 
 
 def _check_affine(ast: Program, bag: DiagnosticBag) -> None:

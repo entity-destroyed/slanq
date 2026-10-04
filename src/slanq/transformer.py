@@ -193,7 +193,33 @@ class SlanqTransformer(Transformer):
     def param_list(self, meta: Meta, children) -> list[ProcParam]:
         return list(children)
 
-    def proc_param(self, meta: Meta, children) -> ProcParam:
+    def qint_param(self, meta: Meta, children) -> ProcParam:
+        width, name_token = children
+        return ProcParam(
+            span=_span_from_meta(meta),
+            name=str(name_token),
+            declared_type=QIntType(),
+            width_source=width,
+        )
+
+    def qbool_param(self, meta: Meta, children) -> ProcParam:
+        (name_token,) = children
+        return ProcParam(
+            span=_span_from_meta(meta),
+            name=str(name_token),
+            declared_type=QBoolType(),
+        )
+
+    def qubit_param(self, meta: Meta, children) -> ProcParam:
+        length, name_token = children
+        return ProcParam(
+            span=_span_from_meta(meta),
+            name=str(name_token),
+            declared_type=QubitArrayType(),
+            width_source=length,
+        )
+
+    def classical_param(self, meta: Meta, children) -> ProcParam:
         type_token, name_token = children
         return ProcParam(
             span=_span_from_meta(meta),

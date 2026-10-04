@@ -97,7 +97,15 @@ block: "{" statement* "}"
 
 process_def: "process" NAME "(" [param_list] ")" block
 param_list:  proc_param ("," proc_param)*
-proc_param:  TYPE NAME
+?proc_param: qint_param
+           | qbool_param
+           | qubit_param
+           | classical_param
+
+qint_param:      "qint" ["<" expr ">"] NAME
+qbool_param:     "qbool" NAME
+qubit_param:     "qubit" "[" [expr] "]" NAME
+classical_param: CTYPE NAME
 
 // --- Expressions (increasing precedence) -----------------------------------
 
@@ -162,7 +170,6 @@ arg_list:  expr ("," expr)*
 // --- Terminals -------------------------------------------------------------
 
 CTYPE: "int" | "float" | "bool" | "complex"
-TYPE:  "qint" | "qbool" | "int" | "float" | "bool"
 BOOL:  "true" | "false"
 
 // `[^\W\d]` is a word character that is not a digit, i.e. any letter or

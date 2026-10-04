@@ -333,3 +333,21 @@ def test_a_bit_sequence_takes_its_length_from_the_measurement(build_ast: BuildAs
     assert derived.declared_type == BoolArrayType()
     assert derived.width_source is None
     assert sized.width_source is not None
+
+
+def test_every_parameter_form_carries_its_type(build_ast: BuildAst) -> None:
+    (definition,) = build_ast(
+        "process f(qint a, qint<4> b, qbool c, qubit[] d, qubit[2] e, float g) { X(c); }"
+    ).statements
+    assert isinstance(definition, ProcessDef)
+    kinds = [type(parameter.declared_type).__name__ for parameter in definition.params]
+    assert kinds == [
+        "QIntType",
+        "QIntType",
+        "QBoolType",
+        "QubitArrayType",
+        "QubitArrayType",
+        "FloatType",
+    ]
+    written = [parameter.width_source is not None for parameter in definition.params]
+    assert written == [False, True, False, False, True, False]

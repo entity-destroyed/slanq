@@ -1653,3 +1653,90 @@ def test_a_number_cannot_be_indexed_as_bits(diagnostics_of: DiagnosticsOf) -> No
 )
 def test_a_bit_sequence_is_accepted(diagnostics_of: DiagnosticsOf, source: str) -> None:
     assert not diagnostics_of(source).has_errors
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "process f(qubit[] x) { X(x[0]); }\nqint<3> a = 0;\nf(a);",
+            "'f' takes a qubit sequence for 'x', but got a qint",
+        ),
+        (
+            "process f(qint x) { X(x); }\nqbool q = false;\nf(q);",
+            "'f' takes a qint for 'x', but got a qbool",
+        ),
+        (
+            "process f(qbool x) { X(x); }\nqubit[1] a;\nf(a);",
+            "'f' takes a qbool for 'x', but got a qubit sequence",
+        ),
+        (
+            "process f(int x) { }\nqint<2> a = 0;\nf(a);",
+            "'f' takes a classical value for 'x', but got a quantum variable",
+        ),
+        (
+            "process f(int x) { }\nqint<2> a = 0;\nf(a[0]);",
+            "'f' takes a classical value for 'x', but got a quantum variable",
+        ),
+    ],
+)
+def test_a_parameter_type_says_what_may_arrive(
+    diagnostics_of: DiagnosticsOf, source: str, expected: str
+) -> None:
+    """The declared type used to be documentation: a qbool went into a qint
+    parameter and a quantum variable into a classical one, and the only
+    complaint came from the inlined body, pointing inside the process."""
+    assert [error.message for error in diagnostics_of(source).errors] == [expected]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "process f(qint<4> x) { X(x[0]); }\nqint<2> a = 0;\nf(a);",
+            "'f' takes 4 qubit(s) for 'x', but got 2",
+        ),
+        (
+            "process f(qubit[4] x) { X(x[0]); }\nqubit[2] a;\nf(a);",
+            "'f' takes 4 qubit(s) for 'x', but got 2",
+        ),
+        (
+            "int n = 3;\nprocess f(qint<n> x) { X(x[0]); }\nqint<2> a = 0;\nf(a);",
+            "'f' takes 3 qubit(s) for 'x', but got 2",
+        ),
+        (
+            "process f(qint<4> x) { X(x); }\nqint<4> a = 0;\nf(a[0]);",
+            "'f' takes 4 qubit(s) for 'x', but got 1",
+        ),
+    ],
+)
+def test_a_written_parameter_width_binds(
+    diagnostics_of: DiagnosticsOf, source: str, expected: str
+) -> None:
+    """Checked after expansion, because a process body may change a classical
+    variable a width reads -- so no width is settled while the call still is."""
+    assert [error.message for error in diagnostics_of(source).errors] == [expected]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "process f(qubit[] x) { X(x[0]); }\nqubit[3] a;\nf(a);",
+        "process f(qubit[3] x) { H(x); }\nqubit[3] a;\nf(a);",
+        "process f(qint<4> x) { X(x[0]); }\nqint<4> a = 0;\nf(a);",
+        "process f(qint x) { X(x); }\nqint<3> a = 0;\nf(a[0]);",
+        "process f(qbool x) { X(x); }\nqbool q = false;\nf(q);",
+        "process f(qint x, qubit[] y) { X(x); H(y); }\nqint<2> a = 0;\nqubit[2] b;\nf(a, b);",
+        "process f(float t) { }\nparam float th;\nf(th);",
+        "process f(int k) { }\nint n = 1;\nf(n);",
+    ],
+)
+def test_a_matching_argument_is_accepted(diagnostics_of: DiagnosticsOf, source: str) -> None:
+    assert not diagnostics_of(source).has_errors
+
+
+def test_a_parameter_width_cannot_name_a_parameter(diagnostics_of: DiagnosticsOf) -> None:
+    """A width says how wide the process is, so it reads the scope around the
+    process -- not the parameters it is being written beside."""
+    bag = diagnostics_of("process f(qint<x> x) { X(x[0]); }\nqint<2> a = 0;\nf(a);")
+    assert bag.errors[0].message == "undefined name 'x'"

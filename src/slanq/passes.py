@@ -29,6 +29,7 @@ from slanq.ast_nodes import (
     ParamDecl,
     ProbList,
     ProcessDef,
+    ProcParam,
     Program,
     QIntType,
     QuantumDecl,
@@ -50,7 +51,18 @@ from slanq.visitor import iter_child_nodes
 MAX_EXPANDED_STATEMENTS = 10_000
 
 
-def expand_processes(ast: Program, bag: DiagnosticBag) -> None:
+@dataclasses.dataclass(frozen=True)
+class Binding:
+    """What one call passed to one parameter. Kept because a width is only
+    known after expansion, by which time the call is gone."""
+
+    process: str
+    parameter: ProcParam
+    argument: Expression
+    span: Span
+
+
+def expand_processes(ast: Program, bag: DiagnosticBag) -> list[Binding]:
     """Replace every call to a `process` with a copy of its body, the
     parameters substituted by that call's arguments.
 
@@ -68,6 +80,7 @@ def expand_processes(ast: Program, bag: DiagnosticBag) -> None:
         if isinstance(statement, ProcessDef):
             expander.check_definition(statement)
     ast.statements = expander.rewrite(ast.statements, top_level=True)
+    return expander.bound
 
 
 def unroll_loops(ast: Program, bag: DiagnosticBag) -> None:
@@ -177,6 +190,7 @@ class _Expander(_Copier):
         # expand to nothing rather than to a body known to be broken.
         self.unexpandable: set[str] = set()
         self.bindings: dict[int, Expression] = {}
+        self.bound: list[Binding] = []
 
     def rewrite(self, statements: list[Statement], *, top_level: bool) -> list[Statement]:
         result: list[Statement] = []
@@ -264,6 +278,10 @@ class _Expander(_Copier):
             id(parameter): argument
             for parameter, argument in zip(process.params, call.args, strict=True)
         }
+        self.bound.extend(
+            Binding(process=process.name, parameter=parameter, argument=argument, span=call.span)
+            for parameter, argument in zip(process.params, call.args, strict=True)
+        )
 
         self.invalid = False
         body: list[Statement] = []
@@ -572,6 +590,10 @@ def fold_widths(ast: Program, bag: DiagnosticBag) -> None:
             node.declared_type, QIntType | QubitArrayType
         ):
             node.declared_type.size = _declared_size(node, bag)
+        elif isinstance(node, ProcParam) and node.width_source is not None:
+            size = _count(node.width_source, bag, "width")
+            if isinstance(node.declared_type, QIntType | QubitArrayType):
+                node.declared_type.size = size
         elif isinstance(node, RealtimeDecl) and node.width_source is not None:
             noun = "length" if isinstance(node.declared_type, BoolArrayType) else "width"
             node.width = _count(node.width_source, bag, noun)
@@ -690,4 +712,11 @@ def _child_blocks(statement: Statement) -> list[Block]:
     return blocks
 
 
-__all__ = ["expand_processes", "fold_widths", "taken_branch", "track_values", "unroll_loops"]
+__all__ = [
+    "Binding",
+    "expand_processes",
+    "fold_widths",
+    "taken_branch",
+    "track_values",
+    "unroll_loops",
+]

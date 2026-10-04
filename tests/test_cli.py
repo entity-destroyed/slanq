@@ -141,6 +141,13 @@ RUNNABLE_PROGRAMS = {
         "rt if (!m[0]) { Z(t); }\n"
         "rt int<> result = measure(t);\n"
     ),
+    "process over a qubit sequence": (
+        "process spread(qubit[] x) { H(x[0]); CX(x[0], x[1]); }\n"
+        "process flip(qint<2> n) { X(n[1]); }\n"
+        "qubit[2] a;\nqint<2> b = 0;\n"
+        "spread(a);\nflip(b);\n"
+        "rt int<> result = measure(a);\n"
+    ),
     "teleportation": (
         "qbool msg = true;\nqbool alice = false;\nqbool bob = false;\n"
         "H(alice);\nCX(alice, bob);\nCX(msg, alice);\nH(msg);\n"

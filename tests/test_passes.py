@@ -651,3 +651,13 @@ def test_a_bit_sequence_length_is_folded(expanded: Expanded) -> None:
     declaration = ast.statements[2]
     assert isinstance(declaration, RealtimeDecl)
     assert declaration.width == 2
+
+
+def test_a_parameter_width_is_folded(expanded: Expanded) -> None:
+    ast, bag = expanded(
+        "int n = 2;\nprocess f(qint<n * 2> x) { X(x[0]); }\nqint<4> a = 0;\nf(a);\n"
+    )
+    assert not bag.has_errors
+    definition = ast.statements[1]
+    assert isinstance(definition, ProcessDef)
+    assert qubit_count(definition.params[0].declared_type) == 4
