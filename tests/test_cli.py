@@ -191,3 +191,10 @@ def test_the_generated_file_runs_in_a_fresh_interpreter(program: str) -> None:
 
     assert finished.returncode == 0, finished.stderr
     assert finished.stdout.strip(), "the __main__ block prints the circuit"
+
+
+@pytest.mark.parametrize("example", sorted(path.name for path in EXAMPLES.glob("*.slanq")))
+def test_every_example_compiles(example: str, tmp_path: Path) -> None:
+    """Globbed rather than listed, so an example added to the directory is
+    covered without anyone remembering to name it here."""
+    assert main(["compile", str(EXAMPLES / example), "-o", str(tmp_path / "out.py")]) == 0

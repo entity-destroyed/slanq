@@ -1,0 +1,27 @@
+// A Greenberger-Horne-Zeilinger state: every qubit is either 0 or 1, and all
+// of them agree. The register carries no number here, only three qubits, which
+// is what the qubit sequence type is for.
+
+process entangle(qubit[] register) {
+    H(register[0]);
+    for (int i in range(2)) {
+        CX(register[i], register[i + 1]);
+    }
+}
+
+qubit[3] ghz;
+entangle(ghz);
+
+// The qubits agree, so one measured bit answers for all three: a single
+// correction returns the register to all-zeros whichever way it collapsed.
+rt bool[] outcome = measure(ghz);
+rt if (outcome[0]) {
+    X(ghz[0]);
+    X(ghz[1]);
+    X(ghz[2]);
+}
+
+// The same qubits read as a number, without moving one of them. The sequence
+// name ends here: from now on only `corrected` names the register.
+qint<> corrected = to_qint(ghz);
+rt int<> result = measure(corrected);
