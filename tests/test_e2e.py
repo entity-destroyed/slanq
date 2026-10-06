@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-from qiskit import QuantumCircuit, QuantumRegister
+from qiskit import QuantumCircuit, QuantumRegister, transpile
 from qiskit.primitives import StatevectorSampler
 from qiskit.quantum_info import Operator, Statevector
 
@@ -31,9 +31,12 @@ def _build_circuit(source: str) -> QuantumCircuit:
 
 
 def _counts(source: str, register: str = "result") -> dict[str, int]:
-    circuit = _build_circuit(source)
-    result = StatevectorSampler(seed=SEED).run([circuit], shots=SHOTS).result()
-    return getattr(result[0].data, register).get_counts()
+    # Transpiled first, the way a circuit is actually run. It also keeps the
+    # harness off a path Qiskit does not support for every gate: before 2.5 a
+    # MultiplierGate with a truncated result declares fewer qubits than its own
+    # definition uses, which an untranspiled Statevector walks straight into.
+    result = StatevectorSampler(seed=SEED).run([transpile(_build_circuit(source))], shots=SHOTS)
+    return getattr(result.result()[0].data, register).get_counts()
 
 
 def test_mvp_a_circuit_shape(mvp_a_source: str) -> None:
@@ -498,6 +501,25 @@ def test_quantum_subtraction() -> None:
 def test_quantum_addition_with_a_compile_time_constant() -> None:
     source = "qint<2> a = 1;\na += 3;\nrt int<> result = measure(a);\n"
     assert _counts(source) == {"00": SHOTS}
+
+
+def test_subtraction_of_a_compile_time_constant() -> None:
+    """A phase adder subtracts by negating the angle, so nothing but the sign
+    distinguishes it from the addition above -- and nothing else checks that
+    the sign survives into the generated file."""
+    source = "qint<4> a = 9;\na -= 4;\nrt int<> result = measure(a);\n"
+    assert _counts(source) == {"0101": SHOTS}
+
+
+def test_subtraction_of_a_runtime_parameter() -> None:
+    source = "param int k;\nqint<4> a = 9;\na -= k;\nrt int<> result = measure(a);\n"
+    result = compile_source(source, source_name="test.slanq")
+    assert result.qiskit_source is not None
+    namespace: dict[str, Any] = {}
+    exec(result.qiskit_source, namespace)  # noqa: S102
+    circuit = namespace["build_bound_circuit"](k=4)
+    sampled = StatevectorSampler(seed=SEED).run([circuit], shots=SHOTS).result()
+    assert sampled[0].data.result.get_counts() == {"0101": SHOTS}
 
 
 def test_quantum_addition_constant_wraps_silently_on_overflow() -> None:

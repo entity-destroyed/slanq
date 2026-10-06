@@ -794,7 +794,6 @@ def test_qif_multiple_clause_ancillas_compute_and_uncompute_in_order(
 def test_arithmetic_op_renders_the_adder_call(span: Span) -> None:
     a = QubitRef(name="a", size=2)
     b = QubitRef(name="b", size=2)
-    helper = QubitRef(name="_ancilla_0", size=1)
     module = IRModule(
         qubits=[a, b],
         body=IRBlock(
@@ -803,7 +802,6 @@ def test_arithmetic_op_renders_the_adder_call(span: Span) -> None:
                     span=span,
                     target=a,
                     addend=[b],
-                    helper=helper,
                     subtract=False,
                     encode_constant=None,
                 )
@@ -811,16 +809,13 @@ def test_arithmetic_op_renders_the_adder_call(span: Span) -> None:
         ),
     )
     source = _generate(module)
-    assert "from qiskit.circuit.library import CDKMRippleCarryAdder" in source
-    assert (
-        "circuit.append(CDKMRippleCarryAdder(2, kind='fixed'), [*b, *a, _ancilla_0[0]])" in source
-    )
+    assert "from qiskit.circuit.library import ModularAdderGate" in source
+    assert "circuit.append(ModularAdderGate(2), [*b, *a])" in source
 
 
 def test_arithmetic_op_subtract_uses_inverse(span: Span) -> None:
     a = QubitRef(name="a", size=2)
     b = QubitRef(name="b", size=2)
-    helper = QubitRef(name="_ancilla_0", size=1)
     module = IRModule(
         qubits=[a, b],
         body=IRBlock(
@@ -829,7 +824,6 @@ def test_arithmetic_op_subtract_uses_inverse(span: Span) -> None:
                     span=span,
                     target=a,
                     addend=[b],
-                    helper=helper,
                     subtract=True,
                     encode_constant=None,
                 )
@@ -837,17 +831,13 @@ def test_arithmetic_op_subtract_uses_inverse(span: Span) -> None:
         ),
     )
     source = _generate(module)
-    assert (
-        "circuit.append(CDKMRippleCarryAdder(2, kind='fixed').inverse(), "
-        "[*b, *a, _ancilla_0[0]])" in source
-    )
+    assert "circuit.append(ModularAdderGate(2).inverse(), [*b, *a])" in source
 
 
 def test_arithmetic_op_pads_the_addend_with_an_ancilla(span: Span) -> None:
     a = QubitRef(name="a", size=3)
     b = QubitRef(name="b", size=2)
     padding = QubitRef(name="_ancilla_1", size=1)
-    helper = QubitRef(name="_ancilla_0", size=1)
     module = IRModule(
         qubits=[a, b],
         body=IRBlock(
@@ -856,7 +846,6 @@ def test_arithmetic_op_pads_the_addend_with_an_ancilla(span: Span) -> None:
                     span=span,
                     target=a,
                     addend=[b, padding],
-                    helper=helper,
                     subtract=False,
                     encode_constant=None,
                 )
@@ -864,16 +853,12 @@ def test_arithmetic_op_pads_the_addend_with_an_ancilla(span: Span) -> None:
         ),
     )
     source = _generate(module)
-    assert (
-        "circuit.append(CDKMRippleCarryAdder(3, kind='fixed'), "
-        "[*b, *_ancilla_1, *a, _ancilla_0[0]])" in source
-    )
+    assert "circuit.append(ModularAdderGate(3), [*b, *_ancilla_1, *a])" in source
 
 
 def test_arithmetic_op_wider_addend_is_sliced(span: Span) -> None:
     a = QubitRef(name="a", size=2)
     b = QubitRef(name="b", size=3)
-    helper = QubitRef(name="_ancilla_0", size=1)
     module = IRModule(
         qubits=[a, b],
         body=IRBlock(
@@ -882,7 +867,6 @@ def test_arithmetic_op_wider_addend_is_sliced(span: Span) -> None:
                     span=span,
                     target=a,
                     addend=[QubitSlice(ref=b, size=2)],
-                    helper=helper,
                     subtract=False,
                     encode_constant=None,
                 )
@@ -890,16 +874,12 @@ def test_arithmetic_op_wider_addend_is_sliced(span: Span) -> None:
         ),
     )
     source = _generate(module)
-    assert (
-        "circuit.append(CDKMRippleCarryAdder(2, kind='fixed'), "
-        "[*b[0:2], *a, _ancilla_0[0]])" in source
-    )
+    assert "circuit.append(ModularAdderGate(2), [*b[0:2], *a])" in source
 
 
 def test_arithmetic_op_encodes_and_decodes_a_constant(span: Span) -> None:
     a = QubitRef(name="a", size=2)
     ancilla = QubitRef(name="_ancilla_1", size=2)
-    helper = QubitRef(name="_ancilla_0", size=1)
     module = IRModule(
         qubits=[a],
         body=IRBlock(
@@ -908,7 +888,6 @@ def test_arithmetic_op_encodes_and_decodes_a_constant(span: Span) -> None:
                     span=span,
                     target=a,
                     addend=[ancilla],
-                    helper=helper,
                     subtract=False,
                     encode_constant=3,
                 )
@@ -918,7 +897,7 @@ def test_arithmetic_op_encodes_and_decodes_a_constant(span: Span) -> None:
     source = _generate(module)
     encode = source.index("circuit.x(_ancilla_1[0])")
     encode_bit1 = source.index("circuit.x(_ancilla_1[1])")
-    adder_call = source.index("circuit.append(CDKMRippleCarryAdder")
+    adder_call = source.index("circuit.append(ModularAdderGate")
     decode = source.index("circuit.x(_ancilla_1[0])", encode + 1)
     # Both bits of 3 (0b11) are encoded before the adder call, and the same
     # two X gates decode the ancilla back to |0> afterward.
@@ -929,7 +908,6 @@ def test_multiply_op_renders_the_multiplier_call(span: Span) -> None:
     a = QubitRef(name="a", size=2)
     b = QubitRef(name="b", size=2)
     c = QubitRef(name="c", size=4)
-    helper = QubitRef(name="_ancilla_0", size=1)
     module = IRModule(
         qubits=[a, b, c],
         body=IRBlock(
@@ -939,25 +917,20 @@ def test_multiply_op_renders_the_multiplier_call(span: Span) -> None:
                     left=[a],
                     right=[b],
                     product=c,
-                    helper=helper,
                     inverse=False,
                 )
             ]
         ),
     )
     source = _generate(module)
-    assert "from qiskit.circuit.library import HRSCumulativeMultiplier" in source
-    assert (
-        "circuit.append(HRSCumulativeMultiplier(2, num_result_qubits=4), "
-        "[*a, *b, *c, _ancilla_0[0]])" in source
-    )
+    assert "from qiskit.circuit.library import MultiplierGate" in source
+    assert "circuit.append(MultiplierGate(2, 4), [*a, *b, *c])" in source
 
 
 def test_multiply_op_inverse_renders_the_reversed_multiplier(span: Span) -> None:
     a = QubitRef(name="a", size=2)
     b = QubitRef(name="b", size=2)
     temp = QubitRef(name="_ancilla_1", size=4)
-    helper = QubitRef(name="_ancilla_0", size=1)
     module = IRModule(
         qubits=[a, b],
         body=IRBlock(
@@ -967,17 +940,13 @@ def test_multiply_op_inverse_renders_the_reversed_multiplier(span: Span) -> None
                     left=[a],
                     right=[b],
                     product=temp,
-                    helper=helper,
                     inverse=True,
                 )
             ]
         ),
     )
     source = _generate(module)
-    assert (
-        "circuit.append(HRSCumulativeMultiplier(2, num_result_qubits=4).inverse(), "
-        "[*a, *b, *_ancilla_1, _ancilla_0[0]])" in source
-    )
+    assert "circuit.append(MultiplierGate(2, 4).inverse(), [*a, *b, *_ancilla_1])" in source
 
 
 def test_declare_ancilla_op_is_the_only_thing_that_declares(span: Span) -> None:
@@ -1233,7 +1202,9 @@ def test_an_empty_real_time_branch_becomes_pass() -> None:
 
 def test_an_ancilla_is_declared_before_the_adder_that_needs_it() -> None:
     """A register every later reference expects has to exist by then."""
-    source = _if_source(f"{_IF_DECLS}qint<2> b = 1;\nif (t) {{ a += b; }}\n")
+    # A narrower addend is padded, which is what allocates the register; an
+    # equal-width addition needs none, since the gate has no scratch qubit.
+    source = _if_source(f"{_IF_DECLS}qint<1> b = 1;\nif (t) {{ a += b; }}\n")
     declaration = next(
         index
         for index, line in enumerate(source.splitlines())
@@ -1242,7 +1213,7 @@ def test_an_ancilla_is_declared_before_the_adder_that_needs_it() -> None:
     branch = next(
         index
         for index, line in enumerate(source.splitlines())
-        if "circuit.append(CDKMRippleCarryAdder" in line
+        if "circuit.append(ModularAdderGate" in line
     )
     assert declaration < branch
 
@@ -1319,9 +1290,9 @@ def test_a_controlled_adder_uses_the_sub_circuits_own_wires() -> None:
     """Registers do not exist inside the body, and the body itself becomes a
     gate -- which the adder cannot be as it comes."""
     source = _if_source("qint<2> a = 2;\nqint<2> c = 0;\nqint<2> d = 1;\nqif(a == 2) { c += d; }\n")
-    assert "CDKMRippleCarryAdder(2, kind='fixed').to_gate()" in source
+    assert "ModularAdderGate(2)" in source
     assert "_qif_body_1.qubits[0]" in source
-    assert "_qif_body_1.append(CDKMRippleCarryAdder" in source
+    assert "_qif_body_1.append(ModularAdderGate" in source
 
 
 def test_a_controlled_multiplier_uses_the_sub_circuits_own_wires() -> None:
@@ -1329,16 +1300,14 @@ def test_a_controlled_multiplier_uses_the_sub_circuits_own_wires() -> None:
         "qint<2> a = 2;\nqint<4> c = 0;\nqint<2> d = 2;\nqint<2> e = 3;\n"
         "qif(a == 2) { c += d * e; }\n"
     )
-    assert "HRSCumulativeMultiplier(2, num_result_qubits=4).to_gate()" in source
-    assert "HRSCumulativeMultiplier(2, num_result_qubits=4).inverse().to_gate()" in source
-    assert "_qif_body_1.append(HRSCumulativeMultiplier" in source
+    assert "MultiplierGate(2, 4)" in source
+    assert "MultiplierGate(2, 4).inverse()" in source
+    assert "_qif_body_1.append(MultiplierGate" in source
 
 
 def test_an_adder_outside_a_qif_keeps_its_registers() -> None:
     source = _if_source("qint<2> a = 0;\nqint<2> b = 1;\na += b;\n")
-    assert (
-        "circuit.append(CDKMRippleCarryAdder(2, kind='fixed'), [*b, *a, _ancilla_0[0]])" in source
-    )
+    assert "circuit.append(ModularAdderGate(2), [*b, *a])" in source
 
 
 def test_an_assigned_classical_variable_survives_as_a_python_variable() -> None:

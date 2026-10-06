@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -60,6 +61,19 @@ class DeclareAncillaOp(Op):
     is how the same register came to be declared twice."""
 
     ref: QubitRef
+
+
+@dataclass(kw_only=True, eq=False)
+class PhaseAdderOp(Op):
+    """`target += amount`, done as rotations in the Fourier basis.
+
+    Adding phases needs no carry, so this costs no ancilla at all, and the
+    amount enters as an angle
+    """
+
+    target: QubitRef
+    amount: Expression
+    subtract: bool
 
 
 @dataclass(kw_only=True, eq=False)
@@ -185,12 +199,10 @@ class ArithmeticOp(Op):
     real addend is narrower. `encode_constant` is set when the addend is a
     compile-time constant: then `addend` is a fresh ancilla allocated only
     for this purpose, which codegen encodes with X-gates before the add and
-    decodes with the same gates afterward. `helper` is the adder's own
-    self-restoring scratch qubit, fresh every time."""
+    decodes with the same gates afterward. The gate needs no scratch qubit of its own."""
 
     target: QubitRef
     addend: list[QubitOperand]
-    helper: QubitRef
     subtract: bool
     encode_constant: int | None
 
@@ -202,13 +214,12 @@ class MultiplyOp(Op):
     to equal width with a 0-ancilla if their sizes differed -- also
     discardable without uncompute, since the multiplier's inputs are left
     unchanged. `product` is sized to the caller's need (silently truncated
-    mod 2^size if smaller than `2*width`). `helper` is the multiplier's own
-    scratch qubit, fresh every time."""
+    mod 2^size if smaller than `2*width`). The gate needs no scratch qubit of
+    its own."""
 
     left: list[QubitOperand]
     right: list[QubitOperand]
     product: QubitRef
-    helper: QubitRef
     inverse: bool
 
 
@@ -280,6 +291,40 @@ class IRModule:
     body: IRBlock = field(default_factory=IRBlock)
 
 
+def touched_registers(op: Op) -> set[str]:
+    """The quantum registers an op reads or writes, by name.
+
+    Two passes need exactly this question and no more: merging adjacent phase
+    additions (safe only if nothing came between them on that register), and
+    lifting an operation out of a `qif`'s control (safe only if it touches
+    nothing the program can observe). A control structure answers for its whole
+    body, since anything inside it may run.
+    """
+    names: set[str] = set()
+    for member in dataclasses.fields(op):
+        _collect_names(getattr(op, member.name), names)
+    return names
+
+
+def _collect_names(value: object, names: set[str]) -> None:
+    if isinstance(value, QubitRef):
+        names.add(value.name)
+    elif isinstance(value, QubitBit | QubitSlice):
+        names.add(value.ref.name)
+    elif isinstance(value, IRBlock):
+        for nested in value.ops:
+            names |= touched_registers(nested)
+    elif isinstance(value, list | tuple):
+        for item in value:
+            _collect_names(item, names)
+
+
+def is_compiler_owned(name: str) -> bool:
+    """Whether the register is one the compiler allocated for itself. A Slanq
+    name cannot start with an underscore, so the shape is the whole rule."""
+    return name.startswith("_")
+
+
 __all__ = [
     "ArithmeticOp",
     "ClassicalAssignOp",
@@ -295,6 +340,7 @@ __all__ = [
     "MultiplyOp",
     "Op",
     "ParamInfo",
+    "PhaseAdderOp",
     "PhaseOp",
     "QIfClauseAncilla",
     "QIfOp",
@@ -302,7 +348,9 @@ __all__ = [
     "QubitOperand",
     "QubitRef",
     "QubitSlice",
+    "is_compiler_owned",
     "RenameOp",
+    "touched_registers",
     "RealtimeIfOp",
     "RealtimeStoreOp",
     "RealtimeWhileOp",

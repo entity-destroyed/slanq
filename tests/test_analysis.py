@@ -1006,16 +1006,56 @@ def test_augassign_on_a_classical_target_is_ordinary_assignment(
     assert not diagnostics_of("int x = 0; x += 1;").has_errors
 
 
-def test_augassign_param_addend_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
-    bag = diagnostics_of("qint<2> a = 0; param int gamma; a += gamma;")
-    assert bag.has_errors
-    assert "runtime parameter" in bag.errors[0].message
+@pytest.mark.parametrize(
+    "source",
+    [
+        "qint<2> a = 0; param int gamma; a += gamma;",
+        "qint<2> a = 0; param int[2] gamma; a += gamma[0];",
+        "qint<2> a = 0; param int gamma; a -= gamma;",
+    ],
+)
+def test_a_param_may_be_added_to_a_quantum_variable(
+    diagnostics_of: DiagnosticsOf, source: str
+) -> None:
+    """The phase adder takes the amount as a rotation angle, which is the one
+    place a Parameter fits: it can scale a rotation, but it cannot decide which
+    gates exist, so no gate-encoded adder could ever take one."""
+    assert not diagnostics_of(source).has_errors
 
 
-def test_augassign_param_array_addend_is_rejected(diagnostics_of: DiagnosticsOf) -> None:
-    bag = diagnostics_of("qint<2> a = 0; param int[2] gamma; a += gamma[0];")
-    assert bag.has_errors
-    assert "runtime parameter" in bag.errors[0].message
+@pytest.mark.parametrize(
+    "source",
+    [
+        "qint<2> a = 0; param float gamma; a += gamma;",
+        "qint<2> a = 0; param float[2] gamma; a += gamma[0];",
+        "qint<2> a = 0; param bool gamma; a += gamma;",
+    ],
+)
+def test_only_a_whole_param_may_be_added(diagnostics_of: DiagnosticsOf, source: str) -> None:
+    """A rotation accepts any angle, so a fraction would compile and quietly
+    spread the register over several values instead of adding to it."""
+    assert [error.message for error in diagnostics_of(source).errors] == [
+        "'gamma' is added to a quantum variable, so it has to be a param int: "
+        "a fraction would spread the register over several values instead of "
+        "adding to it"
+    ]
+
+
+def test_a_wide_phase_addition_warns_about_its_smallest_angle(
+    diagnostics_of: DiagnosticsOf,
+) -> None:
+    """The smallest rotation halves with every qubit, so past a point the
+    hardware cannot resolve it -- a simulator still can, so this is a warning."""
+    bag = diagnostics_of("qint<10> a = 0;\na += 3;")
+    assert not bag.has_errors
+    assert [warning.message for warning in bag.warnings] == [
+        "'a' is 10 qubits wide, so the smallest angle this addition needs is "
+        "2*PI/2^10; a simulator resolves it, real hardware may not"
+    ]
+
+
+def test_a_narrow_phase_addition_does_not_warn(diagnostics_of: DiagnosticsOf) -> None:
+    assert not diagnostics_of("qint<4> a = 0;\na += 3;").warnings
 
 
 def test_augassign_multiply_of_two_quantum_variables_is_accepted(

@@ -40,6 +40,7 @@ from slanq.ir import (
     MeasurementOp,
     MultiplyOp,
     Op,
+    PhaseAdderOp,
     PhaseOp,
     QIfClauseAncilla,
     QIfOp,
@@ -186,7 +187,8 @@ def test_a_qif_body_holds_a_controlled_adder(lower: LowerSource) -> None:
     qif = module.body.ops[-1]
     assert isinstance(qif, QIfOp)
     assert [type(op).__name__ for op in qif.body.ops] == ["ArithmeticOp"]
-    assert any(isinstance(op, DeclareAncillaOp) for op in module.body.ops)
+    # The adder carries no scratch qubit, so an equal-width addition declares none.
+    assert not any(isinstance(op, DeclareAncillaOp) for op in module.body.ops)
 
 
 def test_a_controlled_adder_warns_about_its_cost(lower: LowerSource) -> None:
@@ -884,8 +886,8 @@ def test_the_qubit_count_is_the_whole_circuit_including_ancillas(
     _, bag = lower("qint<10> a = 0; qint<10> b = 0; qint<10> c = 0;")
     assert not bag.warnings
 
-    _, bag = lower("qint<10> a = 0; qint<10> b = 0; qint<10> c = 0; a += b;")
-    assert "needs 31 qubits" in bag.warnings[0].message
+    _, bag = lower("qint<11> a = 0; qint<11> b = 0; qint<10> c = 0; a += b;")
+    assert "needs 32 qubits" in bag.warnings[0].message
 
 
 def test_augassign_equal_width_needs_no_padding(lower: LowerSource) -> None:
@@ -898,7 +900,6 @@ def test_augassign_equal_width_needs_no_padding(lower: LowerSource) -> None:
     assert arithmetic.addend == [module.qubits[1]]
     assert arithmetic.subtract is False
     assert arithmetic.encode_constant is None
-    assert arithmetic.helper == QubitRef(name="_ancilla_0", size=1)
 
 
 def test_augassign_subtract_sets_the_flag(lower: LowerSource) -> None:
@@ -915,10 +916,10 @@ def test_augassign_narrower_addend_gets_a_padding_ancilla(lower: LowerSource) ->
 
     arithmetic = module.body.ops[-1]
     assert isinstance(arithmetic, ArithmeticOp)
-    # _ancilla_0 is the adder's own helper, allocated before the padding.
+    # The padding is the only thing allocated: the gate has no scratch qubit.
     assert arithmetic.addend == [
         module.qubits[1],
-        QubitRef(name="_ancilla_1", size=1),
+        QubitRef(name="_ancilla_0", size=1),
     ]
 
 
@@ -933,28 +934,49 @@ def test_augassign_wider_addend_is_sliced_to_the_target_width(
     assert arithmetic.addend == [QubitSlice(ref=module.qubits[1], size=2)]
 
 
-def test_augassign_constant_addend_encodes_into_a_fresh_ancilla(
-    lower: LowerSource,
-) -> None:
+def test_augassign_constant_addend_needs_no_ancilla(lower: LowerSource) -> None:
+    """A phase adder carries the amount in the rotation angle, so adding a
+    constant allocates nothing -- the register it writes is the only one."""
     module, bag = lower("qint<2> a = 0; a += 3;")
     assert not bag.has_errors
 
-    arithmetic = module.body.ops[-1]
-    assert isinstance(arithmetic, ArithmeticOp)
-    assert arithmetic.encode_constant == 3
-    (ancilla,) = arithmetic.addend
-    # _ancilla_0 is the adder's own helper, allocated before the encoding ancilla.
-    assert ancilla == QubitRef(name="_ancilla_1", size=2)
+    adder = module.body.ops[-1]
+    assert isinstance(adder, PhaseAdderOp)
+    assert adder.target == QubitRef(name="a", size=2)
+    assert adder.subtract is False
+    assert [register.name for register in module.qubits] == ["a"]
+
+
+def test_augassign_subtraction_is_the_same_adder(lower: LowerSource) -> None:
+    module, bag = lower("qint<2> a = 0; a -= 1;")
+    assert not bag.has_errors
+    adder = module.body.ops[-1]
+    assert isinstance(adder, PhaseAdderOp)
+    assert adder.subtract is True
+
+
+def test_a_param_addend_reaches_the_adder_as_an_expression(lower: LowerSource) -> None:
+    """The amount stays an expression all the way down, which is what lets a
+    Parameter reach the generated file unevaluated."""
+    module, bag = lower("param int[2] g;\nqint<2> a = 0;\na += g[1];")
+    assert not bag.has_errors
+    adder = module.body.ops[-1]
+    assert isinstance(adder, PhaseAdderOp)
+    assert isinstance(adder.amount, Index)
+    assert adder.amount.base.name == "g"
 
 
 def test_augassign_constant_addend_wraps_modulo_the_target_width(
     lower: LowerSource,
 ) -> None:
+    """The amount reaches the adder as written; the wrap happens in the circuit,
+    because a phase is modulo a full turn to begin with."""
     module, bag = lower("qint<2> a = 0; a += 6;")
     assert not bag.has_errors
-    arithmetic = module.body.ops[-1]
-    assert isinstance(arithmetic, ArithmeticOp)
-    assert arithmetic.encode_constant == 2
+    adder = module.body.ops[-1]
+    assert isinstance(adder, PhaseAdderOp)
+    assert isinstance(adder.amount, Literal)
+    assert adder.amount.value == 6
 
 
 def test_quantum_decl_multiply_becomes_a_multiply_op(lower: LowerSource) -> None:
@@ -1002,7 +1024,6 @@ def test_multiply_accumulate_uses_a_temp_and_uncomputes_it(
     assert forward.inverse is False
     assert backward.inverse is True
     assert forward.product == backward.product
-    assert forward.helper == backward.helper
     assert arithmetic.target == module.qubits[2]
 
 
@@ -1089,7 +1110,6 @@ REJECTED_SHAPES = [
     "qint<0> a = 0;\nqint<2> b = 0;\na += b;\n",
     "qint<0> a = 0;\nrt int<> r = measure(a);\n",
     "qint<2> a = 0;\nrt int<> r = measure(a, a);\n",
-    "qint<2> a = 0;\nparam int[2] g;\na += g[0];\n",
     "qint<2> a = 0;\nqint<2> b = 0;\na += b[0];\n",
     "qint<2> a = 0;\na += 1.5;\n",
     "qint<2> a = 0;\nqint<2> b = 0;\na[0] += b;\n",
@@ -1229,7 +1249,7 @@ def test_an_ancilla_from_a_branch_is_declared_at_the_top_level(
 ) -> None:
     """A register the adder needs exists whether or not the branch ran, so it
     is declared where every later statement can see it."""
-    module, bag = lower(f"{_IF_DECLS}qint<2> b = 1; if (t) {{ a += b; }}")
+    module, bag = lower(f"{_IF_DECLS}qint<1> b = 1; if (t) {{ a += b; }}")
     assert not bag.has_errors
 
     kinds = [type(op).__name__ for op in module.body.ops]

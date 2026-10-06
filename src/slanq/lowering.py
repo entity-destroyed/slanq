@@ -68,6 +68,7 @@ from slanq.ir import (
     MultiplyOp,
     Op,
     ParamInfo,
+    PhaseAdderOp,
     PhaseOp,
     QIfClauseAncilla,
     QIfOp,
@@ -80,6 +81,7 @@ from slanq.ir import (
     RealtimeWhileOp,
     RenameOp,
     ResetOp,
+    touched_registers,
 )
 from slanq.passes import moved_source, taken_branch
 from slanq.visitor import NodeVisitor, iter_child_nodes
@@ -125,6 +127,7 @@ def lower_to_ir(ast: Program, bag: DiagnosticBag) -> IRModule:
     lowerer.visit(ast)
     lowerer.warn_if_unsimulable()
     _drop_unread_assignments(lowerer.module.body)
+    _merge_phase_additions(lowerer.module.body)
     return lowerer.module
 
 
@@ -404,9 +407,7 @@ class _Lowerer(NodeVisitor):
             self._lower_multiply_augassign(node.span, target, value, subtract)
             return
 
-        helper = self._fresh_ancilla(node.span)
-
-        if isinstance(value, Name):
+        if isinstance(value, Name) and value.name in self.qubits:
             addend_ref = self._register(value)
             if addend_ref is None:
                 return
@@ -416,27 +417,14 @@ class _Lowerer(NodeVisitor):
                     span=node.span,
                     target=target,
                     addend=addend,
-                    helper=helper,
                     subtract=subtract,
                     encode_constant=None,
                 )
             )
             return
 
-        constant = self._const_int(value)
-        if constant is None:
-            self._unreachable("an addend that is not a whole constant", node.span)
-            return
-        ancilla = self._fresh_ancilla(node.span, size=target.size)
         self._block.ops.append(
-            ArithmeticOp(
-                span=node.span,
-                target=target,
-                addend=[ancilla],
-                helper=helper,
-                subtract=subtract,
-                encode_constant=constant % (1 << target.size),
-            )
+            PhaseAdderOp(span=node.span, target=target, amount=value, subtract=subtract)
         )
 
     def visit_QIf(self, node: QIf) -> None:
@@ -911,7 +899,6 @@ class _Lowerer(NodeVisitor):
         if operands is None:
             return
         left, right = operands
-        helper = self._fresh_ancilla(node.span)
 
         ref = QubitRef(name=node.name, size=size)
         self.qubits[node.name] = ref
@@ -922,7 +909,6 @@ class _Lowerer(NodeVisitor):
                 left=left,
                 right=right,
                 product=ref,
-                helper=helper,
                 inverse=False,
             )
         )
@@ -939,26 +925,22 @@ class _Lowerer(NodeVisitor):
         # Sized 2*width so the product is never truncated before the '+='
         # below applies target's own, possibly narrower, width rule to it.
         temp = self._fresh_ancilla(span, size=2 * width)
-        multiply_helper = self._fresh_ancilla(span)
         self._block.ops.append(
             MultiplyOp(
                 span=span,
                 left=left,
                 right=right,
                 product=temp,
-                helper=multiply_helper,
                 inverse=False,
             )
         )
 
-        add_helper = self._fresh_ancilla(span)
         addend = self._pad_to_width(temp, target.size, span)
         self._block.ops.append(
             ArithmeticOp(
                 span=span,
                 target=target,
                 addend=addend,
-                helper=add_helper,
                 subtract=subtract,
                 encode_constant=None,
             )
@@ -972,7 +954,6 @@ class _Lowerer(NodeVisitor):
                 left=left,
                 right=right,
                 product=temp,
-                helper=multiply_helper,
                 inverse=True,
             )
         )
@@ -1096,6 +1077,62 @@ class _Lowerer(NodeVisitor):
                 "the compiler, not in the source program.",
                 span,
             )
+
+
+def _merge_phase_additions(block: IRBlock) -> None:
+    """Let additions on one register share a single QFT pair.
+
+    Each phase addition turns the register into the Fourier basis and back, so
+    two of them undo and redo the same transform in between. Phases add, so a
+    whole run is one rotation per qubit by the sum of the amounts -- and that
+    sum is what the generated file then shows.
+
+    What may stand between two additions is anything that does not touch that
+    register: operations on disjoint qubits commute, so moving the later
+    addition up to the earlier one changes nothing.
+    """
+    for op in block.ops:
+        for nested in (getattr(op, "body", None), getattr(op, "orelse", None)):
+            if isinstance(nested, IRBlock):
+                _merge_phase_additions(nested)
+
+    index = 0
+    while index < len(block.ops):
+        first = block.ops[index]
+        if not isinstance(first, PhaseAdderOp):
+            index += 1
+            continue
+        amount = _signed(first)
+        merged = False
+        scan = index + 1
+        while scan < len(block.ops):
+            candidate = block.ops[scan]
+            if isinstance(candidate, PhaseAdderOp) and candidate.target == first.target:
+                amount = _combined(amount, candidate)
+                merged = True
+                del block.ops[scan]
+                continue
+            if first.target.name in touched_registers(candidate):
+                break
+            scan += 1
+        if merged:
+            # A lone addition keeps its own shape; only a merged run needs the
+            # sign folded into the amount, since the terms may differ in it.
+            block.ops[index] = PhaseAdderOp(
+                span=first.span, target=first.target, amount=amount, subtract=False
+            )
+        index += 1
+
+
+def _signed(op: PhaseAdderOp) -> Expression:
+    if not op.subtract:
+        return op.amount
+    return UnaryOp(span=op.amount.span, op="-", operand=op.amount)
+
+
+def _combined(left: Expression, op: PhaseAdderOp) -> Expression:
+    """The running sum, written the way the program wrote it."""
+    return BinaryOp(span=left.span, op="-" if op.subtract else "+", left=left, right=op.amount)
 
 
 def _drop_unread_assignments(block: IRBlock) -> None:

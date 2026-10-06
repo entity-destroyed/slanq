@@ -155,6 +155,12 @@ RUNNABLE_PROGRAMS = {
         "qint<3> again = to_qint(back);\n"
         "rt int<> result = measure(again);\n"
     ),
+    "runtime parameters in quantum arithmetic": (
+        "param int[3] gamma;\nqint<4> total = 1;\n"
+        "for(int i in range(3)) { total += gamma[i]; }\n"
+        "total -= 2;\n"
+        "rt int<> result = measure(total);\n"
+    ),
     "teleportation": (
         "qbool msg = true;\nqbool alice = false;\nqbool bob = false;\n"
         "H(alice);\nCX(alice, bob);\nCX(msg, alice);\nH(msg);\n"

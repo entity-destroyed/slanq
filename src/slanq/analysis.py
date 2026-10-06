@@ -146,8 +146,10 @@ _RESERVED_CODEGEN_NAMES = frozenset(
         "Parameter",
         "StatePreparation",
         "XGate",
-        "CDKMRippleCarryAdder",
-        "HRSCumulativeMultiplier",
+        "ModularAdderGate",
+        "MultiplierGate",
+        "QFTGate",
+        "_phase_add",
         "circuit",
         "build_circuit",
         "build_bound_circuit",
@@ -464,6 +466,8 @@ class _DeclarationChecker(_Checker):
 # Below this, a probability/amplitude list is treated as "meant to already be
 # normalized": floating point noise from ordinary decimal literals is silently
 # normalized away rather than warned about.
+PHASE_ADDER_PRECISION_LIMIT = 8
+
 NORMALIZATION_TOLERANCE = 1e-9
 
 
@@ -648,6 +652,21 @@ class _ArithmeticChecker(_Checker):
 
         if self._require_quantum(target) is not None:
             self._check_value_shape(node.value, target)
+            if _is_phase_added(node.value):
+                self._warn_about_phase_precision(node, target)
+
+    def _warn_about_phase_precision(self, node: AugAssign, target: Name) -> None:
+        """The smallest rotation of a phase adder halves with every qubit, so a
+        wide register asks the hardware for an angle it cannot resolve."""
+        declared = _declared_type(target)
+        width = qubit_count(declared) if declared is not None else None
+        if width is not None and width > PHASE_ADDER_PRECISION_LIMIT:
+            self._warn(
+                f"'{target.name}' is {width} qubits wide, so the smallest angle "
+                f"this addition needs is 2*PI/2^{width}; a simulator resolves "
+                "it, real hardware may not",
+                node,
+            )
 
     def visit_QuantumDecl(self, node: QuantumDecl) -> None:
         self.generic_visit(node)
@@ -681,13 +700,13 @@ class _ArithmeticChecker(_Checker):
     def _check_value_shape(self, value: Expression, target: Name) -> None:
         if isinstance(value, Name):
             if isinstance(value.resolved_symbol, ParamDecl):
-                self._reject_param_addend(value)
+                self._check_param_addend(value, value.resolved_symbol)
             elif self._require_quantum(value) is not None:
                 self._reject_self_reference(target, (value,))
             return
 
         if isinstance(value, Index) and isinstance(value.base.resolved_symbol, ParamArrayDecl):
-            self._reject_param_addend(value)
+            self._check_param_addend(value, value.base.resolved_symbol)
             return
 
         if isinstance(value, BinaryOp) and value.op == "*":
@@ -705,14 +724,14 @@ class _ArithmeticChecker(_Checker):
                 value,
             )
 
-    def _reject_param_addend(self, value: Expression) -> None:
-        self._reject(
-            "adding a runtime parameter to a quantum variable is not "
-            "implemented yet; only a compile-time constant, another quantum "
-            "variable, or the product of two quantum variables is "
-            "supported here",
-            value,
-        )
+    def _check_param_addend(self, value: Expression, symbol: ParamDecl | ParamArrayDecl) -> None:
+        if not isinstance(symbol.declared_type, IntType):
+            self._reject(
+                f"'{symbol.name}' is added to a quantum variable, so it has to "
+                "be a param int: a fraction would spread the register over "
+                "several values instead of adding to it",
+                value,
+            )
 
     def _reject_self_reference(self, target: Name, operands: tuple[Name, ...]) -> None:
         # The adder/multiplier needs the addend to hold its original value
@@ -777,6 +796,16 @@ _KIND_NAMES: dict[type[Type], str] = {
     QBoolType: "a qbool",
     QubitArrayType: "a qubit sequence",
 }
+
+
+def _is_phase_added(value: Expression) -> bool:
+    """Whether this addend goes through the phase adder rather than the
+    carry-chain one: anything that is not a quantum register."""
+    if isinstance(value, BinaryOp) and value.op == "*":
+        return False
+    if isinstance(value, Name) and _declared_type(value) is not None:
+        return False
+    return True
 
 
 class _ProcessCallChecker(_Checker):

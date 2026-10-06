@@ -39,6 +39,7 @@ from slanq.ir import (
     MultiplyOp,
     Op,
     ParamInfo,
+    PhaseAdderOp,
     PhaseOp,
     QIfOp,
     QubitBit,
@@ -163,6 +164,19 @@ ROUND_HELPER = [
     INDENT + "return math.floor(value + 0.5) if value >= 0 else math.ceil(value - 0.5)",
 ]
 
+PHASE_ADD_HELPER = [
+    "def _phase_add(circuit: QuantumCircuit, qubits: list, amount) -> None:",
+    INDENT + '"""Add `amount` to the register in place, modulo 2**len(qubits).',
+    "",
+    INDENT + "Phases add without a carry, so this needs no ancilla, and `amount`",
+    INDENT + 'may be a Parameter that is only bound after the circuit is built."""',
+    INDENT + "width = len(qubits)",
+    INDENT + "circuit.append(QFTGate(width), qubits)",
+    INDENT + "for index in range(width):",
+    INDENT * 2 + "circuit.p(2 * np.pi * amount / 2 ** (width - index), qubits[index])",
+    INDENT + "circuit.append(QFTGate(width).inverse(), qubits)",
+]
+
 SQRT_HELPER = [
     "def _sqrt(value: float | complex) -> float | complex:",
     INDENT + '"""A negative real or complex input promotes to a complex result',
@@ -187,6 +201,8 @@ def generate_qiskit(module: IRModule, *, source_name: str) -> str:
         lines += ["", ""] + ROUND_HELPER
     if generator.needs_sqrt:
         lines += ["", ""] + SQRT_HELPER
+    if generator.needs_phase_add:
+        lines += ["", ""] + PHASE_ADD_HELPER
     if module.params:
         lines += ["", ""] + _param_object_lines(module)
     lines += [
@@ -269,8 +285,9 @@ class _Generator:
         self.needs_sqrt = False
         self.needs_state_preparation = False
         self.needs_xgate = False
-        self.needs_cdkm_adder = False
-        self.needs_hrs_multiplier = False
+        self.needs_modular_adder = False
+        self.needs_multiplier = False
+        self.needs_phase_add = False
         self._qif_counter = 0
         self._realtime_counter = 0
         self.needs_expr = False
@@ -297,10 +314,12 @@ class _Generator:
             library_names.append("StatePreparation")
         if self.needs_xgate:
             library_names.append("XGate")
-        if self.needs_cdkm_adder:
-            library_names.append("CDKMRippleCarryAdder")
-        if self.needs_hrs_multiplier:
-            library_names.append("HRSCumulativeMultiplier")
+        if self.needs_modular_adder:
+            library_names.append("ModularAdderGate")
+        if self.needs_multiplier:
+            library_names.append("MultiplierGate")
+        if self.needs_phase_add:
+            library_names.append("QFTGate")
         if library_names:
             third_party.append(
                 f"from qiskit.circuit.library import {', '.join(sorted(library_names))}"
@@ -414,6 +433,14 @@ class _Generator:
         if isinstance(op, QIfOp):
             return self._qif_lines(op, circuit_var)
 
+        if isinstance(op, PhaseAdderOp):
+            self.needs_phase_add = True
+            self.needs_numpy = True
+            amount = self.expression(op.amount)
+            if op.subtract:
+                amount = f"-({amount})"
+            return [f"_phase_add({circuit_var}, {_qubit_list(op.target, qubits)}, {amount})"]
+
         if isinstance(op, ArithmeticOp):
             return self._arithmetic_lines(op, circuit_var, qubits)
 
@@ -448,15 +475,10 @@ class _Generator:
             for bit in encode_bits:
                 lines.append(f"{circuit_var}.x({_bit_source(constant_ancilla, bit, qubits)})")
 
-        self.needs_cdkm_adder = True
-        adder = f"CDKMRippleCarryAdder({op.target.size}, kind='fixed')"
+        self.needs_modular_adder = True
+        adder = f"ModularAdderGate({op.target.size})"
         gate = f"{adder}.inverse()" if op.subtract else adder
-        if qubits is not None:
-            # The body itself becomes a gate, and a circuit holding an
-            # instruction cannot: `to_gate` refuses the adder as it comes.
-            gate = f"{gate}.to_gate()"
         sources = [_spread_sources(operand, qubits) for operand in (*op.addend, op.target)]
-        sources.append(_bit_source(op.helper, 0, qubits))
         lines.append(f"{circuit_var}.append({gate}, [{', '.join(sources)}])")
 
         if constant_ancilla is not None:
@@ -468,16 +490,13 @@ class _Generator:
     def _multiply_lines(
         self, op: MultiplyOp, circuit_var: str, qubits: QubitMap | None = None
     ) -> list[str]:
-        self.needs_hrs_multiplier = True
+        self.needs_multiplier = True
         width = sum(_operand_width(operand) for operand in op.left)
-        multiplier = f"HRSCumulativeMultiplier({width}, num_result_qubits={op.product.size})"
+        multiplier = f"MultiplierGate({width}, {op.product.size})"
         gate = f"{multiplier}.inverse()" if op.inverse else multiplier
-        if qubits is not None:
-            gate = f"{gate}.to_gate()"
         sources = [
             _spread_sources(operand, qubits) for operand in (*op.left, *op.right, op.product)
         ]
-        sources.append(_bit_source(op.helper, 0, qubits))
         return [f"{circuit_var}.append({gate}, [{', '.join(sources)}])"]
 
     def _state_preparation_lines(self, op: InitOp, circuit_var: str) -> list[str]:
@@ -937,13 +956,17 @@ def _collect_body_qubits(body: IRBlock, seen: dict[Qubit, None]) -> None:
     for op in body.ops:
         if isinstance(op, PhaseOp):
             continue  # a global phase touches no qubit
+        if isinstance(op, PhaseAdderOp):
+            for qubit in _operand_qubits(op.target):
+                seen[qubit] = None
+            continue
         if isinstance(op, ArithmeticOp):
-            for operand in (*op.addend, op.target, op.helper):
+            for operand in (*op.addend, op.target):
                 for qubit in _operand_qubits(operand):
                     seen[qubit] = None
             continue
         if isinstance(op, MultiplyOp):
-            for operand in (*op.left, *op.right, op.product, op.helper):
+            for operand in (*op.left, *op.right, op.product):
                 for qubit in _operand_qubits(operand):
                     seen[qubit] = None
             continue
@@ -964,6 +987,13 @@ def _operand_qubits(operand: QubitOperand) -> list[Qubit]:
     if isinstance(operand, QubitSlice):
         return [(operand.ref.name, index) for index in range(operand.size)]
     return [(operand.name, index) for index in range(operand.size)]
+
+
+def _qubit_list(ref: QubitRef, qubits: QubitMap | None) -> str:
+    """The register as a Python list of qubits, in Qiskit's own order."""
+    if qubits is None:
+        return f"{ref.name}[:]"
+    return "[" + ", ".join(qubits[(ref.name, bit)] for bit in range(ref.size)) + "]"
 
 
 def _spread_sources(operand: QubitOperand, qubits: QubitMap | None) -> str:

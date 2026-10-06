@@ -12,7 +12,11 @@ authors = [{ name = "Simon Adam Imre" }]
 
 dependencies = [
     "lark>=1.1",
-    "qiskit>=2.0",
+    # 2.5: MultiplierGate(n, m) with m < 2n declares fewer qubits than its own
+    # definition uses before then (measured: 2.2.1 says 6, the definition needs
+    # 8). Transpiling repairs it, so the generated file runs the usual way, but
+    # Statevector() on an untranspiled circuit walks into it.
+    "qiskit>=2.5",
 ]
 
 [project.optional-dependencies]
