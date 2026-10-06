@@ -1295,14 +1295,19 @@ def test_a_controlled_adder_uses_the_sub_circuits_own_wires() -> None:
     assert "_qif_body_1.append(ModularAdderGate" in source
 
 
-def test_a_controlled_multiplier_uses_the_sub_circuits_own_wires() -> None:
+def test_a_controlled_multiply_leaves_the_product_outside_the_control() -> None:
+    """The multiplication writes only a register the compiler owns, and its
+    inverse puts that register back whether or not the condition held -- so
+    running it unconditionally is invisible, and only the write into `c` has
+    to be controlled. Nothing but the adder belongs in the sub-circuit."""
     source = _if_source(
         "qint<2> a = 2;\nqint<4> c = 0;\nqint<2> d = 2;\nqint<2> e = 3;\n"
         "qif(a == 2) { c += d * e; }\n"
     )
-    assert "MultiplierGate(2, 4)" in source
-    assert "MultiplierGate(2, 4).inverse()" in source
-    assert "_qif_body_1.append(MultiplierGate" in source
+    assert "circuit.append(MultiplierGate(2, 4), [*d, *e, *_ancilla_0])" in source
+    assert "circuit.append(MultiplierGate(2, 4).inverse(), [*d, *e, *_ancilla_0])" in source
+    assert "_qif_body_1.append(MultiplierGate" not in source
+    assert "_qif_body_1.append(ModularAdderGate" in source
 
 
 def test_an_adder_outside_a_qif_keeps_its_registers() -> None:

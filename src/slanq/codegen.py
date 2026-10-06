@@ -51,6 +51,7 @@ from slanq.ir import (
     RealtimeWhileOp,
     RenameOp,
     ResetOp,
+    is_compiler_owned,
 )
 
 INDENT = " " * 4
@@ -532,10 +533,18 @@ class _Generator:
         if not phases.ops and not gates.ops:
             return []
 
+        # A multiplication into a register the compiler owns leaves no trace
+        # either way, so only the write into the user's register needs the
+        # control. Lifting it out is what keeps a controlled `c += a * b` from
+        # paying for the whole product twice.
+        before, controlled, after = _split_hoistable(gates.ops)
         lines: list[str] = []
+        for lifted in before:
+            lines += self.op_lines(lifted, circuit_var)
+
         body_var = ""
         body_sources: list[str] = []
-        if gates.ops:
+        if controlled:
             self._qif_counter += 1
             body_var = f"_qif_body_{self._qif_counter}"
 
@@ -546,10 +555,10 @@ class _Generator:
             # `CircuitError: duplicate bit arguments` at generated-file
             # runtime, for a program whose condition and body do touch
             # different qubits (`qif(a[0]) { X(a[1]); }`).
-            body_qubits = _body_qubits(gates)
+            body_qubits = _body_qubits(IRBlock(ops=list(controlled)))
             local = {qubit: f"{body_var}.qubits[{wire}]" for wire, qubit in enumerate(body_qubits)}
             lines.append(f'{body_var} = QuantumCircuit({len(body_qubits)}, name="qif_body")')
-            for sub_op in gates.ops:
+            for sub_op in controlled:
                 lines += self.op_lines(sub_op, body_var, qubits=local)
             body_sources = [f"{name}[{index}]" for name, index in body_qubits]
 
@@ -621,6 +630,7 @@ class _Generator:
             lines.append(f"{circuit_var}.x({name}[0])")
             lines.append(f"{circuit_var}.append({compute}, [{compute_qubits}])")
 
+        lines += self._trailing_lifted(after, circuit_var)
         return lines
 
     def _summed_angle(self, phases: IRBlock) -> str | None:
@@ -632,6 +642,12 @@ class _Generator:
             self._wrapped(sub_op.angle, BINARY_PRECEDENCE["+"])
             for sub_op in cast(list[PhaseOp], phases.ops)
         )
+
+    def _trailing_lifted(self, ops: list[Op], circuit_var: str) -> list[str]:
+        lines: list[str] = []
+        for lifted in ops:
+            lines += self.op_lines(lifted, circuit_var)
+        return lines
 
     def _controlled_body_lines(
         self,
@@ -850,6 +866,40 @@ def _qiskit_index(bit: QubitBit) -> int:
     """Slanq indexes big-endian -- index 0 is the most significant qubit --
     while the Qiskit register is little-endian."""
     return bit.ref.size - 1 - bit.index
+
+
+def _split_hoistable(ops: list[Op]) -> tuple[list[Op], list[Op], list[Op]]:
+    """The operations at each end of a qif body that need no control.
+
+    One qualifies when it writes nothing the program can observe: a
+    multiplication into a register the compiler allocated, whose inverse stands
+    in the same body and restores it to |0> whether or not the condition held.
+    Running such a pair unconditionally is invisible; only the write into the
+    user's register has to follow the condition.
+
+    Only the two ends are lifted. One in the middle would have to keep its
+    place among the controlled operations around it, which would mean several
+    controlled sub-circuits instead of one -- correct, but more machinery than
+    the shape the compiler actually emits needs.
+    """
+    start = 0
+    while start < len(ops) and _leaves_no_trace(ops[start], ops):
+        start += 1
+    end = len(ops)
+    while end > start and _leaves_no_trace(ops[end - 1], ops):
+        end -= 1
+    return ops[:start], ops[start:end], ops[end:]
+
+
+def _leaves_no_trace(op: Op, body: list[Op]) -> bool:
+    if not isinstance(op, MultiplyOp) or not is_compiler_owned(op.product.name):
+        return False
+    return any(
+        isinstance(other, MultiplyOp)
+        and other.product == op.product
+        and other.inverse != op.inverse
+        for other in body
+    )
 
 
 def _body_qubits(body: IRBlock) -> list[Qubit]:
