@@ -462,31 +462,11 @@ class _Generator:
     def _arithmetic_lines(
         self, op: ArithmeticOp, circuit_var: str, qubits: QubitMap | None = None
     ) -> list[str]:
-        lines: list[str] = []
-
-        constant_ancilla: QubitRef | None = None
-        encode_bits: list[int] = []
-        if op.encode_constant is not None:
-            (addend_ancilla,) = op.addend
-            assert isinstance(addend_ancilla, QubitRef)
-            constant_ancilla = addend_ancilla
-            encode_bits = [
-                bit for bit in range(constant_ancilla.size) if (op.encode_constant >> bit) & 1
-            ]
-            for bit in encode_bits:
-                lines.append(f"{circuit_var}.x({_bit_source(constant_ancilla, bit, qubits)})")
-
         self.needs_modular_adder = True
         adder = f"ModularAdderGate({op.target.size})"
         gate = f"{adder}.inverse()" if op.subtract else adder
         sources = [_spread_sources(operand, qubits) for operand in (*op.addend, op.target)]
-        lines.append(f"{circuit_var}.append({gate}, [{', '.join(sources)}])")
-
-        if constant_ancilla is not None:
-            for bit in encode_bits:
-                lines.append(f"{circuit_var}.x({_bit_source(constant_ancilla, bit, qubits)})")
-
-        return lines
+        return [f"{circuit_var}.append({gate}, [{', '.join(sources)}])"]
 
     def _multiply_lines(
         self, op: MultiplyOp, circuit_var: str, qubits: QubitMap | None = None

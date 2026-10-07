@@ -418,7 +418,6 @@ class _Lowerer(NodeVisitor):
                     target=target,
                     addend=addend,
                     subtract=subtract,
-                    encode_constant=None,
                 )
             )
             return
@@ -942,7 +941,6 @@ class _Lowerer(NodeVisitor):
                 target=target,
                 addend=addend,
                 subtract=subtract,
-                encode_constant=None,
             )
         )
 

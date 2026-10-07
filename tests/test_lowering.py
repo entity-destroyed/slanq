@@ -899,7 +899,6 @@ def test_augassign_equal_width_needs_no_padding(lower: LowerSource) -> None:
     assert arithmetic.target == module.qubits[0]
     assert arithmetic.addend == [module.qubits[1]]
     assert arithmetic.subtract is False
-    assert arithmetic.encode_constant is None
 
 
 def test_augassign_subtract_sets_the_flag(lower: LowerSource) -> None:

@@ -803,7 +803,6 @@ def test_arithmetic_op_renders_the_adder_call(span: Span) -> None:
                     target=a,
                     addend=[b],
                     subtract=False,
-                    encode_constant=None,
                 )
             ]
         ),
@@ -825,7 +824,6 @@ def test_arithmetic_op_subtract_uses_inverse(span: Span) -> None:
                     target=a,
                     addend=[b],
                     subtract=True,
-                    encode_constant=None,
                 )
             ]
         ),
@@ -847,7 +845,6 @@ def test_arithmetic_op_pads_the_addend_with_an_ancilla(span: Span) -> None:
                     target=a,
                     addend=[b, padding],
                     subtract=False,
-                    encode_constant=None,
                 )
             ]
         ),
@@ -868,40 +865,12 @@ def test_arithmetic_op_wider_addend_is_sliced(span: Span) -> None:
                     target=a,
                     addend=[QubitSlice(ref=b, size=2)],
                     subtract=False,
-                    encode_constant=None,
                 )
             ]
         ),
     )
     source = _generate(module)
     assert "circuit.append(ModularAdderGate(2), [*b[0:2], *a])" in source
-
-
-def test_arithmetic_op_encodes_and_decodes_a_constant(span: Span) -> None:
-    a = QubitRef(name="a", size=2)
-    ancilla = QubitRef(name="_ancilla_1", size=2)
-    module = IRModule(
-        qubits=[a],
-        body=IRBlock(
-            ops=[
-                ArithmeticOp(
-                    span=span,
-                    target=a,
-                    addend=[ancilla],
-                    subtract=False,
-                    encode_constant=3,
-                )
-            ]
-        ),
-    )
-    source = _generate(module)
-    encode = source.index("circuit.x(_ancilla_1[0])")
-    encode_bit1 = source.index("circuit.x(_ancilla_1[1])")
-    adder_call = source.index("circuit.append(ModularAdderGate")
-    decode = source.index("circuit.x(_ancilla_1[0])", encode + 1)
-    # Both bits of 3 (0b11) are encoded before the adder call, and the same
-    # two X gates decode the ancilla back to |0> afterward.
-    assert encode < encode_bit1 < adder_call < decode
 
 
 def test_multiply_op_renders_the_multiplier_call(span: Span) -> None:

@@ -314,6 +314,9 @@ def _collect_names(value: object, names: set[str]) -> None:
     elif isinstance(value, IRBlock):
         for nested in value.ops:
             names |= touched_registers(nested)
+    elif isinstance(value, QIfClauseAncilla):
+        _collect_names(value.qubits, names)
+        _collect_names(value.ancilla, names)
     elif isinstance(value, list | tuple):
         for item in value:
             _collect_names(item, names)
