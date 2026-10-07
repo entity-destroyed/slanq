@@ -196,15 +196,11 @@ class ArithmeticOp(Op):
     """`target += addend` or `target -= addend` (`subtract`). `addend` is
     always target.size physical qubits long, concatenated -- may be the real
     variable (possibly sliced via QubitSlice), plus a fresh 0-ancilla if the
-    real addend is narrower. `encode_constant` is set when the addend is a
-    compile-time constant: then `addend` is a fresh ancilla allocated only
-    for this purpose, which codegen encodes with X-gates before the add and
-    decodes with the same gates afterward. The gate needs no scratch qubit of its own."""
+    real addend is narrower. The gate needs no scratch qubit of its own."""
 
     target: QubitRef
     addend: list[QubitOperand]
     subtract: bool
-    encode_constant: int | None
 
 
 @dataclass(kw_only=True, eq=False)

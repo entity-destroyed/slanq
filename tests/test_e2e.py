@@ -511,6 +511,16 @@ def test_subtraction_of_a_compile_time_constant() -> None:
     assert _counts(source) == {"0101": SHOTS}
 
 
+def test_additions_are_not_merged_across_a_condition_that_reads_the_register() -> None:
+    """`a != 1` reaches the circuit only through its clause ancilla, so the
+    register it tests stands nowhere else in the qif."""
+    source = (
+        "qint<2> a = 0;\nqbool o = false;\na += 1;\nqif(a != 1) { X(o); }\na += 1;\n"
+        "rt int<> result = measure(o);\n"
+    )
+    assert _counts(source) == {"0": SHOTS}
+
+
 def test_subtraction_of_a_runtime_parameter() -> None:
     source = "param int k;\nqint<4> a = 9;\na -= k;\nrt int<> result = measure(a);\n"
     result = compile_source(source, source_name="test.slanq")
