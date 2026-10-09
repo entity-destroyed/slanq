@@ -42,6 +42,7 @@ from slanq.ir import (
     PhaseAdderOp,
     PhaseOp,
     QIfOp,
+    Qubit,
     QubitBit,
     QubitOperand,
     QubitRef,
@@ -51,15 +52,16 @@ from slanq.ir import (
     RealtimeWhileOp,
     RenameOp,
     ResetOp,
-    is_compiler_owned,
+    operand_qubits,
+    qiskit_index,
 )
 
 INDENT = " " * 4
 
-# A physical qubit as (register name, Qiskit index), and a renaming of such
-# qubits to their wires in a nested sub-circuit.
-Qubit = tuple[str, int]
+# A renaming of qubits to their wires in a nested sub-circuit.
 QubitMap = dict[Qubit, str]
+
+ANCILLA_REGISTER = "_ancilla"
 
 # Python's own precedence order, so an expression the user parenthesised the
 # way Slanq requires comes out meaning the same thing in the generated file.
@@ -293,6 +295,7 @@ class _Generator:
         self._realtime_counter = 0
         self.needs_expr = False
         self._realtime_widths: dict[str, int] = {}
+        self._ancilla_qubits: dict[str, tuple[int, ...]] = {}
 
     def import_lines(self, module: IRModule) -> list[str]:
         standard = ["import sys"]
@@ -334,12 +337,16 @@ class _Generator:
     def body_lines(self, module: IRModule) -> list[str]:
         self._realtime_widths = {ref.name: ref.size for ref in module.clbits}
         _collect_realtime_widths(module.body, self._realtime_widths)
-        lines = [f'{ref.name} = QuantumRegister({ref.size}, "{ref.name}")' for ref in module.qubits]
+        self._ancilla_qubits = module.ancilla_qubits
+        quantum = [(ref.name, ref.size) for ref in module.qubits]
+        if module.ancilla_size:
+            quantum.append((ANCILLA_REGISTER, module.ancilla_size))
+        lines = [f'{name} = QuantumRegister({size}, "{name}")' for name, size in quantum]
         lines += [
             f'{ref.name} = ClassicalRegister({ref.size}, "{ref.name}")' for ref in module.clbits
         ]
 
-        registers = [ref.name for ref in module.qubits] + [ref.name for ref in module.clbits]
+        registers = [name for name, _ in quantum] + [ref.name for ref in module.clbits]
         lines.append(f"circuit = QuantumCircuit({', '.join(registers)})")
 
         for op in module.body.ops:
@@ -452,10 +459,10 @@ class _Generator:
             return [f"{op.target.name} = {op.source.name}"]
 
         if isinstance(op, DeclareAncillaOp):
-            return [
-                f'{op.ref.name} = QuantumRegister({op.ref.size}, "{op.ref.name}")',
-                f"{circuit_var}.add_register({op.ref.name})",
-            ]
+            members = ", ".join(
+                f"{ANCILLA_REGISTER}[{index}]" for index in self._ancilla_qubits[op.ref.name]
+            )
+            return [f"{op.ref.name} = [{members}]"]
 
         raise NotImplementedError(f"no code generation for {type(op).__name__}")
 
@@ -513,14 +520,10 @@ class _Generator:
         if not phases.ops and not gates.ops:
             return []
 
-        # A multiplication into a register the compiler owns leaves no trace
-        # either way, so only the write into the user's register needs the
-        # control. Lifting it out is what keeps a controlled `c += a * b` from
-        # paying for the whole product twice.
-        before, controlled, after = _split_hoistable(gates.ops)
+        # Whatever needed no control was already lifted out in front of or
+        # behind the qif (lowering, `_lift_out_of_qifs`).
+        controlled = gates.ops
         lines: list[str] = []
-        for lifted in before:
-            lines += self.op_lines(lifted, circuit_var)
 
         body_var = ""
         body_sources: list[str] = []
@@ -535,12 +538,19 @@ class _Generator:
             # `CircuitError: duplicate bit arguments` at generated-file
             # runtime, for a program whose condition and body do touch
             # different qubits (`qif(a[0]) { X(a[1]); }`).
+            # Wires are per physical qubit: two scratch registers of one body
+            # may have been given the same pool qubit.
             body_qubits = _body_qubits(IRBlock(ops=list(controlled)))
-            local = {qubit: f"{body_var}.qubits[{wire}]" for wire, qubit in enumerate(body_qubits)}
-            lines.append(f'{body_var} = QuantumCircuit({len(body_qubits)}, name="qif_body")')
+            wires: dict[Qubit, int] = {}
+            for qubit in body_qubits:
+                wires.setdefault(self._physical(qubit), len(wires))
+            local = {
+                qubit: f"{body_var}.qubits[{wires[self._physical(qubit)]}]" for qubit in body_qubits
+            }
+            lines.append(f'{body_var} = QuantumCircuit({len(wires)}, name="qif_body")')
             for sub_op in controlled:
                 lines += self.op_lines(sub_op, body_var, qubits=local)
-            body_sources = [f"{name}[{index}]" for name, index in body_qubits]
+            body_sources = [f"{name}[{index}]" for name, index in wires]
 
         angle = self._summed_angle(phases)
 
@@ -610,8 +620,12 @@ class _Generator:
             lines.append(f"{circuit_var}.x({name}[0])")
             lines.append(f"{circuit_var}.append({compute}, [{compute_qubits}])")
 
-        lines += self._trailing_lifted(after, circuit_var)
         return lines
+
+    def _physical(self, qubit: Qubit) -> Qubit:
+        name, index = qubit
+        pooled = self._ancilla_qubits.get(name)
+        return qubit if pooled is None else (ANCILLA_REGISTER, pooled[index])
 
     def _summed_angle(self, phases: IRBlock) -> str | None:
         """Phases that always apply add up into one expression the compiler
@@ -622,12 +636,6 @@ class _Generator:
             self._wrapped(sub_op.angle, BINARY_PRECEDENCE["+"])
             for sub_op in cast(list[PhaseOp], phases.ops)
         )
-
-    def _trailing_lifted(self, ops: list[Op], circuit_var: str) -> list[str]:
-        lines: list[str] = []
-        for lifted in ops:
-            lines += self.op_lines(lifted, circuit_var)
-        return lines
 
     def _controlled_body_lines(
         self,
@@ -813,7 +821,7 @@ def _precedence(expression: Expression) -> int:
 
 def _operand_source(operand: QubitOperand) -> str:
     if isinstance(operand, QubitBit):
-        return f"{operand.ref.name}[{_qiskit_index(operand)}]"
+        return f"{operand.ref.name}[{qiskit_index(operand)}]"
     assert not isinstance(operand, QubitSlice)
     return operand.name
 
@@ -840,62 +848,6 @@ def _operand_bits(operand: QubitOperand) -> list[str]:
         return [_operand_source(operand)]
     name = operand.ref.name if isinstance(operand, QubitSlice) else operand.name
     return [f"{name}[{index}]" for index in range(operand.size)]
-
-
-def _qiskit_index(bit: QubitBit) -> int:
-    """Slanq indexes big-endian -- index 0 is the most significant qubit --
-    while the Qiskit register is little-endian."""
-    return bit.ref.size - 1 - bit.index
-
-
-def _split_hoistable(ops: list[Op]) -> tuple[list[Op], list[Op], list[Op]]:
-    """The operations at each end of a qif body that need no control.
-
-    A multiplication into a register the compiler allocated may run
-    unconditionally only together with the inverse that restores it: the pair
-    leaves that register at |0> whether or not the condition held, and nothing
-    else of it can be observed. Lifting only one of the two would leave the
-    register holding a product exactly when the condition failed. Only the
-    write into the user's register has to follow the condition.
-
-    Only the two ends are lifted. One in the middle would have to keep its
-    place among the controlled operations around it, which would mean several
-    controlled sub-circuits instead of one -- correct, but more machinery than
-    the shape the compiler actually emits needs.
-    """
-    start = 0
-    while start < len(ops) and _is_scratch_multiply(ops[start]):
-        start += 1
-    end = len(ops)
-    while end > start and _is_scratch_multiply(ops[end - 1]):
-        end -= 1
-
-    # An unpaired one stays controlled, and so does everything between it and
-    # the controlled part, so that nothing changes order. That can unpair
-    # another, hence the repetition.
-    while True:
-        lifted = ops[:start] + ops[end:]
-        outside = [*range(start), *range(end, len(ops))]
-        unpaired = [index for index in outside if not _paired(ops[index], lifted)]
-        new_start = min([index for index in unpaired if index < start], default=start)
-        new_end = max([index + 1 for index in unpaired if index >= end], default=end)
-        if (new_start, new_end) == (start, end):
-            return ops[:start], ops[start:end], ops[end:]
-        start, end = new_start, new_end
-
-
-def _is_scratch_multiply(op: Op) -> bool:
-    return isinstance(op, MultiplyOp) and is_compiler_owned(op.product.name)
-
-
-def _paired(op: Op, lifted: list[Op]) -> bool:
-    assert isinstance(op, MultiplyOp)
-    return any(
-        isinstance(other, MultiplyOp)
-        and other.product == op.product
-        and other.inverse != op.inverse
-        for other in lifted
-    )
 
 
 def _body_qubits(body: IRBlock) -> list[Qubit]:
@@ -1003,17 +955,17 @@ def _collect_body_qubits(body: IRBlock, seen: dict[Qubit, None]) -> None:
         if isinstance(op, PhaseOp):
             continue  # a global phase touches no qubit
         if isinstance(op, PhaseAdderOp):
-            for qubit in _operand_qubits(op.target):
+            for qubit in operand_qubits(op.target):
                 seen[qubit] = None
             continue
         if isinstance(op, ArithmeticOp):
             for operand in (*op.addend, op.target):
-                for qubit in _operand_qubits(operand):
+                for qubit in operand_qubits(operand):
                     seen[qubit] = None
             continue
         if isinstance(op, MultiplyOp):
             for operand in (*op.left, *op.right, op.product):
-                for qubit in _operand_qubits(operand):
+                for qubit in operand_qubits(operand):
                     seen[qubit] = None
             continue
         assert isinstance(op, GateOp), (
@@ -1021,18 +973,8 @@ def _collect_body_qubits(body: IRBlock, seen: dict[Qubit, None]) -> None:
             "allowed here must have its operands mapped into the sub-circuit too"
         )
         for target in op.targets:
-            for qubit in _operand_qubits(target):
+            for qubit in operand_qubits(target):
                 seen[qubit] = None
-
-
-def _operand_qubits(operand: QubitOperand) -> list[Qubit]:
-    """`operand` spread into physical qubits. A whole register contributes all
-    of its qubits in Qiskit order -- the order Qiskit broadcasts it in."""
-    if isinstance(operand, QubitBit):
-        return [(operand.ref.name, _qiskit_index(operand))]
-    if isinstance(operand, QubitSlice):
-        return [(operand.ref.name, index) for index in range(operand.size)]
-    return [(operand.name, index) for index in range(operand.size)]
 
 
 def _qubit_list(ref: QubitRef, qubits: QubitMap | None) -> str:
@@ -1048,7 +990,7 @@ def _spread_sources(operand: QubitOperand, qubits: QubitMap | None) -> str:
     body, where registers no longer exist."""
     if qubits is None:
         return _spread_source(operand)
-    return ", ".join(qubits[qubit] for qubit in _operand_qubits(operand))
+    return ", ".join(qubits[qubit] for qubit in operand_qubits(operand))
 
 
 def _bit_source(ref: QubitRef, bit: int, qubits: QubitMap | None) -> str:
@@ -1060,7 +1002,7 @@ def _bit_source(ref: QubitRef, bit: int, qubits: QubitMap | None) -> str:
 def _target_source(operand: QubitOperand, qubits: QubitMap | None) -> str:
     if qubits is None:
         return _operand_source(operand)
-    sources = [qubits[qubit] for qubit in _operand_qubits(operand)]
+    sources = [qubits[qubit] for qubit in operand_qubits(operand)]
     # A list is how Qiskit takes several qubits for one operand, which is what
     # a whole-register operand becomes once registers are gone.
     return sources[0] if len(sources) == 1 else f"[{', '.join(sources)}]"

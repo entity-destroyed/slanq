@@ -624,7 +624,7 @@ def test_a_name_starting_with_an_underscore_is_rejected(
     diagnostics_of: DiagnosticsOf, source: str
 ) -> None:
     """The compiler's own generated names all start with an underscore, and
-    there are more of them every time the generator grows (`_ancilla_N`,
+    there are more of them every time the generator grows (`_product_N`,
     `_qif_body_N`, `_round`, `_sqrt`). Reserving the shape rather than listing
     the names is what makes that list impossible to fall behind -- it had
     already fallen behind on `_sqrt`. The rule covers every kind of

@@ -471,7 +471,7 @@ def test_qif_direct_control_when_not_negated(span: Span) -> None:
 def test_qif_negated_uses_an_ancilla(span: Span) -> None:
     condition = QubitRef(name="a", size=2)
     body_target = QubitRef(name="out", size=1)
-    ancilla = QubitRef(name="_ancilla_0", size=1)
+    ancilla = QubitRef(name="_negation_0", size=1)
     module = IRModule(
         qubits=[condition, body_target],
         body=IRBlock(
@@ -492,12 +492,12 @@ def test_qif_negated_uses_an_ancilla(span: Span) -> None:
     assert "from qiskit.circuit.library import XGate" in source
     assert (
         "circuit.append(XGate().control(2, ctrl_state=2, annotated=False), "
-        "[*a, _ancilla_0[0]])" in source
+        "[*a, _negation_0[0]])" in source
     )
-    assert "circuit.x(_ancilla_0[0])" in source
+    assert "circuit.x(_negation_0[0])" in source
     assert (
         "circuit.append(_qif_body_1.to_gate().control(1, ctrl_state=1, "
-        "annotated=False), [_ancilla_0[0], out[0]])" in source
+        "annotated=False), [_negation_0[0], out[0]])" in source
     )
 
 
@@ -752,8 +752,8 @@ def test_qif_multiple_clause_ancillas_compute_and_uncompute_in_order(
     b = QubitRef(name="b", size=2)
     flag = QubitRef(name="flag", size=1)
     body_target = QubitRef(name="out", size=1)
-    ancilla_a = QubitRef(name="_ancilla_0", size=1)
-    ancilla_b = QubitRef(name="_ancilla_1", size=1)
+    ancilla_a = QubitRef(name="_negation_0", size=1)
+    ancilla_b = QubitRef(name="_negation_1", size=1)
 
     module = IRModule(
         qubits=[a, b, flag, body_target],
@@ -835,7 +835,7 @@ def test_arithmetic_op_subtract_uses_inverse(span: Span) -> None:
 def test_arithmetic_op_pads_the_addend_with_an_ancilla(span: Span) -> None:
     a = QubitRef(name="a", size=3)
     b = QubitRef(name="b", size=2)
-    padding = QubitRef(name="_ancilla_1", size=1)
+    padding = QubitRef(name="_padding_0", size=1)
     module = IRModule(
         qubits=[a, b],
         body=IRBlock(
@@ -850,7 +850,7 @@ def test_arithmetic_op_pads_the_addend_with_an_ancilla(span: Span) -> None:
         ),
     )
     source = _generate(module)
-    assert "circuit.append(ModularAdderGate(3), [*b, *_ancilla_1, *a])" in source
+    assert "circuit.append(ModularAdderGate(3), [*b, *_padding_0, *a])" in source
 
 
 def test_arithmetic_op_wider_addend_is_sliced(span: Span) -> None:
@@ -899,7 +899,7 @@ def test_multiply_op_renders_the_multiplier_call(span: Span) -> None:
 def test_multiply_op_inverse_renders_the_reversed_multiplier(span: Span) -> None:
     a = QubitRef(name="a", size=2)
     b = QubitRef(name="b", size=2)
-    temp = QubitRef(name="_ancilla_1", size=4)
+    temp = QubitRef(name="_product_0", size=4)
     module = IRModule(
         qubits=[a, b],
         body=IRBlock(
@@ -915,18 +915,23 @@ def test_multiply_op_inverse_renders_the_reversed_multiplier(span: Span) -> None
         ),
     )
     source = _generate(module)
-    assert "circuit.append(MultiplierGate(2, 4).inverse(), [*a, *b, *_ancilla_1])" in source
+    assert "circuit.append(MultiplierGate(2, 4).inverse(), [*a, *b, *_product_0])" in source
 
 
 def test_declare_ancilla_op_is_the_only_thing_that_declares(span: Span) -> None:
     """No operation declares the registers it uses: an operand says nothing
     about whether it has been brought into the circuit yet, and guessing that
     from the operand is how one register came to be declared twice."""
-    ancilla = QubitRef(name="_ancilla_0", size=3)
-    module = IRModule(body=IRBlock(ops=[DeclareAncillaOp(span=span, ref=ancilla)]))
+    product = QubitRef(name="_product_0", size=3)
+    module = IRModule(
+        body=IRBlock(ops=[DeclareAncillaOp(span=span, ref=product)]),
+        ancilla_size=4,
+        ancilla_qubits={"_product_0": (3, 0, 2)},
+    )
     source = _generate(module)
-    assert '_ancilla_0 = QuantumRegister(3, "_ancilla_0")' in source
-    assert "circuit.add_register(_ancilla_0)" in source
+    assert '_ancilla = QuantumRegister(4, "_ancilla")' in source
+    assert "circuit = QuantumCircuit(_ancilla)" in source
+    assert "_product_0 = [_ancilla[3], _ancilla[0], _ancilla[2]]" in source
 
 
 def _generated_helper(name: str, call: str) -> Any:
@@ -1177,7 +1182,7 @@ def test_an_ancilla_is_declared_before_the_adder_that_needs_it() -> None:
     declaration = next(
         index
         for index, line in enumerate(source.splitlines())
-        if "add_register(_ancilla_0)" in line
+        if line.strip().startswith("_padding_0 = ")
     )
     branch = next(
         index
@@ -1273,8 +1278,8 @@ def test_a_controlled_multiply_leaves_the_product_outside_the_control() -> None:
         "qint<2> a = 2;\nqint<4> c = 0;\nqint<2> d = 2;\nqint<2> e = 3;\n"
         "qif(a == 2) { c += d * e; }\n"
     )
-    assert "circuit.append(MultiplierGate(2, 4), [*d, *e, *_ancilla_0])" in source
-    assert "circuit.append(MultiplierGate(2, 4).inverse(), [*d, *e, *_ancilla_0])" in source
+    assert "circuit.append(MultiplierGate(2, 4), [*d, *e, *_product_0])" in source
+    assert "circuit.append(MultiplierGate(2, 4).inverse(), [*d, *e, *_product_0])" in source
     assert "_qif_body_1.append(MultiplierGate" not in source
     assert "_qif_body_1.append(ModularAdderGate" in source
 

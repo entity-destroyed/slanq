@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from dataclasses import fields
 from typing import Literal as TypingLiteral
 
+from slanq.ancilla_pool import allocate_ancillas
 from slanq.ast_nodes import (
     AmplitudeList,
     Assign,
@@ -81,6 +82,7 @@ from slanq.ir import (
     RealtimeWhileOp,
     RenameOp,
     ResetOp,
+    is_compiler_owned,
     touched_registers,
 )
 from slanq.passes import moved_source, taken_branch
@@ -125,9 +127,11 @@ MAX_SIMULABLE_QUBITS = 30
 def lower_to_ir(ast: Program, bag: DiagnosticBag) -> IRModule:
     lowerer = _Lowerer(bag)
     lowerer.visit(ast)
-    lowerer.warn_if_unsimulable()
     _drop_unread_assignments(lowerer.module.body)
     _merge_phase_additions(lowerer.module.body)
+    _lift_out_of_qifs(lowerer.module.body)
+    allocate_ancillas(lowerer.module)
+    lowerer.warn_if_unsimulable()
     return lowerer.module
 
 
@@ -138,7 +142,7 @@ class _Lowerer(NodeVisitor):
         self._block = self.module.body
         self.qubits: dict[str, QubitRef] = {}
         self.realtime: dict[str, ClbitRef] = {}
-        self._ancilla_counter = 0
+        self._ancilla_counters: dict[str, int] = {}
         self._realtime_loops = 0
         self._qif_bodies = 0
 
@@ -434,7 +438,7 @@ class _Lowerer(NodeVisitor):
 
         top_ancilla = None
         if negated:
-            top_ancilla = self._fresh_ancilla(node.span)
+            top_ancilla = self._fresh_ancilla(node.span, "negation")
 
         body = self._lower_qif_body(node.body)
 
@@ -824,18 +828,20 @@ class _Lowerer(NodeVisitor):
         # Wider: compute the positive match into its own ancilla and flip it.
         # The flipped ancilla is then just another 1-bit AND term -- negating
         # one clause needs no OR, only negating a whole subexpression does.
-        ancilla = self._fresh_ancilla(clause.span)
+        ancilla = self._fresh_ancilla(clause.span, "negation")
         return (
             [QubitBit(ref=ancilla, index=0)],
             [1],
             QIfClauseAncilla(qubits=[ref], ctrl_state=constant, ancilla=ancilla),
         )
 
-    def _fresh_ancilla(self, span, size: int = 1) -> QubitRef:
+    def _fresh_ancilla(self, span, role: str, size: int = 1) -> QubitRef:
         """Allocates a register and declares it in the same breath, so the
-        declaration exists exactly once and stands before every use."""
-        name = f"_ancilla_{self._ancilla_counter}"
-        self._ancilla_counter += 1
+        declaration exists exactly once and stands before every use. Its
+        qubits come later, from the ancilla pool; the name says what it is for."""
+        number = self._ancilla_counters.get(role, 0)
+        self._ancilla_counters[role] = number + 1
+        name = f"_{role}_{number}"
         ref = QubitRef(name=name, size=size)
         self.module.body.ops.append(DeclareAncillaOp(span=span, ref=ref))
         return ref
@@ -849,7 +855,7 @@ class _Lowerer(NodeVisitor):
             return [ref]
         if ref.size > width:
             return [QubitSlice(ref=ref, size=width)]
-        padding = self._fresh_ancilla(span, size=width - ref.size)
+        padding = self._fresh_ancilla(span, "padding", size=width - ref.size)
         return [ref, padding]
 
     def _lower_multiply_operands(
@@ -923,7 +929,7 @@ class _Lowerer(NodeVisitor):
 
         # Sized 2*width so the product is never truncated before the '+='
         # below applies target's own, possibly narrower, width rule to it.
-        temp = self._fresh_ancilla(span, size=2 * width)
+        temp = self._fresh_ancilla(span, "product", size=2 * width)
         self._block.ops.append(
             MultiplyOp(
                 span=span,
@@ -1045,12 +1051,11 @@ class _Lowerer(NodeVisitor):
 
     def warn_if_unsimulable(self) -> None:
         """Counted here rather than in analysis because the ancillas the
-        compiler allocates are qubits too, and they exist only once lowering
-        has run. Counted over the whole circuit, not per register: what a
-        simulator cannot hold is the total, however it is divided up."""
-        total = sum(ref.size for ref in self.module.qubits) + sum(
-            op.ref.size for op in self.module.body.ops if isinstance(op, DeclareAncillaOp)
-        )
+        compiler allocates are qubits too, and how many they come to is known
+        only once the pool has shared them out. Counted over the whole circuit,
+        not per register: what a simulator cannot hold is the total, however it
+        is divided up."""
+        total = sum(ref.size for ref in self.module.qubits) + self.module.ancilla_size
         if total > MAX_SIMULABLE_QUBITS:
             self.bag.warning(
                 f"this program needs {total} qubits, more than the "
@@ -1075,6 +1080,76 @@ class _Lowerer(NodeVisitor):
                 "the compiler, not in the source program.",
                 span,
             )
+
+
+def _lift_out_of_qifs(block: IRBlock) -> None:
+    """Moves what a qif body needs no control for in front of and behind the
+    qif, so that every later pass sees the order the circuit will have."""
+    index = 0
+    while index < len(block.ops):
+        op = block.ops[index]
+        for nested in (getattr(op, "body", None), getattr(op, "orelse", None)):
+            if isinstance(nested, IRBlock):
+                _lift_out_of_qifs(nested)
+        if not isinstance(op, QIfOp):
+            index += 1
+            continue
+        gates = [inner for inner in op.body.ops if not isinstance(inner, PhaseOp)]
+        before, _, after = _split_hoistable(gates)
+        lifted = {id(inner) for inner in (*before, *after)}
+        op.body.ops = [inner for inner in op.body.ops if id(inner) not in lifted]
+        block.ops[index : index + 1] = [*before, op, *after]
+        index += len(before) + 1 + len(after)
+
+
+def _split_hoistable(ops: list[Op]) -> tuple[list[Op], list[Op], list[Op]]:
+    """The operations at each end of a qif body that need no control.
+
+    A multiplication into a register the compiler allocated may run
+    unconditionally only together with the inverse that restores it: the pair
+    leaves that register at |0> whether or not the condition held, and nothing
+    else of it can be observed. Lifting only one of the two would leave the
+    register holding a product exactly when the condition failed. Only the
+    write into the user's register has to follow the condition.
+
+    Only the two ends are lifted. One in the middle would have to keep its
+    place among the controlled operations around it, which would mean several
+    controlled sub-circuits instead of one -- correct, but more machinery than
+    the shape the compiler actually emits needs.
+    """
+    start = 0
+    while start < len(ops) and _is_scratch_multiply(ops[start]):
+        start += 1
+    end = len(ops)
+    while end > start and _is_scratch_multiply(ops[end - 1]):
+        end -= 1
+
+    # An unpaired one stays controlled, and so does everything between it and
+    # the controlled part, so that nothing changes order. That can unpair
+    # another, hence the repetition.
+    while True:
+        lifted = ops[:start] + ops[end:]
+        outside = [*range(start), *range(end, len(ops))]
+        unpaired = [index for index in outside if not _paired(ops[index], lifted)]
+        new_start = min([index for index in unpaired if index < start], default=start)
+        new_end = max([index + 1 for index in unpaired if index >= end], default=end)
+        if (new_start, new_end) == (start, end):
+            return ops[:start], ops[start:end], ops[end:]
+        start, end = new_start, new_end
+
+
+def _is_scratch_multiply(op: Op) -> bool:
+    return isinstance(op, MultiplyOp) and is_compiler_owned(op.product.name)
+
+
+def _paired(op: Op, lifted: list[Op]) -> bool:
+    assert isinstance(op, MultiplyOp)
+    return any(
+        isinstance(other, MultiplyOp)
+        and other.product == op.product
+        and other.inverse != op.inverse
+        for other in lifted
+    )
 
 
 def _merge_phase_additions(block: IRBlock) -> None:

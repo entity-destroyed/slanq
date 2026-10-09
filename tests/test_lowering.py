@@ -51,6 +51,7 @@ from slanq.ir import (
     RealtimeStoreOp,
     RenameOp,
     ResetOp,
+    is_compiler_owned,
 )
 from slanq.lowering import lower_to_ir
 
@@ -203,19 +204,18 @@ def test_a_controlled_adder_warns_about_its_cost(lower: LowerSource) -> None:
 def test_a_qif_body_holds_a_controlled_multiply_accumulate(
     lower: LowerSource,
 ) -> None:
-    """Compute, add, uncompute -- all three inside the body, so the scratch
-    register comes back to zero whether or not the branch was taken."""
+    """Compute, add, uncompute: the compute and its uncompute leave the scratch
+    register at zero either way, so they stand in front of and behind the qif,
+    and only the addition into `c` stays under its control."""
     module, bag = lower(
         "qint<2> a = 0; qint<4> c = 0; qint<2> d = 2; qint<2> e = 3; qif(a == 2) { c += d * e; }"
     )
     assert not bag.has_errors
-    qif = module.body.ops[-1]
+    compute, qif, uncompute = module.body.ops[-3:]
+    assert isinstance(compute, MultiplyOp) and not compute.inverse
+    assert isinstance(uncompute, MultiplyOp) and uncompute.inverse
     assert isinstance(qif, QIfOp)
-    assert [type(op).__name__ for op in qif.body.ops] == [
-        "MultiplyOp",
-        "ArithmeticOp",
-        "MultiplyOp",
-    ]
+    assert [type(op).__name__ for op in qif.body.ops] == ["ArithmeticOp"]
 
 
 def test_numeric_arguments_become_params(lower: LowerSource) -> None:
@@ -586,16 +586,17 @@ def test_qif_negated_multi_qubit_equality_needs_an_ancilla(lower: LowerSource) -
     assert isinstance(qif, QIfOp)
     assert qif.ctrl_state == 2
     assert qif.negated is True
-    assert qif.ancilla == QubitRef(name="_ancilla_0", size=1)
+    assert qif.ancilla == QubitRef(name="_negation_0", size=1)
 
 
 def test_qif_ancilla_name_collision_is_reported(lower: LowerSource) -> None:
     source = (
-        "qint<2> a = 0; qbool _ancilla_0 = false; qbool out = false; qif(!(a == 2)) { X(out); }"
+        "qint<2> a = 0; qbool _negation_0 = false; qbool out = false; qif(!(a == 2)) { X(out); }"
     )
     _, bag = lower(source)
-    assert bag.has_errors
-    assert "_ancilla_0" in bag.errors[0].message
+    assert [error.message for error in bag.errors] == [
+        "'_negation_0' starts with '_', which is reserved for the compiler's own generated names"
+    ]
 
 
 def test_qif_phase_becomes_a_phase_op(lower: LowerSource) -> None:
@@ -781,7 +782,7 @@ def test_every_ancilla_is_declared_exactly_once(lower: LowerSource, source: str)
         ref.name
         for op in _computation_ops(module)
         for ref in _referenced_refs(op)
-        if ref.name.startswith("_ancilla_")
+        if is_compiler_owned(ref.name)
     }
     assert used == set(names)
 
@@ -918,7 +919,7 @@ def test_augassign_narrower_addend_gets_a_padding_ancilla(lower: LowerSource) ->
     # The padding is the only thing allocated: the gate has no scratch qubit.
     assert arithmetic.addend == [
         module.qubits[1],
-        QubitRef(name="_ancilla_0", size=1),
+        QubitRef(name="_padding_0", size=1),
     ]
 
 
@@ -1000,7 +1001,7 @@ def test_quantum_decl_multiply_pads_the_narrower_operand(lower: LowerSource) -> 
     assert multiply.left == [module.qubits[0]]
     assert multiply.right == [
         module.qubits[1],
-        QubitRef(name="_ancilla_0", size=1),
+        QubitRef(name="_padding_0", size=1),
     ]
 
 

@@ -134,7 +134,7 @@ def _keyword_message(name: str) -> str:
 # is this exact bare word). Must be kept in sync with codegen.py's literals --
 # but only for the names that do not start with '_', since those the leading
 # underscore rule already reserves wholesale, however many of them appear
-# later (`_ancilla_N`, `_qif_body_N`, `_round`, `_sqrt`).
+# later (`_ancilla`, `_product_N`, `_qif_body_N`, `_round`, `_sqrt`).
 _RESERVED_CODEGEN_NAMES = frozenset(
     {
         "sys",

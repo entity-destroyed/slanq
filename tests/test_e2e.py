@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-from qiskit import QuantumCircuit, QuantumRegister, transpile
+from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister, transpile
 from qiskit.primitives import StatevectorSampler
 from qiskit.quantum_info import Operator, Statevector
 
@@ -587,9 +587,61 @@ def test_multiply_accumulate_works_at_every_target_width(width: int) -> None:
     assert _counts(program) == {expected: SHOTS}
 
 
+def _pool_and_result(source: str) -> tuple[set[str], dict[str, int]]:
+    """What every shot measured on the shared ancilla register, and the
+    program's own result."""
+    circuit = _build_circuit(source)
+    (pool,) = [register for register in circuit.qregs if register.name == "_ancilla"]
+    readout = ClassicalRegister(pool.size, "pool")
+    circuit.add_register(readout)
+    circuit.measure(pool, readout)
+    sampled = StatevectorSampler(seed=SEED).run([transpile(circuit)], shots=SHOTS).result()[0]
+    return set(sampled.data.pool.get_counts()), sampled.data.result.get_counts()
+
+
+# Every input is a superposition, so one run covers every value it can take: a
+# scratch qubit restored for only some of them would read 1 in some shots.
+@pytest.mark.parametrize(
+    ("source", "outcomes"),
+    [
+        (
+            "qint<2> a = [];\nqint<2> b = [];\nqint<4> c = 0;\n"
+            "for(int i in range(3)) {\n    c += a * b;\n}\nrt int<> result = measure(c);\n",
+            {format(3 * a * b % 16, "04b") for a in range(4) for b in range(4)},
+        ),
+        (
+            "qint<3> t = 0;\nqint<1> s = [];\nt += s;\nt += s;\nt += s;\n"
+            "rt int<> result = measure(t);\n",
+            {"000", "011"},
+        ),
+        (
+            "qint<2> a = [];\nqbool o = false;\n"
+            "qif(a != 2) { X(o); }\nqif(a != 3) { X(o); }\nrt int<> result = measure(o);\n",
+            {"0", "1"},
+        ),
+        (
+            "qint<1> a = [];\nqint<1> d = [];\nqint<1> b = [];\nqint<2> c = 0;\nqbool k = [];\n"
+            "qif(k) { c += a * b; c += d * b; }\nrt int<> result = measure(c);\n",
+            {"00", "01", "10"},
+        ),
+        (
+            "qint<1> a = [];\nqint<1> b = [];\nqint<1> d = [];\nqint<1> e = [];\n"
+            "qint<2> c = 0;\nqint<2> f = 0;\nqbool k = [];\nqbool j = [];\n"
+            "qif(k) { c += a * b; }\nqif(j) { f += d * e; }\nc += d * e;\n"
+            "rt int<> result = measure(c);\n",
+            {"00", "01", "10"},
+        ),
+    ],
+)
+def test_every_shared_ancilla_is_back_at_zero(source: str, outcomes: set[str]) -> None:
+    pool, result = _pool_and_result(source)
+    assert set(result) == outcomes
+    assert pool == {"0" * len(next(iter(pool)))}
+
+
 def test_repeated_multiply_accumulate_reuses_its_registers() -> None:
-    """The second `c += a * b` allocates its own ancillas; nothing may be
-    declared twice, and every temporary must still come back to |0>."""
+    """The second `c += a * b` takes the first one's product register;
+    nothing may be declared twice, and it must still come back to |0>."""
     circuit = _build_circuit(
         "qint<1> a = 1;\nqint<1> b = 1;\nqint<2> c = 0;\nc += a * b;\nc += a * b;\n"
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -40,6 +41,9 @@ class QubitSlice:
 
 QubitOperand = QubitRef | QubitBit | QubitSlice
 
+# One physical qubit: its register's name and its Qiskit index there.
+Qubit = tuple[str, int]
+
 
 @dataclass(kw_only=True, eq=False)
 class Op:
@@ -55,7 +59,8 @@ class Op:
 
 @dataclass(kw_only=True, eq=False)
 class DeclareAncillaOp(Op):
-    """Brings a compiler-allocated register into the circuit. Emitted once,
+    """Brings a compiler-allocated register into the circuit, as the qubits the
+    ancilla pool gave it. It is no register of its own. Emitted once,
     where the register is allocated, so no later phase has to work out from an
     operand whether it has been declared yet -- guessing that from the operand
     is how the same register came to be declared twice."""
@@ -285,37 +290,66 @@ class IRModule:
     clbits: list[ClbitRef] = field(default_factory=list)
     params: list[ParamInfo] = field(default_factory=list)
     body: IRBlock = field(default_factory=IRBlock)
+    # The one register every compiler-allocated register is carved from, and
+    # which of its qubits each of those got, in Qiskit order.
+    ancilla_size: int = 0
+    ancilla_qubits: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
 
 def touched_registers(op: Op) -> set[str]:
     """The quantum registers an op reads or writes, by name.
 
-    Two passes need exactly this question and no more: merging adjacent phase
-    additions (safe only if nothing came between them on that register), and
-    lifting an operation out of a `qif`'s control (safe only if it touches
-    nothing the program can observe). A control structure answers for its whole
-    body, since anything inside it may run.
+    Merging adjacent phase additions needs exactly this question and no more:
+    it is safe only if nothing came between them on that register. A control
+    structure answers for its whole body, since anything inside it may run.
     """
-    names: set[str] = set()
+    return {
+        operand.name if isinstance(operand, QubitRef) else operand.ref.name
+        for operand in _operands_of(op)
+    }
+
+
+def touched_qubits(op: Op, *, nested: bool = True) -> set[Qubit]:
+    """The physical qubits an op reads or writes. Finer than the registers:
+    `X(a[0])` and `X(a[1])` share a register but can run at the same time.
+    Without `nested`, only what the op names itself, not its body."""
+    return {qubit for operand in _operands_of(op, nested) for qubit in operand_qubits(operand)}
+
+
+def operand_qubits(operand: QubitOperand) -> list[Qubit]:
+    """`operand` spread into physical qubits. A whole register contributes all
+    of its qubits in Qiskit order -- the order Qiskit broadcasts it in."""
+    if isinstance(operand, QubitBit):
+        return [(operand.ref.name, qiskit_index(operand))]
+    if isinstance(operand, QubitSlice):
+        return [(operand.ref.name, index) for index in range(operand.size)]
+    return [(operand.name, index) for index in range(operand.size)]
+
+
+def qiskit_index(bit: QubitBit) -> int:
+    """Slanq indexes big-endian -- index 0 is the most significant qubit --
+    while the Qiskit register is little-endian."""
+    return bit.ref.size - 1 - bit.index
+
+
+def _operands_of(op: Op, nested: bool = True) -> Iterator[QubitOperand]:
     for member in dataclasses.fields(op):
-        _collect_names(getattr(op, member.name), names)
-    return names
+        yield from _operands_in(getattr(op, member.name), nested)
 
 
-def _collect_names(value: object, names: set[str]) -> None:
-    if isinstance(value, QubitRef):
-        names.add(value.name)
-    elif isinstance(value, QubitBit | QubitSlice):
-        names.add(value.ref.name)
+def _operands_in(value: object, nested: bool) -> Iterator[QubitOperand]:
+    if isinstance(value, QubitRef | QubitBit | QubitSlice):
+        yield value
     elif isinstance(value, IRBlock):
-        for nested in value.ops:
-            names |= touched_registers(nested)
+        if nested:
+            for inner in value.ops:
+                yield from _operands_of(inner)
     elif isinstance(value, QIfClauseAncilla):
-        _collect_names(value.qubits, names)
-        _collect_names(value.ancilla, names)
+        yield from _operands_in(value.qubits, nested)
+        yield value.ancilla
     elif isinstance(value, list | tuple):
         for item in value:
-            _collect_names(item, names)
+            yield from _operands_in(item, nested)
 
 
 def is_compiler_owned(name: str) -> bool:
@@ -343,12 +377,16 @@ __all__ = [
     "PhaseOp",
     "QIfClauseAncilla",
     "QIfOp",
+    "Qubit",
     "QubitBit",
     "QubitOperand",
     "QubitRef",
     "QubitSlice",
     "is_compiler_owned",
+    "operand_qubits",
+    "qiskit_index",
     "RenameOp",
+    "touched_qubits",
     "touched_registers",
     "RealtimeIfOp",
     "RealtimeStoreOp",
