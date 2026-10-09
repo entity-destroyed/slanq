@@ -68,6 +68,7 @@ from slanq.passes import (
     expand_processes,
     fold_widths,
     moved_source,
+    taken_branch,
     track_values,
     unroll_loops,
 )
@@ -1129,13 +1130,7 @@ class _QIfConditionChecker(_Checker):
     def _check_no_overlap(self, node: QIf) -> None:
         condition_bits = _collect_bits(node.condition)
 
-        body_bits: set[tuple[str, int]] = set()
-        for statement in node.body.statements:
-            if isinstance(statement, ExprStatement) and isinstance(statement.expr, Call):
-                for argument in statement.expr.args:
-                    body_bits |= _collect_bits(argument)
-
-        overlap = _overlapping(condition_bits, body_bits)
+        overlap = _overlapping(condition_bits, _written_bits(node.body))
         if overlap:
             self._reject(
                 "a qif body may not modify a qubit its own condition tests "
@@ -1145,6 +1140,26 @@ class _QIfConditionChecker(_Checker):
 
 
 WHOLE_REGISTER = -1
+
+
+def _written_bits(block: Block) -> set[tuple[str, int]]:
+    """The qubits a qif body may change: every gate argument, the target of a
+    `+=`/`-=` (its addend and factors come back unchanged), and the same within
+    a build-time `if` -- the arm it settles on, or both while it is unsettled."""
+    bits: set[tuple[str, int]] = set()
+    for statement in block.statements:
+        if isinstance(statement, ExprStatement) and isinstance(statement.expr, Call):
+            for argument in statement.expr.args:
+                bits |= _collect_bits(argument)
+        elif isinstance(statement, AugAssign):
+            bits |= _collect_bits(statement.target)
+        elif isinstance(statement, If):
+            settled, arm = taken_branch(statement)
+            arms = [arm] if settled else [statement.body, statement.orelse]
+            for nested in arms:
+                if nested is not None:
+                    bits |= _written_bits(nested)
+    return bits
 
 
 def _aliased_arguments(arguments: list[Expression]) -> list[str]:

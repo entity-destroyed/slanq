@@ -1866,3 +1866,42 @@ def test_a_conversion_is_a_move_with_rules(
 )
 def test_a_move_is_accepted(diagnostics_of: DiagnosticsOf, source: str) -> None:
     assert not diagnostics_of(source).has_errors
+
+
+QIF_SELF_DECLS = (
+    "qint<2> c = [];\nqint<2> d = 1;\nqint<4> e = 0;\nbool t = true;\nbool f = false;\n"
+)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "X(c[0]);",
+        "c += 1;",
+        "c -= d;",
+        "c += d;",
+        "if (t) { X(c[0]); }",
+        "if (f) { X(d[0]); } else { X(c[1]); }",
+    ],
+)
+def test_a_qif_body_may_not_modify_its_condition(diagnostics_of: DiagnosticsOf, body: str) -> None:
+    """A `+=` writes its target exactly as a gate does, and a build-time `if`
+    runs its arm inside the body like any other statement."""
+    bag = diagnostics_of(f"{QIF_SELF_DECLS}qif(c != 2) {{ {body} }}\n")
+    assert [error.message for error in bag.errors] == [
+        "a qif body may not modify a qubit its own condition tests (here: c)"
+    ]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "d += c;",
+        "e += c * d;",
+        "if (f) { X(c[0]); }",
+    ],
+)
+def test_a_qif_body_may_read_its_condition(diagnostics_of: DiagnosticsOf, body: str) -> None:
+    """An addend and the factors of a product come back unchanged, and an arm
+    that never runs changes nothing."""
+    assert not diagnostics_of(f"{QIF_SELF_DECLS}qif(c == 2) {{ {body} }}\n").has_errors
