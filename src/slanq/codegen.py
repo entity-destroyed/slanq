@@ -851,11 +851,12 @@ def _qiskit_index(bit: QubitBit) -> int:
 def _split_hoistable(ops: list[Op]) -> tuple[list[Op], list[Op], list[Op]]:
     """The operations at each end of a qif body that need no control.
 
-    One qualifies when it writes nothing the program can observe: a
-    multiplication into a register the compiler allocated, whose inverse stands
-    in the same body and restores it to |0> whether or not the condition held.
-    Running such a pair unconditionally is invisible; only the write into the
-    user's register has to follow the condition.
+    A multiplication into a register the compiler allocated may run
+    unconditionally only together with the inverse that restores it: the pair
+    leaves that register at |0> whether or not the condition held, and nothing
+    else of it can be observed. Lifting only one of the two would leave the
+    register holding a product exactly when the condition failed. Only the
+    write into the user's register has to follow the condition.
 
     Only the two ends are lifted. One in the middle would have to keep its
     place among the controlled operations around it, which would mean several
@@ -863,22 +864,37 @@ def _split_hoistable(ops: list[Op]) -> tuple[list[Op], list[Op], list[Op]]:
     the shape the compiler actually emits needs.
     """
     start = 0
-    while start < len(ops) and _leaves_no_trace(ops[start], ops):
+    while start < len(ops) and _is_scratch_multiply(ops[start]):
         start += 1
     end = len(ops)
-    while end > start and _leaves_no_trace(ops[end - 1], ops):
+    while end > start and _is_scratch_multiply(ops[end - 1]):
         end -= 1
-    return ops[:start], ops[start:end], ops[end:]
+
+    # An unpaired one stays controlled, and so does everything between it and
+    # the controlled part, so that nothing changes order. That can unpair
+    # another, hence the repetition.
+    while True:
+        lifted = ops[:start] + ops[end:]
+        outside = [*range(start), *range(end, len(ops))]
+        unpaired = [index for index in outside if not _paired(ops[index], lifted)]
+        new_start = min([index for index in unpaired if index < start], default=start)
+        new_end = max([index + 1 for index in unpaired if index >= end], default=end)
+        if (new_start, new_end) == (start, end):
+            return ops[:start], ops[start:end], ops[end:]
+        start, end = new_start, new_end
 
 
-def _leaves_no_trace(op: Op, body: list[Op]) -> bool:
-    if not isinstance(op, MultiplyOp) or not is_compiler_owned(op.product.name):
-        return False
+def _is_scratch_multiply(op: Op) -> bool:
+    return isinstance(op, MultiplyOp) and is_compiler_owned(op.product.name)
+
+
+def _paired(op: Op, lifted: list[Op]) -> bool:
+    assert isinstance(op, MultiplyOp)
     return any(
         isinstance(other, MultiplyOp)
         and other.product == op.product
         and other.inverse != op.inverse
-        for other in body
+        for other in lifted
     )
 
 

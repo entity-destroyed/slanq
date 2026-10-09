@@ -511,6 +511,17 @@ def test_subtraction_of_a_compile_time_constant() -> None:
     assert _counts(source) == {"0101": SHOTS}
 
 
+def test_a_qif_body_with_two_products_leaves_no_trace_of_either() -> None:
+    """Both additions together add 4, which is 0 in two bits, so `c` ends the
+    same whether or not the body ran. With every scratch register restored the
+    condition is left entangled with nothing, and H brings it back to 0."""
+    source = (
+        "qint<2> a = 1;\nqint<2> d = 3;\nqint<2> b = 1;\nqint<2> c = 0;\nqbool k = [];\n"
+        "qif(k) { c += a * b; c += d * b; }\nH(k);\nrt int<> result = measure(k);\n"
+    )
+    assert _counts(source) == {"0": SHOTS}
+
+
 def test_additions_are_not_merged_across_a_condition_that_reads_the_register() -> None:
     """`a != 1` reaches the circuit only through its clause ancilla, so the
     register it tests stands nowhere else in the qif."""

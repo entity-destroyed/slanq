@@ -1279,6 +1279,18 @@ def test_a_controlled_multiply_leaves_the_product_outside_the_control() -> None:
     assert "_qif_body_1.append(ModularAdderGate" in source
 
 
+def test_a_multiplication_is_lifted_only_with_the_inverse_that_undoes_it() -> None:
+    """Two products in one body: the first multiplication's inverse and the
+    second multiplication stand in the middle, so neither end has its partner
+    outside the control, and everything stays controlled."""
+    source = _if_source(
+        "qint<2> a = 1;\nqint<2> d = 3;\nqint<2> b = 1;\nqint<2> c = 0;\nqbool k = [];\n"
+        "qif(k) { c += a * b; c += d * b; }\n"
+    )
+    assert "circuit.append(MultiplierGate" not in source
+    assert source.count("_qif_body_1.append(MultiplierGate") == 4
+
+
 def test_an_adder_outside_a_qif_keeps_its_registers() -> None:
     source = _if_source("qint<2> a = 0;\nqint<2> b = 1;\na += b;\n")
     assert "circuit.append(ModularAdderGate(2), [*b, *a])" in source
