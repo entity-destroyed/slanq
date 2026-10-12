@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from slanq import __version__
+from slanq.ancilla_pool import ANCILLA_REGISTER
 from slanq.ast_nodes import (
     BinaryOp,
     Call,
@@ -52,6 +53,7 @@ from slanq.ir import (
     RealtimeWhileOp,
     RenameOp,
     ResetOp,
+    UncomputeOp,
     operand_qubits,
     qiskit_index,
 )
@@ -61,7 +63,6 @@ INDENT = " " * 4
 # A renaming of qubits to their wires in a nested sub-circuit.
 QubitMap = dict[Qubit, str]
 
-ANCILLA_REGISTER = "_ancilla"
 
 # Python's own precedence order, so an expression the user parenthesised the
 # way Slanq requires comes out meaning the same thing in the generated file.
@@ -295,7 +296,8 @@ class _Generator:
         self._realtime_counter = 0
         self.needs_expr = False
         self._realtime_widths: dict[str, int] = {}
-        self._ancilla_qubits: dict[str, tuple[int, ...]] = {}
+        self._ancilla_qubits: dict[str, tuple[Qubit, ...]] = {}
+        self._uncompute_counter = 0
 
     def import_lines(self, module: IRModule) -> list[str]:
         standard = ["import sys"]
@@ -460,9 +462,12 @@ class _Generator:
 
         if isinstance(op, DeclareAncillaOp):
             members = ", ".join(
-                f"{ANCILLA_REGISTER}[{index}]" for index in self._ancilla_qubits[op.ref.name]
+                f"{register}[{index}]" for register, index in self._ancilla_qubits[op.ref.name]
             )
             return [f"{op.ref.name} = [{members}]"]
+
+        if isinstance(op, UncomputeOp):
+            return self._uncompute_lines(op, circuit_var)
 
         raise NotImplementedError(f"no code generation for {type(op).__name__}")
 
@@ -622,10 +627,24 @@ class _Generator:
 
         return lines
 
+    def _uncompute_lines(self, op: UncomputeOp, circuit_var: str) -> list[str]:
+        """The variable's history, built on its own register exactly as it was
+        emitted, then appended inverted onto the same qubits."""
+        self._uncompute_counter += 1
+        history_var = f"_uncompute_{self._uncompute_counter}"
+        lines = [f"{history_var} = QuantumCircuit({op.target.name})"]
+        for past in op.history:
+            lines += self.op_lines(past, history_var)
+        lines.append(
+            f"{circuit_var}.compose({history_var}.inverse(), "
+            f"qubits={history_var}.qubits, inplace=True)"
+        )
+        return lines
+
     def _physical(self, qubit: Qubit) -> Qubit:
         name, index = qubit
         pooled = self._ancilla_qubits.get(name)
-        return qubit if pooled is None else (ANCILLA_REGISTER, pooled[index])
+        return qubit if pooled is None else pooled[index]
 
     def _summed_angle(self, phases: IRBlock) -> str | None:
         """Phases that always apply add up into one expression the compiler

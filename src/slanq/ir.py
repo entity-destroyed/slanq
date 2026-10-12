@@ -128,6 +128,16 @@ class ResetOp(Op):
 
 
 @dataclass(kw_only=True, eq=False)
+class UncomputeOp(Op):
+    """Runs `history` -- every operation on `target` since it was last |0>,
+    none of which touched anything else -- backwards, so that a dead variable's
+    qubits can be handed to the ancilla pool."""
+
+    target: QubitRef
+    history: list[Op]
+
+
+@dataclass(kw_only=True, eq=False)
 class DeclareRealtimeOp(Op):
     """A classical variable on the processor beside the QPU, started from a
     build-time value. A measurement's result needs no such op: its classical
@@ -290,10 +300,11 @@ class IRModule:
     clbits: list[ClbitRef] = field(default_factory=list)
     params: list[ParamInfo] = field(default_factory=list)
     body: IRBlock = field(default_factory=IRBlock)
-    # The one register every compiler-allocated register is carved from, and
-    # which of its qubits each of those got, in Qiskit order.
+    # The size of the register the compiler adds for its own scratch qubits,
+    # and which qubits each compiler-allocated register got, in Qiskit order:
+    # from that register, or from a dead variable.
     ancilla_size: int = 0
-    ancilla_qubits: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    ancilla_qubits: dict[str, tuple[Qubit, ...]] = field(default_factory=dict)
 
 
 def touched_registers(op: Op) -> set[str]:
@@ -392,4 +403,5 @@ __all__ = [
     "RealtimeStoreOp",
     "RealtimeWhileOp",
     "ResetOp",
+    "UncomputeOp",
 ]

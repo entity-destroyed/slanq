@@ -11,6 +11,7 @@ from qiskit.primitives import StatevectorSampler
 from qiskit.quantum_info import Operator, Statevector
 
 from slanq.compiler import compile_source
+from slanq.entanglement import EntanglementGraph
 
 SHOTS = 1024
 SEED = 1234
@@ -637,6 +638,64 @@ def test_every_shared_ancilla_is_back_at_zero(source: str, outcomes: set[str]) -
     pool, result = _pool_and_result(source)
     assert set(result) == outcomes
     assert pool == {"0" * len(next(iter(pool)))}
+
+
+UNDONE_THEN_MULTIPLIED = (
+    "qint<2> b = [0, 0.5, 0.5, 0];\nH(b[0]);\nqif(b[0]) { X(b[1]); }\n"
+    "qint<2> a = [];\nqint<2> d = [];\nqint<4> c = 0;\n"
+    "X(a[0]);\nX(a[0]);\nX(a[0]);\nX(a[0]);\nc += a * d;\nrt int<> result = measure(c);\n"
+)
+
+
+def _register_probabilities(circuit: QuantumCircuit, name: str) -> dict[str, float]:
+    (register,) = [register for register in circuit.qregs if register.name == name]
+    circuit = circuit.remove_final_measurements(inplace=False)
+    qubits = [circuit.find_bit(qubit).index for qubit in register]
+    probabilities = Statevector(circuit).probabilities_dict(qubits)
+    return {key: value for key, value in probabilities.items() if value > 1e-9}
+
+
+# `b` holds a copy of `k`. Undoing it would make `k` coherent again, and H
+# would then turn it into a certain 0 instead of an even split.
+#
+# The repeated X gates on `a` cancel out and do nothing to the program. They
+# push the multiplication's layer far enough out that the layer rule would
+# allow the lend, leaving the entanglement as the only thing still stopping it
+# -- without them the test would pass for the wrong reason. Two already reach
+# that threshold, measured; the rest are margin against layer counting shifting.
+ENTANGLED_THEN_MULTIPLIED = (
+    "qbool k = [];\nqint<2> b = 0;\nCX(k, b[1]);\n"
+    "qint<2> a = [];\nqint<2> d = [];\nqint<4> c = 0;\n"
+    "X(a[0]);\nX(a[0]);\nX(a[0]);\nX(a[0]);\nc += a * d;\nH(k);\nrt int<> result = measure(k);\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("source", "measured", "lends"),
+    [(UNDONE_THEN_MULTIPLIED, "c", True), (ENTANGLED_THEN_MULTIPLIED, "k", False)],
+    ids=["isolated", "entangled"],
+)
+def test_lending_a_dead_variable_changes_nothing_the_program_measures(
+    monkeypatch: pytest.MonkeyPatch, source: str, measured: str, lends: bool
+) -> None:
+    """The isolated `b` is built with a state preparation, a gate and a qif,
+    then dead; the multiplication takes its qubits after running it backwards.
+    Nothing the program measures may differ from the same program with `b`
+    simply left alone."""
+    result = compile_source(source, source_name="test.slanq")
+    assert result.qiskit_source is not None
+    assert ("_uncompute_1 = QuantumCircuit(b)" in result.qiskit_source) == lends
+
+    lent = _register_probabilities(_build_circuit(source), measured)
+    monkeypatch.setattr(EntanglementGraph, "reusable", lambda self, name: None)
+    kept = _register_probabilities(_build_circuit(source), measured)
+    assert lent.keys() == kept.keys()
+    assert all(lent[key] == pytest.approx(kept[key]) for key in lent)
+
+
+def test_a_lent_variable_is_back_at_zero() -> None:
+    circuit = _build_circuit(UNDONE_THEN_MULTIPLIED)
+    assert _register_probabilities(circuit, "b") == pytest.approx({"00": 1.0})
 
 
 def test_repeated_multiply_accumulate_reuses_its_registers() -> None:

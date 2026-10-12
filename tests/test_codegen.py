@@ -926,12 +926,12 @@ def test_declare_ancilla_op_is_the_only_thing_that_declares(span: Span) -> None:
     module = IRModule(
         body=IRBlock(ops=[DeclareAncillaOp(span=span, ref=product)]),
         ancilla_size=4,
-        ancilla_qubits={"_product_0": (3, 0, 2)},
+        ancilla_qubits={"_product_0": (("_ancilla", 3), ("b", 0), ("_ancilla", 2))},
     )
     source = _generate(module)
     assert '_ancilla = QuantumRegister(4, "_ancilla")' in source
     assert "circuit = QuantumCircuit(_ancilla)" in source
-    assert "_product_0 = [_ancilla[3], _ancilla[0], _ancilla[2]]" in source
+    assert "_product_0 = [_ancilla[3], b[0], _ancilla[2]]" in source
 
 
 def _generated_helper(name: str, call: str) -> Any:

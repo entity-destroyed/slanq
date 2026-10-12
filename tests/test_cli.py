@@ -78,6 +78,10 @@ RUNNABLE_PROGRAMS = {
         "qint<2> a = [];\nqint<2> b = 3;\nqint<4> c = 0;\n"
         "for(int i in range(3)) {\n    c += a * b;\n}\nrt int<> result = measure(c);\n"
     ),
+    "a dead variable lending its qubits": (
+        "qint<2> b = [0, 0.5, 0.5, 0];\nH(b[0]);\nqint<2> a = [];\nqint<2> d = 3;\nqint<4> c = 0;\n"
+        "X(a[0]);\nX(a[0]);\nX(a[0]);\nc += a * d;\nrt int<> result = measure(c);\n"
+    ),
     "qif with a phase-only body": (
         "qint<2> a = 2;\nqif(a == 2) { phase(PI / 3); }\nrt int<> result = measure(a);\n"
     ),

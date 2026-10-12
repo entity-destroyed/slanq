@@ -17,6 +17,7 @@ from slanq.ir import (
     QubitBit,
     QubitRef,
     RealtimeIfOp,
+    UncomputeOp,
 )
 
 
@@ -38,6 +39,10 @@ def _circuit(source: str) -> QuantumCircuit:
     return circuit
 
 
+def _pool_qubits(*indices: int) -> tuple[tuple[str, int], ...]:
+    return tuple(("_ancilla", index) for index in indices)
+
+
 def _never_reusing(monkeypatch: pytest.MonkeyPatch) -> None:
     """No operation waits for any other, so no qubit is ever handed on."""
     monkeypatch.setattr(ancilla_pool._Order, "waits_for", lambda self, qubits: 0)
@@ -50,16 +55,16 @@ def test_a_multiplication_in_a_loop_reuses_one_product_register() -> None:
     """Every iteration writes `c`, so each one already waits for the last."""
     module = _module(MULTIPLY_DECLS + "for(int i in range(4)) {\n    c += a * b;\n}\n")
     assert module.ancilla_size == 4
-    assert set(module.ancilla_qubits.values()) == {(0, 1, 2, 3)}
+    assert set(module.ancilla_qubits.values()) == {_pool_qubits(0, 1, 2, 3)}
 
 
 def test_repeated_padding_reuses_the_same_qubits() -> None:
     module = _module("qint<5> t = 0;\nqint<2> s = 1;\nt += s;\nt += s;\nt += s;\n")
     assert module.ancilla_size == 3
     assert module.ancilla_qubits == {
-        "_padding_0": (0, 1, 2),
-        "_padding_1": (0, 1, 2),
-        "_padding_2": (0, 1, 2),
+        "_padding_0": _pool_qubits(0, 1, 2),
+        "_padding_1": _pool_qubits(0, 1, 2),
+        "_padding_2": _pool_qubits(0, 1, 2),
     }
 
 
@@ -149,7 +154,7 @@ def test_what_a_qif_body_used_is_free_after_the_qif() -> None:
         MULTIPLY_DECLS + "qint<2> d = 2;\nqint<2> e = 1;\nqint<4> f = 0;\nqbool k = [];\n"
         f"qif(k) {TWO_PRODUCTS}\nf += d * e;\n"
     )
-    assert module.ancilla_size == 4
+    assert len(set(module.ancilla_qubits.values())) == 1
 
 
 def test_an_order_on_one_qubit_says_nothing_about_its_neighbour() -> None:
@@ -316,3 +321,65 @@ def test_a_qif_adds_no_wait_between_operations(
     unpooled = _circuit(source)
     assert pooled.num_qubits <= unpooled.num_qubits
     assert pooled.depth() == unpooled.depth()
+
+
+DEAD_THEN_CHAIN = (
+    "qint<4> b = 5;\nH(b[0]);\nqint<2> a = 1;\nqint<2> d = 3;\nqint<4> c = 0;\n"
+    "X(a[0]);\nX(a[0]);\nc += a * d;\n"
+)
+
+
+def _uncomputed(module: IRModule) -> list[str]:
+    return [op.target.name for op in module.body.ops if isinstance(op, UncomputeOp)]
+
+
+def test_a_dead_variable_lends_its_qubits_once_it_is_undone() -> None:
+    """`b` is never entangled with anything, and the multiplication could not
+    start before its own layer anyway, by which `b`'s last use and the
+    uncomputation after it are over."""
+    module = _module(DEAD_THEN_CHAIN)
+    assert module.ancilla_size == 0
+    assert module.ancilla_qubits["_product_0"] == (("b", 0), ("b", 1), ("b", 2), ("b", 3))
+    assert _uncomputed(module) == ["b"]
+    ops = module.body.ops
+    uncompute = next(op for op in ops if isinstance(op, UncomputeOp))
+    assert ops[ops.index(uncompute) - 1] is uncompute.history[-1]
+
+
+def test_a_dead_variable_does_not_hold_back_an_early_operation() -> None:
+    """The multiplication could run in the second layer; `b` is last used in
+    the third, so taking its qubits would make the multiplication wait."""
+    module = _module(
+        "qint<4> b = 5;\nH(b[0]);\nX(b[1]);\nqint<2> a = 1;\nqint<2> d = 3;\nqint<4> c = 0;\n"
+        "c += a * d;\n"
+    )
+    assert module.ancilla_size == 4
+    assert _uncomputed(module) == []
+
+
+def test_the_uncomputation_counts_as_a_layer_of_its_own() -> None:
+    """`b` is last used in the second layer and the multiplication could run
+    in the third: that leaves no room for the uncomputation in between."""
+    module = _module(DEAD_THEN_CHAIN.replace("X(a[0]);\nX(a[0]);\n", "X(a[0]);\n"))
+    assert module.ancilla_size == 4
+    assert _uncomputed(module) == []
+
+
+def test_the_compilers_own_qubits_go_before_a_dead_variables() -> None:
+    module = _module(DEAD_THEN_CHAIN + "c += a * d;\n")
+    assert module.ancilla_qubits["_product_1"] == module.ancilla_qubits["_product_0"]
+    assert _uncomputed(module) == ["b"]
+
+
+def test_a_variable_ending_in_a_reset_lends_its_qubits_without_uncomputation() -> None:
+    module = _module(DEAD_THEN_CHAIN.replace("H(b[0]);", "reset(b);"))
+    assert module.ancilla_qubits["_product_0"] == (("b", 0), ("b", 1), ("b", 2), ("b", 3))
+    assert _uncomputed(module) == []
+
+
+def test_a_variable_nothing_touches_lends_its_qubits_from_the_start() -> None:
+    module = _module(
+        "qint<4> b = 0;\nqint<2> a = 1;\nqint<2> d = 3;\nqint<4> c = 0;\nc += a * d;\n"
+    )
+    assert module.ancilla_size == 0
+    assert _uncomputed(module) == []
