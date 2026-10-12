@@ -773,8 +773,9 @@ class _Lowerer(NodeVisitor):
 
         if isinstance(clause, UnaryOp) and clause.op == "!":
             inner = clause.operand
-            if isinstance(inner, BinaryOp) and inner.op == "==":
-                return self._lower_equality_clause(inner, negated=True)
+            if isinstance(inner, BinaryOp) and inner.op in ("==", "!="):
+                # Negating a `!=` is the plain equality again.
+                return self._lower_equality_clause(inner, negated=inner.op == "==")
             return self._lower_bare_clause(inner, negated=True)
 
         return self._lower_bare_clause(clause, negated=False)
@@ -849,8 +850,8 @@ class _Lowerer(NodeVisitor):
     def _pad_to_width(self, ref: QubitRef, width: int, span) -> list[QubitOperand]:
         """`ref`'s bits, concatenated with a fresh 0-ancilla if it is
         narrower than `width`, or sliced to its low bits if it is wider --
-        the CDKM/HRS adder and multiplier both preserve their `a`/`b`
-        inputs exactly, so a 0-ancilla among them needs no uncompute."""
+        the adder and the multiplier both preserve their `a`/`b` inputs
+        exactly, so a 0-ancilla among them needs no uncompute."""
         if ref.size == width:
             return [ref]
         if ref.size > width:

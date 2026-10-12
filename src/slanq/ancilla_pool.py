@@ -74,13 +74,6 @@ def allocate_ancillas(module: IRModule) -> None:
         last_use = ops[reuse.last_use]
         uncompute = UncomputeOp(span=last_use.span, target=register, history=list(reuse.history))
         module.body.ops.insert(module.body.ops.index(last_use) + 1, uncompute)
-    # A register lowering allocated and then found it did not need is never
-    # touched, so it gets no qubit and needs no declaration.
-    module.body.ops = [
-        op
-        for op in module.body.ops
-        if not (isinstance(op, DeclareAncillaOp) and op.ref.name not in pool.assigned)
-    ]
 
 
 @dataclass
@@ -90,8 +83,9 @@ class _Free:
     # qubit that was already free when the block began.
     last_user: int | None
     # For a dead variable's qubit, how many layers still have to run after its
-    # last use before it is |0>: one for the uncomputation, none after a reset.
-    # None for the compiler's own qubits, which go by the chain of operations.
+    # last use before it is |0>: the uncomputation's own depth, none after a
+    # reset. None for the compiler's own qubits, which go by the chain of
+    # operations.
     cost: int | None = None
 
 
@@ -166,7 +160,7 @@ class _Pool:
                 qubit = (register.name, bit)
                 if reuse.needs_uncompute:
                     self._pending[qubit] = register
-                cost = 1 if reuse.needs_uncompute else 0
+                cost = _layer_depth(reuse.history)
                 entries.append(_Free(qubit=qubit, last_user=index, cost=cost))
         return entries
 
@@ -246,6 +240,19 @@ def _nested_blocks(op: Op) -> list[IRBlock]:
 
 def _names_in(block: IRBlock) -> set[str]:
     return {name for op in block.ops for name, _ in touched_qubits(op)}
+
+
+def _layer_depth(history: tuple[Op, ...]) -> int:
+    """How many layers the uncomputation of `history` takes. Operations on
+    different qubits of the one variable run side by side, so this is not
+    simply how many there are."""
+    order = _Order()
+    depth = 0
+    for op in history:
+        qubits = touched_qubits(op)
+        depth = max(depth, order.layer_of(qubits))
+        order.add(qubits)
+    return depth
 
 
 def _operations(block: IRBlock) -> list[Op]:

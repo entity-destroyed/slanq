@@ -160,7 +160,9 @@ def test_probability_list_needing_normalization_still_runs() -> None:
     still describe a valid, correctly-proportioned distribution."""
     source = "qint<2> c = [0.1, 0.1, 0.1, 0.1];\nrt int<> result = measure(c);\n"
     result = compile_source(source, source_name="test.slanq")
-    assert result.diagnostics.warnings
+    assert [warning.message for warning in result.diagnostics.warnings] == [
+        "the probabilities for 'c' sum to 0.4, not 1; the compiler will normalize them"
+    ]
     assert not result.diagnostics.has_errors
 
     counts = _counts(source)
@@ -209,7 +211,9 @@ def test_empty_amplitude_list_is_equal_superposition() -> None:
 def test_amplitude_list_needing_normalization_still_runs() -> None:
     source = "qbool q = {0.6, 0.6};\nrt int<> result = measure(q);\n"
     result = compile_source(source, source_name="test.slanq")
-    assert result.diagnostics.warnings
+    assert [warning.message for warning in result.diagnostics.warnings] == [
+        "the amplitudes for 'q' have squared norm 0.72, not 1; the compiler will normalize them"
+    ]
     assert not result.diagnostics.has_errors
 
     counts = _counts(source)
@@ -222,7 +226,9 @@ def test_amplitude_list_needing_normalization_with_a_complex_value() -> None:
     when the list contains a complex value, not just an all-real one."""
     source = "qbool q = {0.6i, 0.6};\nrt int<> result = measure(q);\n"
     result = compile_source(source, source_name="test.slanq")
-    assert result.diagnostics.warnings
+    assert [warning.message for warning in result.diagnostics.warnings] == [
+        "the amplitudes for 'q' have squared norm 0.72, not 1; the compiler will normalize them"
+    ]
     assert not result.diagnostics.has_errors
 
     counts = _counts(source)
@@ -235,7 +241,10 @@ def test_amplitude_list_element_from_a_classical_name() -> None:
     classical constant, and arithmetic on it, used as a {} element."""
     source = "complex c = 0.5+0.3i;\nqbool q = {c, 1 - c};\n"
     result = compile_source(source, source_name="test.slanq")
-    assert result.diagnostics.warnings  # not normalized
+    assert [warning.message for warning in result.diagnostics.warnings] == [
+        "the amplitudes for 'q' have squared norm 0.6799999999999998, not 1; "
+        "the compiler will normalize them"
+    ]
     assert not result.diagnostics.has_errors
 
     circuit = _build_circuit(source)
@@ -640,10 +649,15 @@ def test_every_shared_ancilla_is_back_at_zero(source: str, outcomes: set[str]) -
     assert pool == {"0" * len(next(iter(pool)))}
 
 
+# `b`'s history is three layers -- the state preparation, the H, the qif -- so
+# the multiplication must be that far out plus one before it may take b's
+# qubits. The X gates cancel each other and only push it there; five is the
+# measured threshold, the sixth is margin.
 UNDONE_THEN_MULTIPLIED = (
     "qint<2> b = [0, 0.5, 0.5, 0];\nH(b[0]);\nqif(b[0]) { X(b[1]); }\n"
     "qint<2> a = [];\nqint<2> d = [];\nqint<4> c = 0;\n"
-    "X(a[0]);\nX(a[0]);\nX(a[0]);\nX(a[0]);\nc += a * d;\nrt int<> result = measure(c);\n"
+    + "X(a[0]);\n" * 6
+    + "c += a * d;\nrt int<> result = measure(c);\n"
 )
 
 
@@ -656,17 +670,15 @@ def _register_probabilities(circuit: QuantumCircuit, name: str) -> dict[str, flo
 
 
 # `b` holds a copy of `k`. Undoing it would make `k` coherent again, and H
-# would then turn it into a certain 0 instead of an even split.
-#
-# The repeated X gates on `a` cancel out and do nothing to the program. They
-# push the multiplication's layer far enough out that the layer rule would
-# allow the lend, leaving the entanglement as the only thing still stopping it
-# -- without them the test would pass for the wrong reason. Two already reach
-# that threshold, measured; the rest are margin against layer counting shifting.
+# would then turn it into a certain 0 instead of an even split. The X gates
+# again only push the multiplication out, so that the entanglement is the one
+# thing left stopping the lend -- without them the test would pass for the
+# wrong reason.
 ENTANGLED_THEN_MULTIPLIED = (
     "qbool k = [];\nqint<2> b = 0;\nCX(k, b[1]);\n"
     "qint<2> a = [];\nqint<2> d = [];\nqint<4> c = 0;\n"
-    "X(a[0]);\nX(a[0]);\nX(a[0]);\nX(a[0]);\nc += a * d;\nH(k);\nrt int<> result = measure(k);\n"
+    + "X(a[0]);\n" * 6
+    + "c += a * d;\nH(k);\nrt int<> result = measure(k);\n"
 )
 
 
@@ -684,7 +696,7 @@ def test_lending_a_dead_variable_changes_nothing_the_program_measures(
     simply left alone."""
     result = compile_source(source, source_name="test.slanq")
     assert result.qiskit_source is not None
-    assert ("_uncompute_1 = QuantumCircuit(b)" in result.qiskit_source) == lends
+    assert ("QuantumCircuit(b)" in result.qiskit_source) == lends
 
     lent = _register_probabilities(_build_circuit(source), measured)
     monkeypatch.setattr(EntanglementGraph, "reusable", lambda self, name: None)
@@ -1206,3 +1218,14 @@ def test_a_real_time_break_leaves_the_loop() -> None:
         "rt int<> result = measure(coin);\n"
     )
     assert set(_realtime_counts(source)) == {"0"}
+
+
+@pytest.mark.parametrize("clause", ["a == 2", "!(a != 2)"])
+def test_a_doubly_negated_clause_means_the_plain_equality(clause: str) -> None:
+    """`!(a != 2)` is `a == 2`, and a condition of several clauses must lower
+    it as such instead of reaching for a one-qubit shape it does not have."""
+    source = (
+        "qint<2> a = 2;\nqint<2> b = 1;\nqbool o = false;\n"
+        f"qif({clause} && b == 1) {{ X(o); }}\nrt int<> result = measure(o);\n"
+    )
+    assert _counts(source) == {"1": SHOTS}

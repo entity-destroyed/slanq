@@ -95,11 +95,27 @@ def test_a_variable_ending_in_a_reset_needs_no_uncomputation() -> None:
         "qint<2> b = 1;\nrt int<> m = measure(b);\n",
         "qbool f = [];\nrt int<> m = measure(f);\nqint<2> b = 0;\nrt if (m == 1) { X(b[0]); }\n",
         "qint<2> b = 1;\nreset(b[0]);\n",
+        "int n = 1;\nqbool b = false;\nRY(n * PI / 4, b);\nn = 3;\nRY(n * PI / 4, b);\n",
     ],
-    ids=["read by another", "gate with another", "measured", "written at run time", "half reset"],
+    ids=[
+        "read by another",
+        "gate with another",
+        "measured",
+        "written at run time",
+        "half reset",
+        "angle from a rewritten classical",
+    ],
 )
 def test_a_variable_that_cannot_be_undone_unseen_is_not_reusable(source: str) -> None:
     assert _graph(source).reusable("b") is None
+
+
+def test_an_angle_from_a_classical_assigned_once_is_still_reusable() -> None:
+    """Only a value that changes while the circuit is built is a hazard: one
+    assigned once reads the same wherever the uncomputation renders it."""
+    reuse = _graph("int k = 2;\nqbool b = false;\nRY(k * PI / 4, b);\n").reusable("b")
+    assert reuse is not None
+    assert [type(op).__name__ for op in reuse.history] == ["GateOp"]
 
 
 def test_a_moved_variable_is_not_reusable() -> None:

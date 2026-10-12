@@ -189,12 +189,6 @@ def test_a_loop_body_reuses_a_qubit_freed_before_the_loop() -> None:
     assert module.ancilla_size == 4
 
 
-def test_a_register_lowering_dropped_gets_no_qubit() -> None:
-    module = _module("qint<2> a = 2;\nqbool t = false;\nqif(!(a == 2) && !(a == 2)) { X(t); }\n")
-    assert module.ancilla_size == 1
-    assert list(module.ancilla_qubits) == ["_negation_0"]
-
-
 def test_the_qubit_warning_counts_the_pool_not_every_request() -> None:
     """Twelve multiplications ask for 48 scratch qubits; one product's worth
     is ever in use."""
@@ -310,7 +304,18 @@ CLAUSE_AFTER_PRODUCT = (
 )
 
 
-@pytest.mark.parametrize("source", [TWO_QIF_PRODUCTS, CLAUSE_AFTER_PRODUCT])
+# The whole condition is negated into one ancilla, which is first computed
+# from the condition's qubits -- not from everything the qif touches.
+WHOLE_NEGATION_AFTER_PRODUCT = CLAUSE_AFTER_PRODUCT.replace("x != 2", "!(x == 2)")
+
+
+def test_a_whole_negation_ancilla_waits_only_for_the_condition() -> None:
+    assert _module(WHOLE_NEGATION_AFTER_PRODUCT).ancilla_size == 5
+
+
+@pytest.mark.parametrize(
+    "source", [TWO_QIF_PRODUCTS, CLAUSE_AFTER_PRODUCT, WHOLE_NEGATION_AFTER_PRODUCT]
+)
 def test_a_qif_adds_no_wait_between_operations(
     monkeypatch: pytest.MonkeyPatch, source: str
 ) -> None:
@@ -319,13 +324,17 @@ def test_a_qif_adds_no_wait_between_operations(
     pooled = _circuit(source)
     _never_reusing(monkeypatch)
     unpooled = _circuit(source)
-    assert pooled.num_qubits <= unpooled.num_qubits
+    # These programs save no qubits; what they pin down is the depth.
+    assert pooled.num_qubits == unpooled.num_qubits
     assert pooled.depth() == unpooled.depth()
 
 
+# `b`'s history is two layers deep -- the initialiser, then the H -- so the
+# multiplication has to be three layers out before it may take b's qubits. The
+# X gates cancel each other and are there only to push it that far.
 DEAD_THEN_CHAIN = (
     "qint<4> b = 5;\nH(b[0]);\nqint<2> a = 1;\nqint<2> d = 3;\nqint<4> c = 0;\n"
-    "X(a[0]);\nX(a[0]);\nc += a * d;\n"
+    "X(a[0]);\nX(a[0]);\nX(a[0]);\nc += a * d;\n"
 )
 
 
@@ -357,12 +366,26 @@ def test_a_dead_variable_does_not_hold_back_an_early_operation() -> None:
     assert _uncomputed(module) == []
 
 
-def test_the_uncomputation_counts_as_a_layer_of_its_own() -> None:
-    """`b` is last used in the second layer and the multiplication could run
-    in the third: that leaves no room for the uncomputation in between."""
-    module = _module(DEAD_THEN_CHAIN.replace("X(a[0]);\nX(a[0]);\n", "X(a[0]);\n"))
+@pytest.mark.parametrize("gates", ["X(a[0]);\n", "X(a[0]);\nX(a[0]);\n"])
+def test_the_uncomputation_costs_as_many_layers_as_it_takes(gates: str) -> None:
+    """The uncomputation is charged its own depth, not a flat one layer. `b`'s
+    history is two layers, so the multiplication two layers out is still too
+    early -- it is the case that would lend if the cost were a flat one."""
+    module = _module(DEAD_THEN_CHAIN.replace("X(a[0]);\n" * 3, gates))
     assert module.ancilla_size == 4
     assert _uncomputed(module) == []
+
+
+def test_a_one_layer_history_costs_one_layer() -> None:
+    """Without the initialiser `b`'s history is the H alone, so two layers of
+    room are enough -- the same program that is refused above."""
+    module = _module(
+        DEAD_THEN_CHAIN.replace("qint<4> b = 5;", "qint<4> b = 0;").replace(
+            "X(a[0]);\n" * 3, "X(a[0]);\n" * 2
+        )
+    )
+    assert module.ancilla_size == 0
+    assert _uncomputed(module) == ["b"]
 
 
 def test_the_compilers_own_qubits_go_before_a_dead_variables() -> None:
@@ -383,3 +406,32 @@ def test_a_variable_nothing_touches_lends_its_qubits_from_the_start() -> None:
     )
     assert module.ancilla_size == 0
     assert _uncomputed(module) == []
+
+
+def test_two_registers_alive_at_once_never_share_a_qubit() -> None:
+    """A lent variable wide enough for both products must still hand each of
+    them its own qubits."""
+    module = _module(
+        "qint<8> b = 5;\nH(b[0]);\nqint<2> a = 1;\nqint<2> d = 3;\n"
+        "qint<4> c = 0;\nqint<4> g = 0;\n" + "X(a[0]);\n" * 3 + "c += a * d;\ng += a * d;\n"
+    )
+    first = set(module.ancilla_qubits["_product_0"])
+    second = set(module.ancilla_qubits["_product_1"])
+    assert len(first) == len(second) == 4
+    assert not first & second
+
+
+def test_a_variable_built_from_a_rewritten_classical_is_not_lent() -> None:
+    """The uncomputation replays the history by rendering its expressions
+    again, which would read the variable's later value."""
+    rewritten = _module(
+        "int n = 1;\nqbool b = false;\nRY(n * PI / 4, b);\nn = 3;\nRY(n * PI / 4, b);\n"
+        "qint<3> t = 0;\nqint<1> s = [];\n" + "X(t[0]);\n" * 4 + "t += s;\n"
+    )
+    assert _uncomputed(rewritten) == []
+
+    once = _module(
+        "int k = 2;\nqbool b = false;\nRY(k * PI / 4, b);\n"
+        "qint<3> t = 0;\nqint<1> s = [];\n" + "X(t[0]);\n" * 4 + "t += s;\n"
+    )
+    assert _uncomputed(once) == ["b"]

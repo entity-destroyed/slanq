@@ -16,12 +16,17 @@ variables and get no nodes.
 
 from __future__ import annotations
 
+import dataclasses
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Literal
 
+from slanq.ast_nodes import Name, Node
 from slanq.ir import (
     ArithmeticOp,
+    ClassicalAssignOp,
     InitOp,
+    IRBlock,
     MeasurementOp,
     MultiplyOp,
     Op,
@@ -36,6 +41,7 @@ from slanq.ir import (
     operand_qubits,
     touched_qubits,
 )
+from slanq.visitor import iter_child_nodes
 
 Role = Literal["read", "write"]
 
@@ -75,8 +81,12 @@ _IRREVERSIBLE = (MeasurementOp, ResetOp, RealtimeIfOp, RealtimeWhileOp, RenameOp
 
 
 class EntanglementGraph:
-    def __init__(self, registers: list[QubitRef]) -> None:
+    def __init__(self, registers: list[QubitRef], mutated: set[str] | None = None) -> None:
         self.registers = {register.name: register for register in registers}
+        # Classical names whose value changes while the circuit is built: they
+        # are assigned more than once, so what they hold depends on where you
+        # read them. One assigned once is a constant wherever it is read.
+        self.mutated = mutated or set()
         self.nodes: dict[Qubit, QubitNode] = {
             (register.name, index): QubitNode(register=register.name, index=index)
             for register in registers
@@ -86,7 +96,7 @@ class EntanglementGraph:
 
     @classmethod
     def build(cls, ops: list[Op], registers: list[QubitRef]) -> EntanglementGraph:
-        graph = cls(registers)
+        graph = cls(registers, _mutated_names(ops))
         for seq, op in enumerate(ops):
             graph.add(seq, op)
         return graph
@@ -141,10 +151,53 @@ class EntanglementGraph:
         for touch in since:
             if isinstance(touch.op, _IRREVERSIBLE) or not touched_qubits(touch.op) <= own:
                 return None
+            # An angle built from a classical variable is replayed by rendering
+            # the same expression again, which reads whatever that variable
+            # holds by then -- not what it held when the gate ran.
+            if _expression_names(touch.op) & self.mutated:
+                return None
         return Reuse(last_use=since[-1].seq, history=tuple(touch.op for touch in since))
 
     def _qubits_of(self, name: str) -> list[Qubit]:
         return [(name, index) for index in range(self.registers[name].size)]
+
+
+def _mutated_names(ops: list[Op]) -> set[str]:
+    counts: Counter[str] = Counter()
+    _count_assignments(ops, counts)
+    return {name for name, count in counts.items() if count > 1}
+
+
+def _count_assignments(ops: list[Op], counts: Counter[str]) -> None:
+    for op in ops:
+        if isinstance(op, ClassicalAssignOp):
+            counts[op.name] += 1
+        for member in dataclasses.fields(op):
+            value = getattr(op, member.name)
+            if isinstance(value, IRBlock):
+                _count_assignments(value.ops, counts)
+
+
+def _expression_names(op: Op) -> set[str]:
+    """Every name the op's expressions mention, a nested body included."""
+    names: set[str] = set()
+    for member in dataclasses.fields(op):
+        _names_in(getattr(op, member.name), names)
+    return names
+
+
+def _names_in(value: object, names: set[str]) -> None:
+    if isinstance(value, Node):
+        if isinstance(value, Name):
+            names.add(value.name)
+        for child in iter_child_nodes(value):
+            _names_in(child, names)
+    elif isinstance(value, IRBlock):
+        for op in value.ops:
+            names |= _expression_names(op)
+    elif isinstance(value, list | tuple):
+        for item in value:
+            _names_in(item, names)
 
 
 def _last_whole_reset(touches: list[Touch], register: QubitRef) -> int:
